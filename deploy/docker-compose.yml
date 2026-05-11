@@ -1,0 +1,163 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: business_chatbot_postgres
+    environment:
+      POSTGRES_DB: business_chatbot
+      POSTGRES_USER: chatbot_user
+      POSTGRES_PASSWORD: chatbot_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    networks:
+      - chatbot_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbot_user -d business_chatbot"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: business_chatbot_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - chatbot_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # etcd for Milvus
+  milvus-etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: business_chatbot_milvus_etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - milvus_etcd_data:/etcd
+    networks:
+      - chatbot_network
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # MinIO for Milvus
+  milvus-minio:
+    image: minio/minio:RELEASE.2023-03-20T20-16-18Z
+    container_name: business_chatbot_milvus_minio
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+    ports:
+      - "9001:9001"
+      - "9000:9000"
+    command: minio server /minio_data --console-address ":9001"
+    volumes:
+      - milvus_minio_data:/minio_data
+    networks:
+      - chatbot_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+  # Milvus Vector Database
+  milvus:
+    image: milvusdb/milvus:v2.3.0
+    container_name: business_chatbot_milvus
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: business_chatbot_milvus_etcd:2379
+      MINIO_ADDRESS: business_chatbot_milvus_minio:9000
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    networks:
+      - chatbot_network
+    depends_on:
+      milvus-etcd:
+        condition: service_healthy
+      milvus-minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 30s
+      start_period: 90s
+      timeout: 20s
+      retries: 3
+
+  # Business Chatbot Application
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: business_chatbot_app
+    environment:
+      - LLM__OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LLM__MODEL=gpt-4
+      - VECTOR_DB__PROVIDER=milvus
+      - VECTOR_DB__HOST=milvus
+      - VECTOR_DB__PORT=19530
+      - VECTOR_DB__COLLECTION_NAME=business_data
+      - VECTOR_DB__VECTOR_DIMENSION=512
+      - DATABASE__URL=postgresql+asyncpg://chatbot_user:chatbot_password@postgres:5432/business_chatbot
+      - CACHE__HOST=redis
+      - CACHE__PORT=6379
+      - API__HOST=0.0.0.0
+      - API__PORT=8000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../data:/app/data
+      - ../logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+    networks:
+      - chatbot_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  milvus_etcd_data:
+  milvus_minio_data:
+  milvus_data:
+
+networks:
+  chatbot_network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  milvus_data:
+  etcd_data:
+  minio_data:
+
+networks:
+  face-recognition-network:
+    driver: bridge
