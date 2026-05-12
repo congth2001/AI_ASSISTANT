@@ -12,7 +12,7 @@ from src.domain.services.context_builder import ContextBuilder
 
 from src.infrastructure.llm.openai_adapter import OpenAIAdapter
 from src.infrastructure.vector_db.chroma_adapter import ChromaAdapter
-from src.infrastructure.embedding.openai_embedding_service import OpenAIEmbeddingService
+from src.infrastructure.embedding.openai_embedding import OpenAIEmbeddingService
 from src.infrastructure.persistence.conversation_repository import ConversationRepository
 from src.infrastructure.persistence.business_data_repository import BusinessDataRepository
 from src.infrastructure.cache.redis_cache import RedisCache

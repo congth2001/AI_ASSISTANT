@@ -3,7 +3,7 @@ from typing import List
 from src.domain.interfaces.i_embedding_service import IEmbeddingService
 
 
-class OpenAIEmbeddingService(IEmbeddingService):
+class OpenAIEmbedding(IEmbeddingService):
     """OpenAI implementation of embedding service"""
 
     def __init__(self, api_key: str, model: str = "text-embedding-3-small"):

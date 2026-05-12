@@ -41,6 +41,7 @@ redis>=5.0.0
 # --- DATA PROCESSING ---
 pandas>=2.1.1
 numpy>=1.26.4
+openpyxl>=3.1.2
 
 # --- UTILITIES ---
 python-multipart>=0.0.9

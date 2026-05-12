@@ -41,36 +41,3 @@ class IVectorDB(ABC):
     ) -> List[Dict[str, Any]]:
         """Keyword/BM25-like search by matching query terms"""
         pass
-
-
-class IEmbeddingService(ABC):
-    """Interface for embedding service"""
-
-    @abstractmethod
-    async def generate_embedding(self, text: str) -> List[float]:
-        """Generate embedding vector for text"""
-        pass
-
-    @abstractmethod
-    async def generate_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Generate embeddings for multiple texts"""
-        pass
-
-
-class IDataRepository(ABC):
-    """Interface for data repository operations"""
-
-    @abstractmethod
-    async def get_business_data(self, data_type: str, date_range: Optional['DateRange'] = None) -> List[Dict[str, Any]]:
-        """Get business data by type and date range"""
-        pass
-
-    @abstractmethod
-    async def store_business_data(self, data: Dict[str, Any]) -> bool:
-        """Store business data"""
-        pass
-
-    @abstractmethod
-    async def get_customers(self, filters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """Get customer data with optional filters"""
-        pass
