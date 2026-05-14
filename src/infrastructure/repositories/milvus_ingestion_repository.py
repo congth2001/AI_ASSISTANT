@@ -119,10 +119,8 @@ class MilvusIngestionRepository(IIngestionRepository):
             return results[0].get("doanh_thu", 0.0)
         return 0.0
 
-    async def get_by_doc_id(self, doc_type: str, doc_key: str) -> dict:
+    async def get_by_doc_id(self, doc_id: str) -> dict:
         """Get document by ID for a given chunk (used for upsert logic)"""
-        name = f"{doc_type}_{doc_key}"
-        doc_id = uuid.uuid5(uuid.NAMESPACE_DNS, name).hex
         filter_str = f'doc_id == "{doc_id}"'
         results = await asyncio.to_thread(
             self.client.query,

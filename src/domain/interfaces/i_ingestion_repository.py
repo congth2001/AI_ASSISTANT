@@ -20,7 +20,7 @@ class IIngestionRepository(ABC):
         pass
     
     @abstractmethod
-    async def get_by_doc_id(self, doc_type: str, doc_key: str) -> dict:
+    async def get_by_doc_id(self, doc_id: str) -> dict:
         """Get the document ID for a given chunk (used for upsert logic)"""
         pass
 

@@ -24,3 +24,6 @@ env.*
 .vscode/
 *.log
 models/*
+data/documents/*
+data/embeddings/*
+data/ingestions/*
