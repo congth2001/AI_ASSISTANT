@@ -8,9 +8,9 @@ from uuid import UUID
 class Message:
     """Entity representing a chat message"""
     id: Optional[UUID] = None
-    conversation_id: UUID
-    content: str
-    role: str  # 'user' or 'assistant'
+    conversation_id: Optional[UUID] = None
+    content: str = ""
+    role: str = "user"  # 'user' or 'assistant'
     timestamp: datetime = None
     metadata: Optional[dict] = None
 

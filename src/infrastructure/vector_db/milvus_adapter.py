@@ -8,22 +8,19 @@ logger = logging.getLogger(__name__)
 
 class MilvusAdapter(IVectorDB):
     """Milvus implementation of vector database"""
-
-    FACENET_VECTOR_DIMENSION = 512  # FaceNet embedding dimension
-    MILVUS_METRIC_TYPE = "L2"  # L2 distance metric
-    MILVUS_COLLECTION_NAME = "business_data"
-
     def __init__(
         self,
         host: str = "localhost",
         port: int = 19530,
         collection_name: str = "business_data",
-        vector_dimension: int = 512
+        vector_dimension: int = 512,
+        metric_type: str = "L2"
     ):
         self.host = host
         self.port = port
         self.collection_name = collection_name
         self.vector_dimension = vector_dimension
+        self.metric_type = metric_type
         self._connection = None
         self._collection = None
         self._initialized = False
@@ -112,7 +109,7 @@ class MilvusAdapter(IVectorDB):
 
             # Create index on vector field
             index_params = {
-                "metric_type": self.MILVUS_METRIC_TYPE,
+                "metric_type": self.metric_type,
                 "index_type": "IVF_FLAT",
                 "params": {"nlist": 1024}
             }
@@ -165,7 +162,7 @@ class MilvusAdapter(IVectorDB):
 
             # Search parameters
             search_params = {
-                "metric_type": self.MILVUS_METRIC_TYPE,
+                "metric_type": self.metric_type,
                 "params": {"nprobe": 10}
             }
 

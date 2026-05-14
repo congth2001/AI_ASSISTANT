@@ -1,19 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException
-from typing import Dict, Any
+from dependency_injector.wiring import inject, Provide
 from uuid import UUID
-import uuid
 
+from config.container import Container
 from src.application.use_cases.chat_use_case import ChatUseCase
-from src.application.dto.chat_request import ChatRequest
-from src.application.dto.chat_response import ChatResponse
+from src.presentation.dto.chat_request import ChatRequest
+from src.presentation.dto.chat_response import ChatResponse
 
 router = APIRouter()
 
 
 @router.post("/chat", response_model=ChatResponse)
+@inject
 async def chat_endpoint(
     request: ChatRequest,
-    chat_use_case: ChatUseCase = Depends()
+    chat_use_case: ChatUseCase = Depends(Provide[Container.chat_use_case])
 ) -> ChatResponse:
     """Chat endpoint for business conversations"""
     try:
@@ -35,9 +36,10 @@ async def chat_endpoint(
 
 
 @router.get("/conversations/{conversation_id}")
+@inject
 async def get_conversation(
     conversation_id: UUID,
-    chat_use_case: ChatUseCase = Depends()
+    chat_use_case: ChatUseCase = Depends(Provide[Container.chat_use_case])
 ):
     """Get conversation details"""
     # This would need a separate use case for getting conversation details

@@ -2,7 +2,6 @@
 Configuration Manager
 Handles loading and validation of application configuration
 """
-import os
 import yaml
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -154,13 +153,7 @@ class ConfigManager:
         config_data = self.load_config()
 
         try:
-            # Override environment variables with config file data
-            for key, value in self._flatten_config(config_data).items():
-                env_key = f"APP__{key.upper()}"
-                if value is not None:
-                    os.environ[env_key] = str(value)
-
-            return Settings()
+            return Settings(**config_data)
         except ValidationError as e:
             raise RuntimeError(f"Configuration validation failed: {e}")
 

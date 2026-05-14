@@ -8,12 +8,12 @@ from decimal import Decimal
 class Report:
     """Entity representing a business report"""
     id: Optional[str] = None
-    title: str
-    report_type: str  # 'revenue', 'profit', 'customer_analysis', 'trend', etc.
-    date_range: 'DateRange'
-    data: Dict[str, Any]
-    insights: List[str]
-    recommendations: List[str]
+    title: str = ""
+    report_type: str = ""  # 'revenue', 'profit', 'customer_analysis', 'trend', etc.
+    date_range: 'DateRange' = None
+    data: Dict[str, Any] = None
+    insights: List[str] = None
+    recommendations: List[str] = None
     generated_at: datetime = None
     metadata: Optional[dict] = None
 
@@ -25,9 +25,9 @@ class Report:
 @dataclass
 class MetricSummary:
     """Entity representing summarized business metrics"""
-    metric_type: str
-    value: Decimal
+    metric_type: str = ""  # 'revenue', 'profit', 'customer_count', etc.
+    value: Decimal = Decimal("0")
     change_percentage: Optional[Decimal] = None
-    period: str  # 'daily', 'weekly', 'monthly', 'yearly'
-    date: datetime
+    period: str = ""  # 'daily', 'weekly', 'monthly', 'yearly'
+    date: datetime = None
     metadata: Optional[dict] = None

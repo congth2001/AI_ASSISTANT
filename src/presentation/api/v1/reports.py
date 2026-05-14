@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
+from dependency_injector.wiring import inject, Provide
 from typing import Optional, Dict, Any, List
 from datetime import date
 
+from config.container import Container
 from src.application.use_cases.query_report_use_case import QueryReportUseCase
 from src.domain.value_objects.date_range import DateRange
 
@@ -9,11 +11,12 @@ router = APIRouter()
 
 
 @router.get("/reports")
+@inject
 async def query_report(
     query: str = Query(..., description="Business query (e.g., 'What is our revenue this month?')"),
     start_date: Optional[date] = Query(None, description="Start date for data filtering"),
     end_date: Optional[date] = Query(None, description="End date for data filtering"),
-    report_use_case: QueryReportUseCase = Depends()
+    report_use_case: QueryReportUseCase = Depends(Provide[Container.query_report_use_case])
 ) -> Dict[str, Any]:
     """Query business reports and analytics"""
     try:
@@ -37,9 +40,10 @@ async def query_report(
 
 
 @router.post("/reports/custom")
+@inject
 async def custom_report(
     request: Dict[str, Any],
-    report_use_case: QueryReportUseCase = Depends()
+    report_use_case: QueryReportUseCase = Depends(Provide[Container.query_report_use_case])
 ) -> Dict[str, Any]:
     """Create custom business report"""
     try:
