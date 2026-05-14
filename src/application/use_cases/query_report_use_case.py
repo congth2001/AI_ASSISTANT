@@ -5,7 +5,6 @@ from src.domain.entities.report import Report, MetricSummary
 from src.domain.value_objects.date_range import DateRange
 from src.domain.value_objects.metric_type import MetricType
 from decimal import Decimal
-import json
 
 
 class QueryReportUseCase:

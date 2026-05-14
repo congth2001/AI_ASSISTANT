@@ -1,12 +1,17 @@
 from datetime import datetime
+import json
+import os
 import uuid
 
-from domain.interfaces.i_document_serializer import IDocumentSerializer
-from domain.entities.document_chunk import DocumentChunk
+from src.domain.value_objects.doc_type import DocType
+from src.domain.interfaces.i_document_serializer import IDocumentSerializer
+from src.domain.entities.document_chunk import DocumentChunk
 import pandas as pd
 
 class TransactionSerializer(IDocumentSerializer):
     """Serialize for transaction data from Excel to DocumentChunk format for vectorization and storage"""
+    def __init__(self):
+        pass
 
     def serialize(self, row: pd.Series) -> dict:
 
@@ -29,7 +34,7 @@ class TransactionSerializer(IDocumentSerializer):
         )
 
         metadata = {
-            "doc_type"   : "transaction",
+            "doc_type"   : DocType.TRANSACTION.value,
             "so_phieu"   : so_phieu,
             # Dùng slug để tránh trùng lặp khi tên KH viết khác nhau
             "customer_id": ten_kh.strip().lower().replace(" ", "_"),
@@ -39,21 +44,35 @@ class TransactionSerializer(IDocumentSerializer):
             "year"       : ngay.year,
             "month"      : ngay.month,
             "day"        : ngay.day,
-            "tong_tien"  : tong_tien,
             "ghi_no"     : ghi_no,
+            "doanh_thu"  : tong_tien,
             # Filter nhanh theo trạng thái nợ
             "co_no"      : ghi_no > 0,
         }
 
         return DocumentChunk(
-            doc_id=uuid.uuid1(),
+            doc_id=uuid.uuid5(uuid.NAMESPACE_DNS, f"transaction_{so_phieu}").hex,
             text=text,
             metadata=metadata,
-            doc_type="transaction"
+            doc_type=DocType.TRANSACTION.value
         )
-    
-    def get_doc_id(self, data):
-        return f"{data['metadata']['so_phieu']}_{data['metadata']['customer_id']}"
+
+    def save_jsonl(self, chunks: list[DocumentChunk], file_path: str = "data/ingestions/transactions.jsonl"):
+        # ensure target directory exists
+        dir_path = os.path.dirname(file_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            for chunk in chunks:
+                json_line = {
+                    "doc_id": chunk.doc_id,
+                    "text": chunk.text,
+                    "metadata": chunk.metadata,
+                    "doc_type": chunk.doc_type
+                }
+                f.write(json.dumps(json_line, ensure_ascii=False) + "\n")
+
 
     def classify_payment_status(self, tong_tien: float, ghi_no: float) -> str:
         """

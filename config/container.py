@@ -1,5 +1,5 @@
-from dependency_injector import containers, providers
-from dependency_injector.providers import Factory, Singleton, Dependency, Configuration
+from dependency_injector import containers
+from dependency_injector.providers import Configuration, Dependency, Factory, Singleton
 
 from src.application.use_cases.chat_use_case import ChatUseCase
 from src.application.use_cases.ingest_data_use_case import IngestDataUseCase
@@ -11,8 +11,12 @@ from src.domain.services.intent_classifier import IntentClassifier
 from src.domain.services.context_builder import ContextBuilder
 
 from src.infrastructure.llm.openai_adapter import OpenAIAdapter
+from src.infrastructure.repositories.milvus_ingestion_repository import MilvusIngestionRepository
+from src.infrastructure.serializers.customer_serializer import CustomerSerializer
+from src.infrastructure.serializers.period_summary_serializer import PeriodSummarySerializer
+from src.infrastructure.serializers.transaction_serializer import TransactionSerializer
 from src.infrastructure.vector_db.milvus_adapter import MilvusAdapter
-from src.infrastructure.embedding.openai_embedding import OpenAIEmbeddingService
+from src.infrastructure.embedding.openai_embedding import OpenAIEmbedding
 from src.infrastructure.persistence.conversation_repository import ConversationRepository
 from src.infrastructure.persistence.business_data_repository import BusinessDataRepository
 from src.infrastructure.cache.redis_cache import RedisCache
@@ -53,20 +57,27 @@ class Container(containers.DeclarativeContainer):
         model=config.llm.model
     )
 
-    # Infrastructure - Vector DB (Milvus)
+    # Infrastructure - Vector DB
     vector_db = Singleton(
         MilvusAdapter,
-        host=config.vector_db.get("host", "localhost"),
-        port=config.vector_db.get("port", 19530),
-        collection_name=config.vector_db.collection_name,
-        vector_dimension=config.vector_db.get("vector_dimension", 512)
+        uri=config.vector_db.uri
     )
 
     # Infrastructure - Embedding
     embedding_service = Singleton(
-        OpenAIEmbeddingService,
+        OpenAIEmbedding,
         api_key=config.llm.openai_api_key,
         model=config.embedding.model
+    )
+
+    # Infrastructure - Milvus repository
+    milvus_ingestion_repository = Singleton(
+        MilvusIngestionRepository,
+        host=config.vector_db.host,
+        port=config.vector_db.port,
+        collection_name=config.vector_db.collection_name,
+        embedding_service=embedding_service,
+        embedding_dim=config.vector_db.vector_dimension
     )
 
     # Infrastructure - Persistence
@@ -88,6 +99,11 @@ class Container(containers.DeclarativeContainer):
         db=config.cache.db,
         password=config.cache.password
     )
+
+    # Infrastructure - Serializers
+    transaction_serializer = Singleton(TransactionSerializer)
+    customer_serializer = Singleton(CustomerSerializer)
+    period_serializer = Singleton(PeriodSummarySerializer)
 
     # Application Services
     rag_orchestrator = Singleton(
@@ -114,9 +130,10 @@ class Container(containers.DeclarativeContainer):
 
     ingest_data_use_case = Singleton(
         IngestDataUseCase,
-        data_repo=business_data_repo,
-        vector_db=vector_db,
-        embedding_service=embedding_service
+        transaction_serializer=transaction_serializer,
+        customer_serializer=customer_serializer,
+        period_serializer=period_serializer,
+        repository=milvus_ingestion_repository,
     )
 
     query_report_use_case = Singleton(

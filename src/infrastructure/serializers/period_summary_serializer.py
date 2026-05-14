@@ -1,10 +1,14 @@
+import os
+import json
 import uuid
-
 import pandas as pd
 from src.domain.interfaces.i_document_serializer import IDocumentSerializer
 from src.domain.entities.document_chunk import DocumentChunk
+from src.domain.value_objects.doc_type import DocType
 
 class PeriodSummarySerializer(IDocumentSerializer):
+    def __init__(self):
+        pass
 
     def serialize(
         self, 
@@ -57,21 +61,35 @@ class PeriodSummarySerializer(IDocumentSerializer):
         )
 
         metadata = {
-            "doc_type" : "period_summary",
+            "doc_type" : DocType.PERIOD_SUMMARY.value,
             "year"     : year,
             "month"    : month,
             "quarter"  : (month - 1) // 3 + 1,
             "doanh_thu": float(doanh_thu),
             "so_phieu" : so_phieu,
             "so_kh"    : so_kh,
+            "co_no"    : ghi_no > 0
         }
 
         return DocumentChunk(
-            doc_id=uuid.uuid1(),
+            doc_id=uuid.uuid5(uuid.NAMESPACE_DNS, f"period_summary_{year}_{month}").hex,
             text=text,
             metadata=metadata,
-            doc_type="period_summary"
+            doc_type=DocType.PERIOD_SUMMARY.value
         )
-    
-    def get_doc_id(self, data):
-        return f"{data['metadata']['so_phieu']}_{data['metadata']['so_kh']}"
+
+    def save_jsonl(self, chunks: list[DocumentChunk], file_path: str = "data/ingestions/period_summaries.jsonl"):
+        # ensure target directory exists
+        dir_path = os.path.dirname(file_path)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            for chunk in chunks:
+                json_line = {
+                    "doc_id": chunk.doc_id,
+                    "text": chunk.text,
+                    "metadata": chunk.metadata,
+                    "doc_type": chunk.doc_type
+                }
+                f.write(json.dumps(json_line, ensure_ascii=False) + "\n")

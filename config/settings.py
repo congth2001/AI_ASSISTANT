@@ -1,73 +1,57 @@
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 from typing import Optional
 
 
-class LLMSettings(BaseSettings):
-    """LLM configuration settings"""
+class LLMSettings(BaseModel):
     openai_api_key: str
     anthropic_api_key: Optional[str] = None
-    model: str = "gpt-4"
+    model: str = "gpt-4o-mini"
     temperature: float = 0.7
-    max_tokens: int = 1000
+    max_tokens: int = 400
 
 
-class VectorDBSettings(BaseSettings):
-    """Vector database configuration"""
-    provider: str = "milvus"  # 'milvus' for Milvus
+class VectorDBSettings(BaseModel):
+    provider: str = "milvus"
     collection_name: str = "business_data"
     host: str = "localhost"
     port: int = 19530
     vector_dimension: int = 512
-    metric_type: str = "L2"  # L2 distance metric
-    
-    # Legacy settings (kept for compatibility)
-    persist_directory: Optional[str] = None
-    
-    # Pinecone settings (if using Pinecone)
-    pinecone_api_key: Optional[str] = None
-    pinecone_environment: Optional[str] = None
-    pinecone_index_name: Optional[str] = None
+    metric_type: str = "L2"
 
 
-class EmbeddingSettings(BaseSettings):
-    """Embedding service configuration"""
-    provider: str = "openai"  # 'openai' only for now
+class EmbeddingSettings(BaseModel):
+    provider: str = "openai"
     model: str = "text-embedding-3-small"
 
 
-class DatabaseSettings(BaseSettings):
-    """Database configuration"""
+class DatabaseSettings(BaseModel):
     url: str = "sqlite+aiosqlite:///./business_chatbot.db"
     echo: bool = False
 
 
-class CacheSettings(BaseSettings):
-    """Cache configuration"""
+class CacheSettings(BaseModel):
+    provider: str = "redis"
     host: str = "localhost"
     port: int = 6379
     db: int = 0
     password: Optional[str] = None
 
 
-class APISettings(BaseSettings):
-    """API configuration"""
+class APISettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     debug: bool = False
 
 
 class Settings(BaseSettings):
-    """Main application settings"""
+    """Main application settings — populated from local.yml via ConfigManager"""
     llm: LLMSettings
-    vector_db: VectorDBSettings
-    embedding: EmbeddingSettings
-    database: DatabaseSettings
-    cache: CacheSettings
-    api: APISettings
+    vector_db: VectorDBSettings = VectorDBSettings()
+    embedding: EmbeddingSettings = EmbeddingSettings()
+    database: DatabaseSettings = DatabaseSettings()
+    cache: CacheSettings = CacheSettings()
+    api: APISettings = APISettings()
 
     class Config:
         env_nested_delimiter = "__"
-
-
-# Global settings instance
-settings = Settings()

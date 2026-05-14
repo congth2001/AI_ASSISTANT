@@ -12,6 +12,15 @@ from src.presentation.api.v1.chat import router as chat_router
 from src.presentation.api.v1.reports import router as reports_router
 from src.presentation.api.v1.data import router as data_router
 
+def init_config_connections():
+    """Initialize connections to external services based on config"""
+    settings = get_settings()
+
+    # Initialize vector database connection
+    # This is a placeholder - actual implementation would depend on the vector DB used
+    # For example, if using Milvus:
+    # vector_db_client = MilvusClient(host=settings.vector_db.host, port=settings.vector_db.port)
+    # container.vector_db.override(vector_db_client)
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
@@ -36,7 +45,7 @@ def create_app() -> FastAPI:
     )
 
     # Configure dependency injection
-    container.config.from_dict(settings.dict())
+    container.config.from_dict(settings.model_dump())
     container.database_url.override(settings.database.url)
 
     # Wire dependencies
