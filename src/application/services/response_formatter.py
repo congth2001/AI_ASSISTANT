@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any, List
 from src.domain.interfaces.i_vector_db import IVectorDB
 from src.domain.interfaces.i_embedding_service import IEmbeddingService
 from src.domain.interfaces.i_llm_service import ILLMService
-from src.domain.services.context_builder import ContextBuilder
+from src.application.services.context_builder import ContextBuilder
 
 
 class RAGOrchestrator:

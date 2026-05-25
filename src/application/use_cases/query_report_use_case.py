@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any, List
 from src.domain.interfaces.i_data_repository import IDataRepository
 from src.domain.interfaces.i_llm_service import ILLMService
 from src.domain.entities.report import Report, MetricSummary
-from src.domain.value_objects.date_range import DateRange
+from src.domain.entities.date_range import DateRange
 from src.domain.value_objects.metric_type import MetricType
 from decimal import Decimal
 

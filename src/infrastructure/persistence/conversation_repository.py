@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from src.domain.interfaces.i_conversation_repository import IConversationRepository
 from src.infrastructure.persistence.models import ConversationModel, MessageModel
@@ -14,14 +14,14 @@ class ConversationRepository(IConversationRepository):
         """Create a new conversation"""
         async with self.session_factory() as session:
             conversation = ConversationModel(
-                id=conversation_data['id'],
+                id=str(uuid4()),
                 user_id=conversation_data.get('user_id'),
                 title=conversation_data.get('title'),
                 extra_metadata=conversation_data.get('metadata')
             )
             session.add(conversation)
             await session.commit()
-            return conversation_data
+            return conversation.__dict__
 
     async def get_conversation(self, conversation_id: UUID) -> Optional[Dict[str, Any]]:
         """Get conversation by ID"""

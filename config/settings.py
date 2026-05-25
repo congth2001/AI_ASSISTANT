@@ -26,8 +26,16 @@ class EmbeddingSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
-    url: str = "sqlite+aiosqlite:///./business_chatbot.db"
+    host: str = "localhost"
+    port: int = 5432
+    username: str = "congvq"
+    password: str = "congvq"
+    db_name: str = "ai_assistant"
     echo: bool = False
+
+    @property
+    def url(self) -> str:
+        return f"postgresql+asyncpg://{self.username}:{self.password}@{self.host}:{self.port}/{self.db_name}"
 
 
 class CacheSettings(BaseModel):

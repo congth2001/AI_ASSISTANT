@@ -1,395 +1,320 @@
 import logging
-from typing import List, Optional, Dict, Any, Tuple
-from pymilvus import Collection, connections, utility, FieldSchema, CollectionSchema, DataType
+from typing import List, Optional, Dict, Any
+from pymilvus import MilvusClient, DataType
 from src.domain.interfaces.i_vector_db import IVectorDB
 
 logger = logging.getLogger(__name__)
 
+_OUTPUT_FIELDS = ["doc_id", "doc_type", "text", "year", "month", "customer_id", "co_no", "doanh_thu"]
+_RRF_K = 60  # RRF constant — higher = less penalty for lower ranks
+
 
 class MilvusAdapter(IVectorDB):
-    """Milvus implementation of vector database"""
     def __init__(
         self,
         host: str = "localhost",
         port: int = 19530,
         collection_name: str = "business_data",
-        vector_dimension: int = 512,
-        metric_type: str = "L2"
+        vector_dimension: int = 1024,
+        metric_type: str = "COSINE"
     ):
-        self.host = host
-        self.port = port
         self.collection_name = collection_name
         self.vector_dimension = vector_dimension
         self.metric_type = metric_type
-        self._connection = None
-        self._collection = None
-        self._initialized = False
 
-    async def _get_connection(self):
-        """Get or create Milvus connection"""
-        if self._connection is None:
-            try:
-                connections.connect(
-                    alias="default",
-                    host=self.host,
-                    port=self.port
-                )
-                self._connection = connections.get_connection_addr("default")
-                logger.info(f"Connected to Milvus at {self.host}:{self.port}")
-            except Exception as e:
-                logger.error(f"Failed to connect to Milvus: {str(e)}")
-                raise
+        self._client = MilvusClient(uri=f"http://{host}:{port}")
+        logger.info(f"Connected to Milvus at {host}:{port}")
+        self._ensure_collection()
 
-        return self._connection
+    def _ensure_collection(self):
+        if not self._client.has_collection(self.collection_name):
+            self._create_collection()
+            logger.info(f"Created new collection: {self.collection_name}")
+        else:
+            logger.info(f"Using existing collection: {self.collection_name}")
 
-    async def _get_collection(self) -> Collection:
-        """Get or create collection"""
-        if self._collection is None:
-            try:
-                await self._get_connection()
+    def _create_collection(self):
+        schema = MilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
+        schema.add_field("doc_id",      DataType.VARCHAR,      is_primary=True, max_length=128)
+        schema.add_field("doc_type",    DataType.VARCHAR,      max_length=32)
+        schema.add_field("text",        DataType.VARCHAR,      max_length=4096)
+        schema.add_field("embedding",   DataType.FLOAT_VECTOR, dim=self.vector_dimension)
+        schema.add_field("year",        DataType.INT16)
+        schema.add_field("month",       DataType.INT8)
+        schema.add_field("customer_id", DataType.VARCHAR,      max_length=128)
+        schema.add_field("co_no",       DataType.BOOL)
+        schema.add_field("doanh_thu",   DataType.DOUBLE)
 
-                # Check if collection exists
-                if utility.has_collection(self.collection_name):
-                    self._collection = Collection(self.collection_name)
-                    logger.info(f"Using existing collection: {self.collection_name}")
-                else:
-                    # Create collection if it doesn't exist
-                    await self._create_collection_internal()
-                    self._collection = Collection(self.collection_name)
-                    logger.info(f"Created new collection: {self.collection_name}")
+        index_params = MilvusClient.prepare_index_params()
+        index_params.add_index(
+            field_name  = "embedding",
+            metric_type = "COSINE",
+            index_type  = "HNSW",
+            params      = {"M": 16, "efConstruction": 200},
+        )
 
-                self._collection.load()
-                self._initialized = True
+        self._client.create_collection(
+            collection_name = self.collection_name,
+            schema          = schema,
+            index_params    = index_params,
+        )
 
-            except Exception as e:
-                logger.error(f"Failed to get collection: {str(e)}")
-                raise
+    # ─────────────────────────────
+    # Write operations
+    # ─────────────────────────────
 
-        return self._collection
-
-    async def _create_collection_internal(self) -> bool:
-        """Create a new vector collection"""
+    def upsert(self, collection_name: str, data: List[Dict[str, Any]]) -> bool:
         try:
-            # Define collection schema
-            fields = [
-                FieldSchema(
-                    name="id",
-                    dtype=DataType.VARCHAR,
-                    is_primary=True,
-                    max_length=256
-                ),
-                FieldSchema(
-                    name="vector",
-                    dtype=DataType.FLOAT_VECTOR,
-                    dim=self.vector_dimension
-                ),
-                FieldSchema(
-                    name="content",
-                    dtype=DataType.VARCHAR,
-                    max_length=8192
-                ),
-                FieldSchema(
-                    name="metadata_str",
-                    dtype=DataType.VARCHAR,
-                    max_length=4096
-                )
-            ]
-
-            schema = CollectionSchema(
-                fields=fields,
-                description="Vector embeddings for business data with hybrid search support"
-            )
-
-            # Create collection
-            collection = Collection(
-                name=self.collection_name,
-                schema=schema,
-                using='default'
-            )
-
-            # Create index on vector field
-            index_params = {
-                "metric_type": self.metric_type,
-                "index_type": "IVF_FLAT",
-                "params": {"nlist": 1024}
-            }
-
-            collection.create_index(
-                field_name="vector",
-                index_params=index_params
-            )
-
-            logger.info(f"Created collection: {self.collection_name}")
+            self._client.upsert(collection_name=collection_name, data=data)
             return True
-
         except Exception as e:
-            logger.error(f"Failed to create collection: {str(e)}")
-            raise
+            logger.error(f"Error upserting data: {e}")
+            return False
 
-    async def store_embedding(self, id: str, vector: List[float], metadata: Optional[Dict[str, Any]] = None) -> bool:
-        """Store an embedding vector with content"""
+    def store_embedding(self, id: str, vector: List[float], metadata: Optional[Dict[str, Any]] = None) -> bool:
         try:
-            collection = await self._get_collection()
-
-            # Convert metadata to JSON string
-            import json
             metadata = metadata or {}
-            metadata_str = json.dumps(metadata)
-            content = metadata.get('content', '')
-
-            # Insert data with content field
-            data = [
-                [id],
-                [vector],
-                [content],
-                [metadata_str]
-            ]
-
-            collection.insert(data)
-            collection.flush()
-
+            data = [{
+                "doc_id"     : id,
+                "doc_type"   : str(metadata.get("doc_type", "")),
+                "text"       : str(metadata.get("text", ""))[:4096],
+                "embedding"  : vector,
+                "year"       : int(metadata.get("year", 0)),
+                "month"      : int(metadata.get("month", 0)),
+                "customer_id": str(metadata.get("customer_id", "")),
+                "co_no"      : bool(metadata.get("co_no", False)),
+                "doanh_thu"  : float(metadata.get("doanh_thu", 0.0)),
+            }]
+            self._client.upsert(collection_name=self.collection_name, data=data)
             logger.info(f"Stored embedding with id: {id}")
             return True
-
         except Exception as e:
             logger.error(f"Error storing embedding: {e}")
             return False
 
-    async def search_similar(self, query_vector: List[float], top_k: int = 5) -> List[Dict[str, Any]]:
-        """Search for similar vectors using vector similarity only"""
+    def delete_embedding(self, id: str) -> bool:
         try:
-            collection = await self._get_collection()
-
-            # Search parameters
-            search_params = {
-                "metric_type": self.metric_type,
-                "params": {"nprobe": 10}
-            }
-
-            # Perform search
-            results = collection.search(
-                data=[query_vector],
-                anns_field="vector",
-                param=search_params,
-                limit=top_k,
-                output_fields=["id", "content", "metadata_str"]
+            self._client.delete(
+                collection_name = self.collection_name,
+                filter          = f'doc_id == "{id}"',
             )
-
-            # Format results
-            formatted_results = []
-            if results and len(results[0]) > 0:
-                import json
-                for hit in results[0]:
-                    try:
-                        metadata = json.loads(hit.entity.get("metadata_str", "{}"))
-                    except:
-                        metadata = {}
-
-                    result = {
-                        'id': hit.entity.get("id"),
-                        'score': 1.0 / (1.0 + hit.distance),  # Convert L2 distance to similarity
-                        'distance': hit.distance,
-                        'content': hit.entity.get("content", ""),
-                        'metadata': metadata
-                    }
-                    formatted_results.append(result)
-
-            return formatted_results
-
-        except Exception as e:
-            logger.error(f"Error searching vectors: {e}")
-            return []
-
-    async def delete_embedding(self, id: str) -> bool:
-        """Delete an embedding by ID"""
-        try:
-            collection = await self._get_collection()
-            collection.delete(expr=f'id == "{id}"')
-            collection.flush()
-
             logger.info(f"Deleted embedding with id: {id}")
             return True
-
         except Exception as e:
             logger.error(f"Error deleting embedding: {e}")
             return False
 
-    async def hybrid_search(
-        self,
-        query_vector: List[float],
-        query_text: str,
-        top_k: int = 5,
-        vector_weight: float = 0.7,
-        keyword_weight: float = 0.3
-    ) -> List[Dict[str, Any]]:
-        """Hybrid search combining vector similarity and keyword matching"""
+    # ─────────────────────────────
+    # Read operations
+    # ─────────────────────────────
+
+    def query(self, filter: str, output_fields: List[str] = None, limit: int = 1) -> Optional[List[Dict]]:
         try:
-            # Get vector search results
-            vector_results = await self.search_similar(query_vector, top_k * 2)
-
-            # Get keyword search results
-            keyword_results = await self.keyword_search(query_text, top_k * 2)
-
-            # Create combined scoring
-            combined_scores = {}
-
-            # Add vector scores
-            for result in vector_results:
-                doc_id = result['id']
-                vector_score = result['score']
-                combined_scores[doc_id] = {
-                    'vector_score': vector_score,
-                    'keyword_score': 0.0,
-                    'data': result
-                }
-
-            # Add/update keyword scores
-            for result in keyword_results:
-                doc_id = result['id']
-                keyword_score = result['score']
-
-                if doc_id in combined_scores:
-                    combined_scores[doc_id]['keyword_score'] = keyword_score
-                else:
-                    combined_scores[doc_id] = {
-                        'vector_score': 0.0,
-                        'keyword_score': keyword_score,
-                        'data': result
-                    }
-
-            # Calculate combined scores
-            scored_results = []
-            for doc_id, scores in combined_scores.items():
-                combined_score = (
-                    vector_weight * scores['vector_score'] +
-                    keyword_weight * scores['keyword_score']
-                )
-
-                result_data = scores['data'].copy()
-                result_data['combined_score'] = combined_score
-                result_data['vector_score'] = scores['vector_score']
-                result_data['keyword_score'] = scores['keyword_score']
-
-                scored_results.append(result_data)
-
-            # Sort by combined score and return top_k
-            scored_results.sort(key=lambda x: x['combined_score'], reverse=True)
-
-            logger.info(f"Hybrid search found {len(scored_results)} results")
-            return scored_results[:top_k]
-
+            results = self._client.query(
+                collection_name = self.collection_name,
+                filter          = filter,
+                output_fields   = output_fields,
+                limit           = limit,
+            )
+            return results if results else None
         except Exception as e:
-            logger.error(f"Error in hybrid search: {e}")
+            logger.error(f"Error querying: {e}")
+            return None
+
+    def search_similar(
+        self,
+        query_vector  : List[float],
+        top_k         : int = 5,
+        filter        : str = "",
+        output_fields : Optional[List[str]] = None,
+        search_params : Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        try:
+            sp = search_params or {"metric_type": "COSINE", "params": {"ef": 100}}
+            results = self._client.search(
+                collection_name = self.collection_name,
+                data            = [query_vector],
+                anns_field      = "embedding",
+                search_params   = sp,
+                limit           = top_k,
+                filter          = filter or None,
+                output_fields   = output_fields or _OUTPUT_FIELDS,
+            )
+            return self._format_hits(results[0])
+        except Exception as e:
+            logger.error(f"Error searching vectors: {e}")
             return []
 
-    async def keyword_search(
+    def keyword_search(
         self,
-        query_text: str,
-        top_k: int = 5,
-        case_sensitive: bool = False
+        query_text    : str,
+        top_k         : int = 5,
+        filter        : str = "",
+        case_sensitive: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Keyword/BM25-like search by matching query terms in content"""
+        """Term-frequency keyword search. Pre-filters via Milvus filter expression."""
         try:
-            collection = await self._get_collection()
-
-            # Get all entities (for keyword matching)
-            # In production, you might want to use a text index or external search
-            results = collection.query(
-                expr="",
-                output_fields=["id", "content", "metadata_str"],
-                limit=1000
+            entities = self._client.query(
+                collection_name = self.collection_name,
+                filter          = filter or "",
+                output_fields   = _OUTPUT_FIELDS,
+                limit           = 1000,
             )
 
-            # Score based on keyword matching
-            scored_results = []
-            query_terms = query_text.lower().split() if not case_sensitive else query_text.split()
+            terms  = query_text.split() if case_sensitive else query_text.lower().split()
+            scored = []
 
-            import json
-            for entity in results:
-                content = entity.get("content", "").lower() if not case_sensitive else entity.get("content", "")
+            for entity in entities:
+                content = entity.get("text", "")
+                text_cmp = content if case_sensitive else content.lower()
 
-                # Calculate relevance score based on term frequency
-                score = 0.0
+                score      = 0.0
                 term_count = 0
-
-                for term in query_terms:
-                    if term in content:
-                        # Count occurrences
-                        count = content.count(term)
-                        score += count
-
-                        # Boost if term appears at the beginning
-                        if content.startswith(term):
+                for term in terms:
+                    if term in text_cmp:
+                        score += text_cmp.count(term)
+                        if text_cmp.startswith(term):
                             score += 5
-
                         term_count += 1
 
-                # Normalize score by content length
-                if len(content) > 0:
-                    score = score / len(content)
+                if len(text_cmp) > 0:
+                    score /= len(text_cmp)
 
-                # Add bonus for matching more terms
-                match_ratio = term_count / len(query_terms) if query_terms else 0
-                score = score * (1 + match_ratio)
+                match_ratio = term_count / len(terms) if terms else 0
+                score *= (1 + match_ratio)
 
                 if score > 0:
-                    try:
-                        metadata = json.loads(entity.get("metadata_str", "{}"))
-                    except:
-                        metadata = {}
+                    scored.append({
+                        "id"      : entity.get("doc_id"),
+                        "score"   : score,
+                        "content" : content,
+                        "metadata": {
+                            "doc_type"   : entity.get("doc_type"),
+                            "year"       : entity.get("year"),
+                            "month"      : entity.get("month"),
+                            "customer_id": entity.get("customer_id"),
+                            "co_no"      : entity.get("co_no"),
+                            "doanh_thu"  : entity.get("doanh_thu"),
+                        },
+                    })
 
-                    result = {
-                        'id': entity.get("id"),
-                        'content': content,
-                        'score': score,
-                        'matched_terms': term_count,
-                        'total_terms': len(query_terms),
-                        'metadata': metadata
-                    }
-                    scored_results.append(result)
-
-            # Sort by score and return top_k
-            scored_results.sort(key=lambda x: x['score'], reverse=True)
-
-            logger.info(f"Keyword search found {len(scored_results)} results")
-            return scored_results[:top_k]
+            scored.sort(key=lambda x: x["score"], reverse=True)
+            logger.info(f"Keyword search found {len(scored)} results")
+            return scored[:top_k]
 
         except Exception as e:
             logger.error(f"Error in keyword search: {e}")
             return []
 
-    async def drop_collection(self) -> bool:
-        """Drop the collection"""
-        try:
-            await self._get_connection()
+    # ─────────────────────────────
+    # Hybrid search (vector + keyword via RRF)
+    # ─────────────────────────────
 
-            if utility.has_collection(self.collection_name):
-                utility.drop_collection(self.collection_name)
-                self._collection = None
+    def hybrid_search(
+        self,
+        query_vector  : List[float],
+        query_text    : str,
+        top_k         : int = 5,
+        filter        : str = "",
+        ef            : int = 100,
+        vector_weight : float = 0.7,
+        keyword_weight: float = 0.3,
+    ) -> List[Dict[str, Any]]:
+        """
+        Combines vector search and keyword search via Reciprocal Rank Fusion (RRF).
+        Both searches use the same Milvus filter expression.
+        ef controls HNSW recall quality for the vector branch.
+        """
+        try:
+            sp = {"metric_type": "COSINE", "params": {"ef": ef}}
+            vector_results  = self.search_similar(query_vector, top_k * 2, filter=filter, search_params=sp)
+            keyword_results = self.keyword_search(query_text,   top_k * 2, filter=filter)
+            merged = self._rrf_merge(vector_results, keyword_results, top_k, vector_weight, keyword_weight)
+            logger.info(f"Hybrid search found {len(merged)} results (v={len(vector_results)}, k={len(keyword_results)})")
+            return merged
+        except Exception as e:
+            logger.error(f"Error in hybrid search: {e}")
+            return []
+
+    # ─────────────────────────────
+    # Internal helpers
+    # ─────────────────────────────
+
+    def _format_hits(self, hits) -> List[Dict[str, Any]]:
+        results = []
+        for hit in hits:
+            entity = hit["entity"]
+            results.append({
+                "id"      : entity.get("doc_id"),
+                "score"   : hit["distance"],
+                "content" : entity.get("text", ""),
+                "metadata": {
+                    "doc_type"   : entity.get("doc_type"),
+                    "year"       : entity.get("year"),
+                    "month"      : entity.get("month"),
+                    "customer_id": entity.get("customer_id"),
+                    "co_no"      : entity.get("co_no"),
+                    "doanh_thu"  : entity.get("doanh_thu"),
+                },
+            })
+        return results
+
+    def _rrf_merge(
+        self,
+        vector_results : List[Dict],
+        keyword_results: List[Dict],
+        top_k          : int,
+        vector_weight  : float,
+        keyword_weight : float,
+    ) -> List[Dict[str, Any]]:
+        """
+        Reciprocal Rank Fusion: score(d) = Σ weight_i / (K + rank_i(d))
+        Rank-based fusion avoids needing to normalize scores across different scales.
+        """
+        scores: Dict[str, Dict] = {}
+
+        for rank, r in enumerate(vector_results):
+            doc_id = r["id"]
+            scores[doc_id] = {
+                "rrf" : vector_weight / (_RRF_K + rank + 1),
+                "data": r,
+            }
+
+        for rank, r in enumerate(keyword_results):
+            doc_id = r["id"]
+            rrf_k  = keyword_weight / (_RRF_K + rank + 1)
+            if doc_id in scores:
+                scores[doc_id]["rrf"] += rrf_k
+            else:
+                scores[doc_id] = {"rrf": rrf_k, "data": r}
+
+        sorted_items = sorted(scores.values(), key=lambda x: x["rrf"], reverse=True)
+        return [{**item["data"], "score": item["rrf"]} for item in sorted_items[:top_k]]
+
+    # ─────────────────────────────
+    # Admin
+    # ─────────────────────────────
+
+    def drop_collection(self) -> bool:
+        try:
+            if self._client.has_collection(self.collection_name):
+                self._client.drop_collection(self.collection_name)
                 logger.info(f"Dropped collection: {self.collection_name}")
                 return True
-            else:
-                logger.warning(f"Collection {self.collection_name} does not exist")
-                return False
-
+            logger.warning(f"Collection {self.collection_name} does not exist")
+            return False
         except Exception as e:
             logger.error(f"Failed to drop collection: {str(e)}")
             return False
 
-    async def get_collection_stats(self) -> Dict[str, Any]:
-        """Get collection statistics"""
+    def get_collection_stats(self) -> Dict[str, Any]:
         try:
-            collection = await self._get_collection()
-
-            stats = {
-                "num_entities": collection.num_entities,
-                "collection_name": self.collection_name,
+            stats = self._client.get_collection_stats(self.collection_name)
+            return {
+                "num_entities"    : int(stats.get("row_count", 0)),
+                "collection_name" : self.collection_name,
                 "vector_dimension": self.vector_dimension,
-                "initialized": self._initialized
             }
-
-            return stats
-
         except Exception as e:
             logger.error(f"Failed to get collection stats: {str(e)}")
             return {}

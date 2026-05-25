@@ -1,10 +1,14 @@
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
-from uuid import UUID
+from fastapi import Form
+from typing import Optional
 
 
-class ChatRequest(BaseModel):
-    conversation_id: UUID
-    message: str
-    user_id: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
+class ChatRequest:
+    def __init__(
+        self,
+        conversation_id: str = Form(...),
+        message: str = Form(...),
+        user_id: Optional[str] = Form(None),
+    ):
+        self.conversation_id = conversation_id
+        self.message = message
+        self.user_id = user_id

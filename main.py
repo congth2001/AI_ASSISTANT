@@ -3,6 +3,7 @@ Business Chatbot - Main Application Entry Point
 Clean Architecture + SOLID Principles
 """
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,20 +20,35 @@ def init_config_connections():
     # Initialize vector database connection
     # This is a placeholder - actual implementation would depend on the vector DB used
     # For example, if using Milvus:
-    # vector_db_client = MilvusClient(host=settings.vector_db.host, port=settings.vector_db.port)
+    # vector_db_client = MilvusAdapter(host=settings.vector_db.host, port=settings.vector_db.port)
     # container.vector_db.override(vector_db_client)
+
+async def init_db(engine):
+    """Create all database tables if they don't exist"""
+    from src.infrastructure.persistence.models import Base
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
-    # Load settings using config manager
     settings = get_settings()
+
+    container.config.from_dict(settings.model_dump())
+    container.database_url.override(settings.database.url)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        await init_db(container.engine())
+        yield
 
     app = FastAPI(
         title="Business Chatbot API",
         description="AI-powered business assistant for data analysis and insights",
         version="1.0.0",
         docs_url="/docs",
-        redoc_url="/redoc"
+        redoc_url="/redoc",
+        lifespan=lifespan,
     )
 
     # Configure CORS
@@ -43,10 +59,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    # Configure dependency injection
-    container.config.from_dict(settings.model_dump())
-    container.database_url.override(settings.database.url)
 
     # Wire dependencies
     container.wire(

@@ -1,0 +1,103 @@
+
+<< MUST HAVE >>:
+---------1. QUERY ANALYZER: Phân tích câu hỏi đầu vào-------------
+
+Raw Query
+    │
+    ▼
+[Layer 1] Cache lookup          → hit? trả ngay, 0 cost
+    │
+    ▼
+[Layer 2] Rule-based extractor  → extract ~70% câu đơn giản
+    │
+    ▼
+[Layer 3] Small model (local)   → xử lý câu trung bình
+    │
+    ▼
+[Layer 4] LLM API               → chỉ câu phức tạp thực sự
+
+---------2. KNOWLEDGE RETRIEVAL: Tìm kiếm thông tin liên quan-------------
+
+User Query
+    │
+    ▼
+[Step 1] Query Understanding
+    │
+    ▼
+[Step 2] Knowledge Base Search
+    │
+    ▼  
+[Step 3] Relevance Scoring
+    │
+    ▼
+[Step 4] Top-K Retrieval
+
+---------3. ANSWER GENERATION: Tạo câu trả lời dựa trên thông tin đã tìm được-------------
+
+Retrieved Knowledge
+    │
+    ▼
+[Step 1] Contextual Understanding
+    │
+    ▼
+[Step 2] Answer Synthesis
+    │
+    ▼
+[Step 3] Coherence Check
+    │
+    ▼
+[Step 4] Final Answer Generation
+
+---------4. FEEDBACK LOOP: Cải thiện hệ thống dựa trên phản hồi người dùng-------------
+
+User Feedback
+    │
+    ▼
+[Step 1] Feedback Collection
+    │
+    ▼
+[Step 2] Error Analysis
+    │
+    ▼
+[Step 3] Model Update
+    │
+    ▼
+[Step 4] Performance Monitoring
+
+---------5. SYSTEM ARCHITECTURE: Kiến trúc hệ thống tổng thể-------------
+
+User Interface
+    │
+    ▼
+[Frontend] → [Backend API] → [Query Analyzer] → [Knowledge Retrieval] → [Answer Generation]
+    │
+    ▼
+[Database] ← [Feedback Loop]
+
+
+
+<< NICE TO HAVE >>:
+---------6. PERFORMANCE OPTIMIZATION: Tối ưu hiệu suất hệ thống-------------
+[Step 1] Caching Mechanism
+[Step 2] Load Balancing
+[Step 3] Asynchronous Processing
+[Step 4] Model Distillation
+[Step 5] Resource Scaling
+---------7. SECURITY AND PRIVACY: Bảo mật và bảo vệ dữ liệu người dùng-------------
+[Step 1] Data Encryption
+[Step 2] Access Control
+[Step 3] Anonymization
+[Step 4] Compliance with Regulations
+[Step 5] Regular Security Audits
+---------8. USER EXPERIENCE: Cải thiện trải nghiệm người dùng-------------
+[Step 1] Intuitive Interface
+[Step 2] Personalization
+[Step 3] Real-time Feedback
+[Step 4] Multi-language Support
+[Step 5] Accessibility Features
+---------9. FUTURE DIRECTIONS: Hướng phát triển trong tương lai-------------
+[Step 1] Integration with Emerging Technologies
+[Step 2] Expansion of Knowledge Base
+[Step 3] Continuous Learning Capabilities
+[Step 4] Enhanced Multimodal Support
+[Step 5] Collaboration with External Systems

@@ -5,7 +5,7 @@ from datetime import date
 
 from config.container import Container
 from src.application.use_cases.query_report_use_case import QueryReportUseCase
-from src.domain.value_objects.date_range import DateRange
+from src.domain.entities.date_range import DateRange
 
 router = APIRouter()
 

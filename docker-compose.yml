@@ -80,17 +80,18 @@ services:
       retries: 3
 
   postgres:
-    image: postgres:15
+    image: postgres:16
     environment:
       POSTGRES_USER: congvq
       POSTGRES_PASSWORD: congvq
       POSTGRES_DB: ai_assistant
+      TZ: Asia/Ho_Chi_Minh
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "congvq"]
+      test: ["CMD", "pg_isready", "-U", "congvq", "-d", "ai_assistant"]
       interval: 30s
       timeout: 20s
       retries: 3
