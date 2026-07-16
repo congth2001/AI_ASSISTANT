@@ -1,7 +1,0 @@
-1. Vấn đề về câu hỏi đầu vào: Ngày nào trong tháng 6 năm 2025 có doanh thu cao nhất?
-   - Hiện tại, việc phân tích câu hỏi để chọn primary intent và top-k trong việc tìm kiếm vector db chưa chính xác. 
-     Việc thiết kế db dẫn đến số lượng bản ghi được query lớn (30 với 1 tháng,..., 365 với 1 năm) -> lãng phí token sử dụng để LLM gen ra câu trả lời
-   - Đề xuất cải thiện: 
-     i/  Cải thiện entity QueryIntent để lựa chọn các trường dữ liệu truy xuất thông tin hữu ích hơn 
-     ii/ Tối ưu hóa thiết kế cơ sở dữ liệu để giảm số lượng bản ghi được query trong mỗi lần tìm kiếm
-

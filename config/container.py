@@ -1,31 +1,32 @@
 from dependency_injector import containers
-from dependency_injector.providers import Configuration, Dependency, Singleton
+from dependency_injector.providers import Configuration, Singleton
 
 from src.application.use_cases.chat_use_case import ChatUseCase
-from src.application.use_cases.ingest_data_use_case import IngestDataUseCase
-from src.application.use_cases.query_report_use_case import QueryReportUseCase
 from src.application.use_cases.search_document_use_case import SearchDocumentsUseCase
 from src.application.use_cases.analytics_use_case import AnalyticsUseCase
-from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
-from src.application.services.rag_orchestrator import RAGOrchestrator
+from src.application.use_cases.sync_business_data_use_case import SyncBusinessDataUseCase
+from src.application.use_cases.conversation_use_case import ConversationUseCase
 from src.application.services.query_analyzer import QueryAnalyzer
+from src.application.services.query_contextualizer import QueryContextualizer
+from src.application.services.intent_classifier import IntentClassifier
 from src.application.services.context_builder import ContextBuilder
+from src.application.services.schema_linker import SchemaLinker
+from src.application.services.sql_service import SQLService
+from src.application.agent.tools.text_to_sql import TextToSQLTool
+from src.application.agent.tools.rag_tool import RAGTool
+from src.application.agent.agent_service import AgentService
 
+from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
 from src.infrastructure.repositories.milvus_search_repository import MilvusSearchRepository
-from src.infrastructure.vector_db.milvus_adapter import MilvusAdapter
-from src.infrastructure.llm.openai_adapter import OpenAIAdapter
 from src.infrastructure.repositories.milvus_ingestion_repository import MilvusIngestionRepository
-from src.infrastructure.serializers.customer_serializer import CustomerSerializer
-from src.infrastructure.serializers.period_summary_serializer import PeriodSummarySerializer
-from src.infrastructure.serializers.transaction_serializer import TransactionSerializer
-from src.infrastructure.vector_db.milvus_adapter import MilvusAdapter
-from src.infrastructure.embedding.openai_embedding import OpenAIEmbedding
-from src.infrastructure.persistence.conversation_repository import ConversationRepository
-from src.infrastructure.persistence.business_data_repository import BusinessDataRepository
+from src.infrastructure.repositories.conversation_repository import ConversationRepository
+from src.infrastructure.repositories.invoice_good_repository import InvoiceGoodRepository
+from src.infrastructure.repositories.invoice_customer_repository import InvoiceCustomerRepository
+from src.infrastructure.database.milvus_client import MilvusClient
+from src.infrastructure.database.postgres_client import PostgresClient
+from src.infrastructure.llm.openai_adapter import OpenAIAdapter
+from src.infrastructure.llm.openai_embedding import OpenAIEmbedding
 from src.infrastructure.cache.redis_cache import RedisCache
-
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
 
 
 class Container(containers.DeclarativeContainer):
@@ -35,22 +36,20 @@ class Container(containers.DeclarativeContainer):
     config = Configuration()
 
     # Database
-    database_url = Dependency()
-    engine = Singleton(
-        create_async_engine,
-        url=database_url,
-        echo=False
+    postgres_client = Singleton(
+        PostgresClient,
+        host=config.database.host,
+        port=config.database.port,
+        username=config.database.username,
+        password=config.database.password,
+        db_name=config.database.db_name,
+        echo=config.database.echo,
     )
 
-    session_factory = Singleton(
-        sessionmaker,
-        bind=engine,
-        class_=AsyncSession,
-        expire_on_commit=False
-    )
-    
+    session_factory = postgres_client.provided.session_factory
+
     milvus_client = Singleton(
-        MilvusAdapter,
+        MilvusClient,
         host=config.vector_db.host,
         port=config.vector_db.port,
         collection_name=config.vector_db.collection_name,
@@ -67,7 +66,7 @@ class Container(containers.DeclarativeContainer):
 
     # Infrastructure - Vector DB
     # vector_db = Singleton(
-    #     MilvusAdapter,
+    #     MilvusClient,
     #     uri=config.vector_db.uri
     # )
 
@@ -99,8 +98,13 @@ class Container(containers.DeclarativeContainer):
         session_factory=session_factory
     )
 
-    business_data_repo = Singleton(
-        BusinessDataRepository,
+    invoice_customer_repo = Singleton(
+        InvoiceCustomerRepository,
+        session_factory=session_factory
+    )
+    
+    invoice_good_repo = Singleton(
+        InvoiceGoodRepository,
         session_factory=session_factory
     )
 
@@ -113,35 +117,39 @@ class Container(containers.DeclarativeContainer):
         password=config.cache.password
     )
 
-    # Infrastructure - Serializers
-    transaction_serializer = Singleton(TransactionSerializer)
-    customer_serializer = Singleton(CustomerSerializer)
-    period_serializer = Singleton(PeriodSummarySerializer)
-
     # Application Services
     context_builder = Singleton(ContextBuilder)
 
-    rag_orchestrator = Singleton(
-        RAGOrchestrator,
-        vector_db=milvus_client,
-        embedding_service=embedding_service,
+    intent_classifier = Singleton(
+        IntentClassifier,
         llm_service=llm_service,
-        context_builder=context_builder
+    )
+
+    query_contextualizer = Singleton(
+        QueryContextualizer,
+        llm_service=llm_service,
     )
 
     query_analyzer = Singleton(
         QueryAnalyzer,
-        document_dir="data/ingestions",
+        customer_repo=invoice_customer_repo,
+        good_repo=invoice_good_repo,
     )
 
     analytics_repository = Singleton(
         AnalyticsRepository,
-        data_path="data/ingestions/transactions.jsonl",
+        engine=postgres_client.provided.engine,
     )
+
+    # SQL pipeline services (steps 4-6)
+    schema_linker = Singleton(SchemaLinker)
+    sql_service = Singleton(SQLService, llm_service=llm_service)
 
     analytics_use_case = Singleton(
         AnalyticsUseCase,
         analytics_repo=analytics_repository,
+        schema_linker=schema_linker,
+        sql_service=sql_service,
     )
 
     # Use Cases
@@ -151,27 +159,45 @@ class Container(containers.DeclarativeContainer):
         query_analyzer=query_analyzer,
     )
 
+    sync_business_data_use_case = Singleton(
+        SyncBusinessDataUseCase,
+        invoice_customer_repository=invoice_customer_repo,
+        invoice_good_repository=invoice_good_repo,
+    )
+
+    use_case_conversation = Singleton(
+        ConversationUseCase,
+        conversation_repo=conversation_repo,
+    )
+
+    # Agent tools
+    text_to_sql_tool = Singleton(
+        TextToSQLTool,
+        analytics_use_case=analytics_use_case,
+    )
+
+    rag_tool = Singleton(
+        RAGTool,
+        search_use_case=search_documents_use_case,
+        context_builder=context_builder,
+    )
+
+    # Agent service (holds compiled LangGraph)
+    agent_service = Singleton(
+        AgentService,
+        classifier       =intent_classifier,
+        query_analyzer   =query_analyzer,
+        contextualizer   =query_contextualizer,
+        text_to_sql_tool =text_to_sql_tool,
+        rag_tool         =rag_tool,
+        llm_service      =llm_service,
+    )
+
     chat_use_case = Singleton(
         ChatUseCase,
-        llm_service        =llm_service,
-        conversation_repo  =conversation_repo,
-        search_use_case    =search_documents_use_case,
-        context_builder    =context_builder,
-        analytics_use_case =analytics_use_case,
-    )
-
-    ingest_data_use_case = Singleton(
-        IngestDataUseCase,
-        transaction_serializer=transaction_serializer,
-        customer_serializer   =customer_serializer,
-        period_serializer     =period_serializer,
-        repository            =milvus_ingestion_repository,
-    )
-
-    query_report_use_case = Singleton(
-        QueryReportUseCase,
-        data_repo  =business_data_repo,
-        llm_service=llm_service,
+        agent_service    =agent_service,
+        conversation_repo=conversation_repo,
+        cache_service    =cache_service,
     )
 
 

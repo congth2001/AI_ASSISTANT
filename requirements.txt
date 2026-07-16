@@ -13,12 +13,16 @@ orjson>=3.10.16
 
 # --- DATABASE & ORM ---
 SQLAlchemy>=2.0.40
+alembic>=1.13.0
 aiosqlite>=0.20.0  # For development/testing
 asyncpg>=0.29.0    # For PostgreSQL production
 
 # --- LLM & AI PROVIDERS ---
 # OpenAI
 openai>=1.75.0
+
+# LangGraph — agent graph framework
+langgraph>=0.2.0
 
 # Anthropic (optional)
 anthropic>=0.40.0

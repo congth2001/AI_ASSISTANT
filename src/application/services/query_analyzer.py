@@ -1,17 +1,18 @@
 import os
 import sys
+import time
 import json
 from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
 import re
-from src.domain.interfaces.i_llm_service import ILLMService
 from src.domain.entities.analyzed_query import AnalyzedQuery
 from src.domain.entities.time_filter import TimeFilter
-from src.domain.value_objects.doc_type import DocType
-from src.domain.value_objects.query_intent import QueryIntent
-from src.domain.value_objects.aggregation_type import AggregationType
-from src.domain.value_objects.intent_extractor import IntentExtractor
+from src.domain.constants.doc_type import DocType
+from src.domain.constants.query_intent import QueryIntent
+from src.domain.constants.intent_extractor import IntentExtractor
+from src.domain.repositories.i_invoice_customer_repository import IInvoiceCustomerRepository
+from src.domain.repositories.i_invoice_good_repository import IInvoiceGoodRepository
 from rapidfuzz import fuzz, process
 
 
@@ -23,55 +24,52 @@ class QueryAnalyzer:
     Toàn bộ rule-based + fuzzy matching.
     """
 
+    TTL_SECONDS = 60 * 60  # refresh entity lists every 1 hour
+
     def __init__(
         self,
-        document_dir: str | None = None,
+        customer_repo: IInvoiceCustomerRepository | None = None,
+        good_repo: IInvoiceGoodRepository | None = None,
+        customer_names: list[str] | None = None,
+        category_names: list[str] | None = None,
         fuzzy_threshold: int = 75,
-        llm_service: ILLMService = None,  # placeholder cho future LLM-based analysis
     ):
-        if document_dir is None:
-            document_dir = str(
-                Path(__file__).resolve().parent.parent.parent.parent / "data" / "ingestions"
-            )
-        self.document_dir    = document_dir
-        self.fuzzy_threshold = fuzzy_threshold
-        self.llm_service     = llm_service
-        self._read_jsonl_file()
+        self.fuzzy_threshold  = fuzzy_threshold
+        self._customer_repo   = customer_repo
+        self._good_repo       = good_repo
+        self._loaded_at: float | None = None
+        self._set_entity_lists(customer_names or [], category_names or [])
 
-        # Pre-build normalized lookup để tăng tốc fuzzy match
-        self._norm_customers = [self._normalize_name(n) for n in self.customer_names]
-        self._norm_categories= [c.lower().strip() for c in self.category_names]
-        self._norm_products  = [p.lower().strip() for p in self.product_names]
+    async def ensure_fresh(self) -> None:
+        """Reload entity lists from DB if TTL has expired."""
+        if self._customer_repo is None or self._good_repo is None:
+            return
+        now = time.monotonic()
+        if self._loaded_at is not None and now - self._loaded_at < self.TTL_SECONDS:
+            return
+        customers = await self._customer_repo.list(limit=50000)
+        customer_names = list({c["name"] for c in customers if c.get("name")})
+        category_names = await self._good_repo.list_categories()
+        self._set_entity_lists(customer_names, category_names)
+        self._loaded_at = time.monotonic()
 
-    # Helper methods
-    @staticmethod
-    def _load_jsonl(path: Path, meta_key: str) -> list[str]:
-        results: list[str] = []
-        seen: set[str] = set()
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    name = json.loads(line).get("metadata", {}).get(meta_key, "").strip()
-                    if name and name not in seen:
-                        seen.add(name)
-                        results.append(name)
-                except json.JSONDecodeError:
-                    continue
-        return results
+    def load_entities(
+        self,
+        customer_names: list[str],
+        category_names: list[str],
+    ) -> None:
+        self._set_entity_lists(customer_names, category_names)
+        self._loaded_at = time.monotonic()
 
-    def _read_jsonl_file(self):
-        out = Path(self.document_dir)
-        sources = [
-            ("customers.jsonl",  "ten_kh",        "customer_names"),
-            ("categories.jsonl", "loai_mat_hang",  "category_names"),
-            ("products.jsonl",   "ten_hang",       "product_names"),
-        ]
-        for filename, meta_key, attr in sources:
-            path = out / filename
-            setattr(self, attr, self._load_jsonl(path, meta_key) if path.exists() else [])
+    def _set_entity_lists(
+        self,
+        customer_names: list[str],
+        category_names: list[str],
+    ) -> None:
+        self.customer_names   = customer_names
+        self._norm_customers  = [self._normalize_name(n) for n in customer_names]
+        self.category_names   = category_names
+        self._norm_categories = [n.lower().strip() for n in category_names]
 
     # ─────────────────────────────
     # Public API
@@ -87,29 +85,14 @@ class QueryAnalyzer:
             primary_intent = QueryIntent.UNKNOWN,
         )
 
-        # Chạy từng bước phân tích
         self._extract_intents(result)
+        # self._extract_customer_name(result)
         self._extract_time(result)
         self._extract_invoice_id(result)
-        self._extract_customer(result)
-        self._extract_category(result)
-        self._extract_product(result)
-        self._detect_analytics(result)
-
-        # Xác định doc_types cần search
         self._resolve_doc_types(result)
-
-        # Build Milvus filter expression
         self._build_milvus_filter(result)
 
-        # Đánh dấu cần LLM fallback nếu không tự tin
-        result.needs_llm_fallback = (
-            result.primary_intent == QueryIntent.UNKNOWN
-            or (result.customer_name and result.customer_score < 80)
-        )
-
         return result
-
 
     # ─────────────────────────────
     # Step 1: Intent classification
@@ -119,10 +102,14 @@ class QueryAnalyzer:
         text = result.normalized
         matched: list[tuple[QueryIntent, int]] = []
 
-        for intent, keywords in IntentExtractor.INTENT_PATTERNS.items():
-            score = sum(1 for kw in keywords if kw in text)
-            if score > 0:
-                matched.append((intent, score))
+        for intent, (rank, keywords) in IntentExtractor.INTENT_PATTERNS.items():
+            rank_score = 0
+            for kw in keywords:
+                if not kw in text:
+                    continue
+                rank_score += rank
+            if rank_score > 0:
+                matched.append((intent, rank_score))
 
         if not matched:
             result.intents        = [QueryIntent.UNKNOWN]
@@ -133,12 +120,6 @@ class QueryAnalyzer:
         matched.sort(key=lambda x: x[1], reverse=True)
         result.intents        = [m[0] for m in matched]
         result.primary_intent = matched[0][0]
-
-        # DEBT thắng CUSTOMER khi cả 2 xuất hiện (keyword "anh/chị" overlap nhiều)
-        # INVOICE chỉ được set bởi _extract_invoice_id khi tìm được mã phiếu thực,
-        # không set ở đây vì top_k=1 không phù hợp cho query không có mã cụ thể.
-        if QueryIntent.DEBT in result.intents:
-            result.primary_intent = QueryIntent.DEBT
 
     # ─────────────────────────────
     # Step 2: Time extraction
@@ -217,105 +198,7 @@ class QueryAnalyzer:
             result.primary_intent = QueryIntent.INVOICE
 
     # ─────────────────────────────
-    # Step 4: Customer name (fuzzy)
-    # ─────────────────────────────
-
-    def _extract_customer(self, result: AnalyzedQuery) -> None:
-        if result.primary_intent not in IntentExtractor.CUSTOMER_INTENTS:
-            return
-        if result.primary_intent == QueryIntent.INVOICE:
-            return
-
-        # Lọc stop words khỏi query trước khi match — tránh "mua gì gần đây" làm loãng score
-        query_norm = self._normalize_name(result.normalized)
-        query_tokens_clean = " ".join(
-            t for t in query_norm.split() if t not in IntentExtractor.QUERY_STOP_WORDS
-        )
-        query_norm = query_tokens_clean or query_norm  # fallback nếu xóa hết
-
-        # Exact substring — bỏ qua tên quá ngắn để tránh false positive
-        for i, norm_name in enumerate(self._norm_customers):
-            if len(norm_name) < 4:
-                continue
-            if norm_name in query_norm or query_norm in norm_name:
-                result.customer_name  = self.customer_names[i]
-                result.customer_score = 100
-                return
-
-        # Fuzzy match với weighted scoring — ưu tiên personal tokens
-        best_score = 0
-        best_idx   = -1
-
-        for idx, norm_name in enumerate(self._norm_customers):
-            if len(norm_name) < 4:
-                continue
-            score = self._weighted_customer_score(query_norm, norm_name)
-            if score > best_score:
-                best_score = score
-                best_idx   = idx
-
-        if best_idx >= 0 and best_score >= self.fuzzy_threshold:
-            result.customer_name  = self.customer_names[best_idx]
-            result.customer_score = best_score
-
-    # ─────────────────────────────
-    # Step 5: Category name (fuzzy)
-    # ─────────────────────────────
-
-    def _extract_category(self, result: AnalyzedQuery) -> None:
-        text = result.normalized
-
-        # Exact match — bỏ qua category quá ngắn (T, Y, ...) để tránh noise
-        for i, cat in enumerate(self._norm_categories):
-            if len(cat) < 3:
-                continue
-            if cat in text:
-                result.category_name = self.category_names[i]
-                return
-
-        # Fuzzy — chỉ khi intent liên quan đến hàng hóa
-        if result.primary_intent in (
-            QueryIntent.PRODUCT, QueryIntent.CATEGORY,
-            QueryIntent.RANKING, QueryIntent.REVENUE,
-        ):
-            # Chỉ fuzzy với category có độ dài hợp lý
-            valid_cats  = [(i, c) for i, c in enumerate(self._norm_categories)
-                            if len(c) >= 3]
-            valid_names = [c for _, c in valid_cats]
-            match = process.extractOne(
-                text,
-                valid_names,
-                scorer       = fuzz.partial_ratio,
-                score_cutoff = 80,
-            )
-            if match:
-                _, _, local_idx      = match
-                real_idx             = valid_cats[local_idx][0]
-                result.category_name = self.category_names[real_idx]
-
-    # ─────────────────────────────
-    # Step 6: Product name (fuzzy)
-    # ─────────────────────────────
-
-    def _extract_product(self, result: AnalyzedQuery) -> None:
-        if result.primary_intent not in (
-            QueryIntent.PRODUCT, QueryIntent.RANKING, QueryIntent.COMPARISON,
-        ):
-            return
-
-        text = result.normalized
-        match = process.extractOne(
-            text,
-            self._norm_products,
-            scorer       = fuzz.partial_ratio,
-            score_cutoff = 75,
-        )
-        if match:
-            _, _, idx          = match
-            result.product_name = self.product_names[idx]
-
-    # ─────────────────────────────
-    # Step 7: Resolve doc_types
+    # Step 4: Resolve doc_types
     # ─────────────────────────────
 
     def _resolve_doc_types(self, result: AnalyzedQuery) -> None:
@@ -339,13 +222,10 @@ class QueryAnalyzer:
                 if DocType.CATEGORY not in base:
                     extra.append(DocType.CATEGORY)
 
-        if result.product_name and DocType.PRODUCT not in base:
-            extra.append(DocType.PRODUCT)
-
         result.doc_types = base + extra
 
     # ─────────────────────────────
-    # Step 8: Build Milvus filter
+    # Step 5: Build Milvus filter
     # ─────────────────────────────
 
     def _build_milvus_filter(self, result: AnalyzedQuery) -> None:
@@ -379,125 +259,6 @@ class QueryAnalyzer:
         result.milvus_filter = " && ".join(parts)
 
     # ─────────────────────────────
-    # Step 9: Detect analytics need
-    # ─────────────────────────────
-
-    def _detect_analytics(self, result: AnalyzedQuery) -> None:
-        text = result.normalized
-        tf   = result.time_filter
-
-        # "ngày nào" → cần group-by day trên raw transactions
-        if any(p in text for p in ("ngày nào", "hôm nào", "ngày có doanh thu")):
-            result.needs_analytics  = True
-            result.aggregation_type = AggregationType.DAILY_REVENUE
-            return
-
-        # "tháng nào" trong năm cụ thể → group-by month
-        if "tháng nào" in text and tf.year:
-            result.needs_analytics  = True
-            result.aggregation_type = AggregationType.MONTHLY_REVENUE
-            return
-
-        # RANKING + có time filter → top N khách hàng trong kỳ
-        if result.primary_intent == QueryIntent.RANKING and not tf.is_empty:
-            result.needs_analytics  = True
-            result.aggregation_type = AggregationType.TOP_CUSTOMERS
-            n_match = re.search(r"\btop\s+(\d+)", text)
-            result.top_n = int(n_match.group(1)) if n_match else 10
-    
-    
-    # ────────────────────────────
-    # ALTERNATIVE: USING LLM FOR QUERY ANALYSIS
-    # ────────────────────────────
-    async def analyze_with_llm(self, query: str) -> AnalyzedQuery:
-        """Phân tích câu hỏi bằng LLM và trả về AnalyzedQuery có cấu trúc."""
-        if not self.llm_service:
-            raise ValueError("LLM service not configured")
-
-        normalized = query.lower().strip()
-
-        intents_desc = "\n".join(
-            f'  - "{i.value}": {i.name.lower().replace("_", " ")}' for i in QueryIntent
-        )
-        agg_desc = "\n".join(f'  - "{a.value}"' for a in AggregationType)
-
-        prompt = (
-            f"Phân tích câu hỏi kinh doanh và chỉ trả về JSON (không markdown, không giải thích).\n"
-            f"Q: \"{query}\"\n\n"
-            f"intents hợp lệ:\n{intents_desc}\n\n"
-            f"aggregation_type hợp lệ:\n{agg_desc}\n\n"
-            'Trả về JSON với các trường: primary_intent, intents (mảng, giảm dần độ phù hợp), '
-            'time_filter {day,month,quarter,year} (null nếu không đề cập), '
-            'customer_name (null nếu không có tên cụ thể), category_name, product_name, '
-            'invoice_id (null nếu không có mã phiếu, dạng XB12345-0125), '
-            'needs_analytics (true khi cần tổng hợp: top N, cao nhất, ...), '
-            'aggregation_type, top_n (mặc định 10).'
-        )
-
-        raw = await self.llm_service.generate_response(prompt)
-
-        # Strip markdown fences nếu LLM trả về
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = re.sub(r"^```(?:json)?\s*", "", raw)
-            raw = re.sub(r"\s*```$", "", raw.strip())
-
-        try:
-            data: dict = json.loads(raw)
-        except json.JSONDecodeError:
-            # JSON parse thất bại → fallback về rule-based
-            return self.analyze(query)
-
-        result = AnalyzedQuery(
-            original_query=query,
-            normalized=normalized,
-            intents=[],
-            primary_intent=QueryIntent.UNKNOWN,
-        )
-
-        # --- intents ---
-        intent_map = {i.value: i for i in QueryIntent}
-        primary_raw = data.get("primary_intent", "unknown")
-        result.primary_intent = intent_map.get(primary_raw, QueryIntent.UNKNOWN)
-        raw_intents = data.get("intents") or [primary_raw]
-        result.intents = [intent_map[v] for v in raw_intents if v in intent_map] or [result.primary_intent]
-
-        # --- time_filter ---
-        tf_data = data.get("time_filter") or {}
-        result.time_filter = TimeFilter(
-            day=tf_data.get("day"),
-            month=tf_data.get("month"),
-            quarter=tf_data.get("quarter"),
-            year=tf_data.get("year"),
-        )
-
-        # --- entities ---
-        result.customer_name  = data.get("customer_name") or None
-        result.customer_score = 90 if result.customer_name else 0
-        result.category_name  = data.get("category_name") or None
-        result.product_name   = data.get("product_name") or None
-        result.invoice_id     = data.get("invoice_id") or None
-
-        # INVOICE intent khi có mã phiếu rõ ràng
-        if result.invoice_id:
-            result.primary_intent = QueryIntent.INVOICE
-
-        # --- analytics ---
-        result.needs_analytics  = bool(data.get("needs_analytics", False))
-        agg_map = {a.value: a for a in AggregationType}
-        result.aggregation_type = agg_map.get(data.get("aggregation_type", "none"), AggregationType.NONE)
-        result.top_n            = int(data.get("top_n") or 10)
-
-        # --- reuse existing logic cho doc_types + milvus filter ---
-        self._resolve_doc_types(result)
-        self._build_milvus_filter(result)
-
-        result.needs_llm_fallback = False
-        return result
-
-        
-
-    # ─────────────────────────────
     # Helper
     # ─────────────────────────────
 
@@ -505,17 +266,20 @@ class QueryAnalyzer:
     def _normalize_name(text: str) -> str:
         """
         Normalize tên KH để tăng độ chính xác fuzzy match.
-        Bỏ prefix (Anh, Chị...), lowercase, strip khoảng trắng thừa.
+        Bỏ prefix (Anh, Chị...), chuẩn hóa "xóm N"→"xN" và "X N"→"XN", lowercase.
         """
         text = text.lower().strip()
         for prefix in IntentExtractor.CUSTOMER_PREFIXES:
             if text.startswith(prefix + " "):
                 text = text[len(prefix):].strip()
-        # Chuẩn hóa khoảng trắng
-        return re.sub(r"\s+", " ", text)
+        # "xóm N" → "xN"  (e.g. "xóm 3" → "x3", "xóm 10" → "x10")
+        text = re.sub(r"\bxóm\s*(\d+)\b", r"x\1", text)
+        # "letter space digit(s)" → "letterdigit"  (e.g. "x 3" → "x3", "c 12" → "c12")
+        text = re.sub(r"\b([a-z])\s+(\d+)\b", r"\1\2", text)
+        return re.sub(r"\s+", " ", text).strip()
     
     @staticmethod
-    def _weighted_customer_score(query_norm: str, candidate_norm: str) -> int:
+    def _weighted_customer_score(query_norm: str, candidate_norm: str, **_) -> int:
         query_tokens = set(query_norm.split())
         cand_tokens  = set(candidate_norm.split())
 
@@ -534,12 +298,35 @@ class QueryAnalyzer:
         # Personal gate phía trên đã loại false positive nên an toàn dùng set_ratio
         return fuzz.token_set_ratio(query_norm, candidate_norm)
 
+    def _extract_customer_name(self, result: AnalyzedQuery) -> None:
+        """Fuzzy-match tên KH trong query → canonical name từ DB customer list."""
+        if not self._norm_customers:
+            return
+
+        query_norm = self._normalize_name(result.normalized)
+
+        match = process.extractOne(
+            query_norm,
+            self._norm_customers,
+            scorer=self._weighted_customer_score,
+            score_cutoff=self.fuzzy_threshold,
+            processor=None,
+        )
+
+        if match:
+            _, score, idx = match
+            result.customer_name  = self.customer_names[idx]
+            result.customer_score = int(score)
+
 
 # ─────────────────────────────────────────────
 # 6. Demo
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    analyzer = QueryAnalyzer(document_dir="./data/ingestions")
+    analyzer = QueryAnalyzer(
+        customer_names=["Tiệc X3", "Khiêm X3", "Anh Minh"],
+        category_names=["Xi măng", "Gạch", "Sắt thép", "Sơn"],
+    )
 
     TEST_QUERIES = [
         "Doanh thu tháng 3/2025 là bao nhiêu?",
@@ -568,15 +355,10 @@ if __name__ == "__main__":
         if r.customer_name:
             print(f"   KH      : {r.customer_name}  (score={r.customer_score})")
         if r.category_name:
-            print(f"   Danh mục: {r.category_name}")
-        if r.product_name:
-            print(f"   Sản phẩm: {r.product_name}")
+            print(f"   Danh mục: {r.category_name}  (score={r.category_score})")
         if r.invoice_id:
             print(f"   Phiếu   : {r.invoice_id}")
         print(f"   DocTypes: {[d.value for d in r.doc_types]}")
         print(f"   Filter  : {r.milvus_filter or '(none)'}")
-        if r.needs_analytics:
-            print(f"   ⚠️  Cần phân tích số liệu (aggregation: {r.aggregation_type.value})")
-        if r.needs_llm_fallback:
-            print(f"   ⚠️  Cần LLM fallback")
+        print(f"   Confidence: {r.routing_confidence:.2f}")
     print("\n" + "=" * 68)

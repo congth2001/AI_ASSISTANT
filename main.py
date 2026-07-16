@@ -10,8 +10,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.config_manager import get_settings
 from config.container import container
 from src.presentation.api.v1.chat import router as chat_router
-from src.presentation.api.v1.reports import router as reports_router
-from src.presentation.api.v1.data import router as data_router
 
 def init_config_connections():
     """Initialize connections to external services based on config"""
@@ -20,26 +18,18 @@ def init_config_connections():
     # Initialize vector database connection
     # This is a placeholder - actual implementation would depend on the vector DB used
     # For example, if using Milvus:
-    # vector_db_client = MilvusAdapter(host=settings.vector_db.host, port=settings.vector_db.port)
+    # vector_db_client = MilvusClient(host=settings.vector_db.host, port=settings.vector_db.port)
     # container.vector_db.override(vector_db_client)
-
-async def init_db(engine):
-    """Create all database tables if they don't exist"""
-    from src.infrastructure.persistence.models import Base
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
     settings = get_settings()
 
     container.config.from_dict(settings.model_dump())
-    container.database_url.override(settings.database.url)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        await init_db(container.engine())
+        # DB schema is managed by Alembic migrations — run `alembic upgrade head` before starting
         yield
 
     app = FastAPI(
@@ -64,8 +54,6 @@ def create_app() -> FastAPI:
     container.wire(
         modules=[
             "src.presentation.api.v1.chat",
-            "src.presentation.api.v1.reports",
-            "src.presentation.api.v1.data",
         ]
     )
 
@@ -76,17 +64,6 @@ def create_app() -> FastAPI:
         tags=["chat"]
     )
 
-    app.include_router(
-        reports_router,
-        prefix="/api/v1",
-        tags=["reports"]
-    )
-
-    app.include_router(
-        data_router,
-        prefix="/api/v1",
-        tags=["data"]
-    )
 
     # Health check endpoint
     @app.get("/health")

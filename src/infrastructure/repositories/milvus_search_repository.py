@@ -2,10 +2,10 @@ import re
 from typing import Optional
 
 from src.domain.interfaces.i_embedding_service import IEmbeddingService
-from src.domain.interfaces.i_search_repository import ISearchRepository
+from src.domain.repositories.i_search_repository import ISearchRepository
 from src.domain.entities.analyzed_query import AnalyzedQuery
-from src.domain.value_objects.query_intent import QueryIntent
-from src.domain.value_objects.search_config import SearchConfig
+from src.domain.constants.query_intent import QueryIntent
+from src.domain.constants.search_config import SearchConfig
 from src.domain.entities.search_result import SearchResult
 from src.domain.interfaces.i_vector_db import IVectorDB
 

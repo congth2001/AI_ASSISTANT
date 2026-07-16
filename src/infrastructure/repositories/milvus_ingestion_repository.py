@@ -1,5 +1,5 @@
 import asyncio
-from src.domain.interfaces.i_ingestion_repository import IIngestionRepository
+from src.domain.repositories.i_ingestion_repository import IIngestionRepository
 from src.domain.entities.document_chunk import DocumentChunk
 from src.domain.interfaces.i_embedding_service import IEmbeddingService
 from src.domain.interfaces.i_vector_db import IVectorDB

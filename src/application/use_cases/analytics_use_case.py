@@ -1,102 +1,143 @@
+"""
+Analytics pipeline — steps 4-7 của LLM-to-SQL pipeline.
+  4. Schema Linking  — map entity → tên bảng/cột thực
+  5. SQL Generation  — LLM sinh list[SQLQueryPlan], tự quyết bao nhiêu query
+  6. SQL Validation  — safety layer, validate từng plan
+  7. Execute & Format — chạy từng query trên PostgreSQL, gộp kết quả thành ngôn ngữ tự nhiên
+"""
+from typing import Tuple, List
 from src.domain.entities.analyzed_query import AnalyzedQuery
-from src.domain.entities.time_filter import TimeFilter
-from src.domain.value_objects.aggregation_type import AggregationType
+from src.application.services.schema_linker import SchemaLinker
+from src.application.services.sql_service import SQLService, SQLQueryPlan, SQLValidationError
 from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
+
+_SQL_MAX_RETRIES = 2
 
 
 class AnalyticsUseCase:
-    """
-    Xử lý các query cần aggregate toàn bộ raw transactions (group-by, top-N, max/min).
+    def __init__(
+        self,
+        analytics_repo: AnalyticsRepository,
+        schema_linker  : SchemaLinker,
+        sql_service    : SQLService,
+    ):
+        self.repo          = analytics_repo
+        self.schema_linker = schema_linker
+        self.sql_service   = sql_service
 
-    Input : AnalyzedQuery với needs_analytics=True
-    Output: str — bảng dữ liệu đã format, inject vào system prompt của LLM
-    """
+    async def execute(
+        self, analyzed: AnalyzedQuery
+    ) -> Tuple[List[str], str, bool, bool, str | None]:
+        # ── Step 4: Schema Linking ────────────────────────────────────────
+        linked = self.schema_linker.link(analyzed)
 
-    def __init__(self, analytics_repo: AnalyticsRepository):
-        self.repo = analytics_repo
+        # ── Step 5: SQL Generation — LLM quyết định số lượng query ───────
+        plans = await self.sql_service.generate(analyzed, linked)
+        if not plans:
+            return [], "Không thể xác định câu query phù hợp cho câu hỏi này.", False, False, "sql_generation_failed"
 
-    def execute(self, analyzed: AnalyzedQuery) -> str:
-        agg = analyzed.aggregation_type
-        tf  = analyzed.time_filter
+        # ── Step 6: Validation — kiểm tra từng plan ───────────────────────
+        try:
+            plans = self.sql_service.validate_all(plans)
+        except SQLValidationError as e:
+            return [], "Không thể tạo truy vấn dữ liệu an toàn.", False, False, "sql_validation_failed"
 
-        if agg == AggregationType.DAILY_REVENUE:
-            return self._daily_revenue(tf)
-        if agg == AggregationType.TOP_CUSTOMERS:
-            return self._top_customers(analyzed.top_n, tf)
-        if agg == AggregationType.MONTHLY_REVENUE:
-            return self._monthly_revenue(tf)
-        return ""
+        # ── Step 7: Execute & Format ──────────────────────────────────────
+        content, has_data, execution_ok = await self._execute_and_format(plans, analyzed)
+        return (
+            [plan.sql for plan in plans],
+            content,
+            execution_ok,
+            has_data,
+            None if execution_ok else "sql_execution_failed",
+        )
 
     # ─────────────────────────────
-    # Aggregation formatters
+    # Private helpers
     # ─────────────────────────────
 
-    def _daily_revenue(self, tf: TimeFilter) -> str:
-        if not tf.month or not tf.year:
-            return "Thiếu thông tin tháng/năm để tổng hợp doanh thu theo ngày."
+    async def _execute_and_format(
+        self, plans: list[SQLQueryPlan], analyzed: AnalyzedQuery
+    ) -> tuple[str, bool, bool]:
+        results: list[tuple[str, list, list[str]]] = []
+        has_data = False
+        successful_queries = 0
+        for plan in plans:
+            last_error: str | None = None
+            for attempt in range(_SQL_MAX_RETRIES + 1):
+                try:
+                    rows, cols = await self.repo.execute_sql(plan.sql)
+                    results.append((plan.intent, rows, cols))
+                    successful_queries += 1
+                    has_data = has_data or bool(rows)
+                    last_error = None
+                    break
+                except Exception as e:
+                    last_error = str(e)
+                    if attempt < _SQL_MAX_RETRIES:
+                        try:
+                            plan = await self.sql_service.repair(plan, last_error)
+                        except Exception:
+                            break
+            if last_error is not None:
+                results.append((plan.intent, [], [f"[Lỗi: {last_error}]"]))
 
-        df = self.repo.daily_revenue(tf.month, tf.year)
-        if df.empty:
-            return f"Không có dữ liệu giao dịch tháng {tf.month}/{tf.year}."
-
-        lines = [f"Doanh thu theo ngày — Tháng {tf.month}/{tf.year}:"]
-        for _, row in df.iterrows():
-            lines.append(f"  Ngày {int(row['day']):02d}: {int(row['doanh_thu']):,} VND")
-
-        max_row = df.loc[df["doanh_thu"].idxmax()]
-        min_row = df.loc[df["doanh_thu"].idxmin()]
-        lines.append(
-            f"\nCao nhất : Ngày {int(max_row['day']):02d} — {int(max_row['doanh_thu']):,} VND"
-        )
-        lines.append(
-            f"Thấp nhất: Ngày {int(min_row['day']):02d} — {int(min_row['doanh_thu']):,} VND"
-        )
-        return "\n".join(lines)
-
-    def _top_customers(self, n: int, tf: TimeFilter) -> str:
-        df = self.repo.top_customers(n, tf.month, tf.year)
-        if df.empty:
-            return "Không có dữ liệu phù hợp."
-
-        period = self._period_label(tf)
-        lines = [f"Top {n} khách hàng theo doanh thu{period}:"]
-        for rank, (_, row) in enumerate(df.iterrows(), 1):
-            name = row.get("ten_kh") or row["customer_id"]
-            lines.append(f"  {rank:2d}. {name}: {int(row['doanh_thu']):,} VND")
-        return "\n".join(lines)
-
-    def _monthly_revenue(self, tf: TimeFilter) -> str:
-        if not tf.year:
-            return "Thiếu thông tin năm để tổng hợp doanh thu theo tháng."
-
-        df = self.repo.monthly_revenue(tf.year)
-        if df.empty:
-            return f"Không có dữ liệu giao dịch năm {tf.year}."
-
-        lines = [f"Doanh thu theo tháng — Năm {tf.year}:"]
-        for _, row in df.iterrows():
-            lines.append(f"  Tháng {int(row['month']):02d}: {int(row['doanh_thu']):,} VND")
-
-        max_row = df.loc[df["doanh_thu"].idxmax()]
-        min_row = df.loc[df["doanh_thu"].idxmin()]
-        lines.append(
-            f"\nCao nhất : Tháng {int(max_row['month']):02d} — {int(max_row['doanh_thu']):,} VND"
-        )
-        lines.append(
-            f"Thấp nhất: Tháng {int(min_row['month']):02d} — {int(min_row['doanh_thu']):,} VND"
-        )
-        return "\n".join(lines)
-
-    # ─────────────────────────────
-    # Helper
-    # ─────────────────────────────
+        return self._format_results(results, analyzed), has_data, successful_queries > 0
 
     @staticmethod
-    def _period_label(tf: TimeFilter) -> str:
-        if tf.month and tf.year:
-            return f" — Tháng {tf.month}/{tf.year}"
-        if tf.quarter and tf.year:
-            return f" — Quý {tf.quarter}/{tf.year}"
-        if tf.year:
-            return f" — Năm {tf.year}"
+    def _format_results(
+        results: list[tuple[str, list, list[str]]],
+        analyzed: AnalyzedQuery,
+    ) -> str:
+        sections: list[str] = [f"Câu hỏi: {analyzed.original_query}", ""]
+
+        for intent, rows, cols in results:
+            sections.append(f"[{intent}]")
+
+            if not rows:
+                sections.append("  Không có dữ liệu.")
+                sections.append("")
+                continue
+
+            # Bỏ qua nếu cols là error message
+            if len(cols) == 1 and cols[0].startswith("[Lỗi"):
+                sections.append(f"  {cols[0]}")
+                sections.append("")
+                continue
+
+            # Header + rows
+            col_widths = [
+                max(len(c), max((len(_fmt_cell(r[i])) for r in rows), default=0))
+                for i, c in enumerate(cols)
+            ]
+            header = " | ".join(c.ljust(col_widths[i]) for i, c in enumerate(cols))
+            sep    = "-+-".join("-" * w for w in col_widths)
+            sections.append(f"  {header}")
+            sections.append(f"  {sep}")
+            for row in rows:
+                cells = [_fmt_cell(row[i]).ljust(col_widths[i]) for i in range(len(cols))]
+                sections.append("  " + " | ".join(cells))
+
+            # Tóm tắt max/min nếu có nhiều dòng và cột doanh_thu
+            revenue_col = next((c for c in cols if "doanh_thu" in c or "tong" in c), None)
+            if revenue_col and len(rows) > 2:
+                idx = cols.index(revenue_col)
+                try:
+                    max_row = max(rows, key=lambda r: float(r[idx]) if r[idx] is not None else 0)
+                    min_row = min(rows, key=lambda r: float(r[idx]) if r[idx] is not None else 0)
+                    sections.append(f"  → Cao nhất: {dict(zip(cols, max_row))}")
+                    sections.append(f"  → Thấp nhất: {dict(zip(cols, min_row))}")
+                except (TypeError, ValueError):
+                    pass
+
+            sections.append("")
+
+        return "\n".join(sections).rstrip()
+
+
+def _fmt_cell(val) -> str:
+    if val is None:
         return ""
+    if isinstance(val, float):
+        return f"{val:,.0f}"
+    return str(val)

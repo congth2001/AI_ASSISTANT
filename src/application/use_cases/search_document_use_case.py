@@ -2,9 +2,9 @@
 Orchestrate việc tìm kiếm documents liên quan đến câu hỏi của user.
 """
 from src.application.services.query_analyzer import QueryAnalyzer
-from src.domain.interfaces.i_search_repository import ISearchRepository
+from src.domain.repositories.i_search_repository import ISearchRepository
 from src.domain.entities.analyzed_query import AnalyzedQuery
-from src.domain.value_objects.query_intent import QueryIntent
+from src.domain.constants.query_intent import QueryIntent
 from src.domain.entities.search_document_result import SearchDocumentsResult
 from src.domain.entities.search_result import SearchResult
 
@@ -66,7 +66,6 @@ class SearchDocumentsUseCase:
         has_entity = any([
             analyzed.customer_name,
             analyzed.category_name,
-            analyzed.product_name,
             analyzed.invoice_id,
             not analyzed.time_filter.is_empty,
         ])

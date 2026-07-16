@@ -1,14 +1,8 @@
-from fastapi import Form
+from pydantic import BaseModel
 from typing import Optional
 
 
-class ChatRequest:
-    def __init__(
-        self,
-        conversation_id: str = Form(...),
-        message: str = Form(...),
-        user_id: Optional[str] = Form(None),
-    ):
-        self.conversation_id = conversation_id
-        self.message = message
-        self.user_id = user_id
+class ChatRequest(BaseModel):
+    conversation_id: str
+    message: str
+    user_id: Optional[str] = None

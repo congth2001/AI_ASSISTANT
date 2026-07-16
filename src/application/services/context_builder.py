@@ -16,17 +16,17 @@ class ContextBuilder:
 
     MAX_DOCS             = 5     # top-N docs by relevance score
     MAX_CHARS_PER_DOC    = 800   # truncation limit per doc to control tokens
-    MAX_HISTORY_MESSAGES = 10    # recent turns included in context
+    MAX_HISTORY_TURNS = 5     # recent user/assistant pairs included in context
 
     def __init__(
         self,
-        max_docs            : int = MAX_DOCS,
-        max_chars_per_doc   : int = MAX_CHARS_PER_DOC,
-        max_history_messages: int = MAX_HISTORY_MESSAGES,
+        max_docs          : int = MAX_DOCS,
+        max_chars_per_doc : int = MAX_CHARS_PER_DOC,
+        max_history_turns : int = MAX_HISTORY_TURNS,
     ):
-        self.max_docs             = max_docs
-        self.max_chars_per_doc    = max_chars_per_doc
-        self.max_history_messages = max_history_messages
+        self.max_docs          = max_docs
+        self.max_chars_per_doc = max_chars_per_doc
+        self.max_history_turns = max_history_turns
 
     # ─────────────────────────────────────────────────────────────────────
     # Public API
@@ -38,7 +38,7 @@ class ContextBuilder:
         messages    : List[Message],
         current_query: str,
     ) -> Dict[str, Any]:
-        aq   = search_result.analyzed_query
+        aq   = search_result.analyzed_query if search_result else None
         docs = self._format_documents(search_result)
 
         return {
@@ -48,17 +48,16 @@ class ContextBuilder:
             "has_data"           : bool(docs),
 
             # ── Query analysis metadata ──────────────────────────────────
-            "intent"       : aq.primary_intent.value,
-            "intents"      : [i.value for i in aq.intents],
-            "customer_name": aq.customer_name,
-            "category_name": aq.category_name,
-            "product_name" : aq.product_name,
-            "invoice_id"   : aq.invoice_id,
-            "time_filter"  : self._format_time_filter(aq.time_filter),
+            "intent"       : aq.primary_intent.value if aq else None,
+            "intents"      : [i.value for i in aq.intents] if aq else [],
+            "customer_name": aq.customer_name if aq else None,
+            "category_name": aq.category_name if aq else None,
+            "invoice_id"   : aq.invoice_id if aq else None,
+            "time_filter"  : self._format_time_filter(aq.time_filter) if aq else None,
 
             # ── Fallback awareness ───────────────────────────────────────
-            "used_fallback"  : search_result.used_fallback,
-            "fallback_warning": self._build_fallback_warning(search_result),
+            "used_fallback"  : search_result.used_fallback if search_result else False,
+            "fallback_warning": self._build_fallback_warning(search_result) if search_result else None,
 
             # ── Conversation context ─────────────────────────────────────
             "conversation_history": self._format_history(messages),
@@ -108,7 +107,7 @@ class ContextBuilder:
         parts = []
         for i, doc in enumerate(docs, 1):
             meta         = doc["metadata"]
-            header_parts = [f"[Tài liệu {i}]"]
+            header_parts = [f"[doc:{doc['doc_id']}]"]
 
             if meta.get("month") and meta.get("year"):
                 header_parts.append(f"Tháng {meta['month']}/{meta['year']}")
@@ -166,7 +165,11 @@ class ContextBuilder:
         return {"year": tf.year, "month": tf.month, "quarter": tf.quarter}
 
     def _format_history(self, messages: List[Message]) -> List[Dict[str, Any]]:
-        recent = messages[-self.max_history_messages :]
+        # messages is DESC (newest first); convert to chronological before pairing
+        chronological = list(reversed(messages[:self.max_history_turns * 2]))
+        pairs = [chronological[i:i + 2] for i in range(0, len(chronological) - 1, 2)
+                 if chronological[i].role == "user"]
+        recent = [msg for pair in pairs[-self.max_history_turns:] for msg in pair]
         return [
             {
                 "role"     : msg.role,

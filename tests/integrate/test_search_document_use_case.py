@@ -8,9 +8,9 @@ import pytest
 
 from src.application.use_cases.search_document_use_case import SearchDocumentsUseCase
 from src.domain.entities.analyzed_query import AnalyzedQuery
-from src.domain.value_objects.doc_type import DocType
-from src.domain.value_objects.query_intent import QueryIntent
-from src.domain.value_objects.search_config import SearchConfig
+from src.domain.constants.doc_type import DocType
+from src.domain.constants.query_intent import QueryIntent
+from src.domain.constants.search_config import SearchConfig
 from src.domain.entities.search_document_result import SearchDocumentsResult
 from src.domain.entities.search_result import SearchResult
 from src.domain.entities.time_filter import TimeFilter
