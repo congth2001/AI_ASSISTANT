@@ -30,7 +30,6 @@ def make_analyzed(
     time_filter: TimeFilter | None = None,
     invoice_id: str | None = None,
     category_name: str | None = None,
-    product_name: str | None = None,
     doc_types: list[DocType] | None = None,
 ) -> AnalyzedQuery:
     return AnalyzedQuery(
@@ -41,7 +40,6 @@ def make_analyzed(
         time_filter=time_filter or TimeFilter(),
         customer_name=customer_name,
         category_name=category_name,
-        product_name=product_name,
         invoice_id=invoice_id,
         doc_types=doc_types or [DocType.TRANSACTION],
     )

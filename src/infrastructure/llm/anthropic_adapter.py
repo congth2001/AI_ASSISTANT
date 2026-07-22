@@ -123,13 +123,13 @@ class AnthropicAdapter(ILLMService):
             response = self.client.messages.create(
                 model=self.model,
                 max_tokens=20,
-                system='Classify into one of: "text_to_sql", "rag", "hybrid". Return only valid JSON: {"route": "<label>"}',
+                system='Classify into one of: "text_to_sql", "rag", "hybrid", "conversation". Return only valid JSON: {"route": "<label>"}',
                 messages=[{"role": "user", "content": query}],
             )
             import json
             data = json.loads(response.content[0].text)
             route = data.get("route", "rag")
-            return route if route in ("text_to_sql", "rag", "hybrid") else "rag"
+            return route if route in ("text_to_sql", "rag", "hybrid", "conversation") else "conversation"
         except Exception:
             return "rag"
 

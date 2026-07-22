@@ -300,7 +300,9 @@ class ChatUseCase:
             "conversation_id": str(conversation.id),
             "user_id": conversation.user_id,
             "history": history,
-            "version": 2,
+            # Bump when routing/response semantics change so an old RAG fallback
+            # for small talk is not served after deploying the conversation route.
+            "version": 5,
         }
         serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         digest = hashlib.sha256(serialized.encode()).hexdigest()[:32]

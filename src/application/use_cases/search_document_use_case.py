@@ -20,11 +20,21 @@ class SearchDocumentsUseCase:
         context không đầy đủ, tránh hallucinate
     """
 
-    def __init__(self, search_repo: ISearchRepository, query_analyzer: QueryAnalyzer):
+    def __init__(
+        self,
+        search_repo: ISearchRepository,
+        query_analyzer: QueryAnalyzer | None = None,
+    ):
         self.repo = search_repo
         self.query_analyzer = query_analyzer
 
-    def execute(self, query: str) -> SearchDocumentsResult:
+    def execute(self, query: str | AnalyzedQuery) -> SearchDocumentsResult:
+        # Preserve the convenient pre-analyzed entry point for callers/tests
+        # while keeping string analysis available to API-level consumers.
+        if isinstance(query, AnalyzedQuery):
+            return self.execute_analyzed(query)
+        if self.query_analyzer is None:
+            raise ValueError("query_analyzer is required when execute() receives a string")
         analyzed = self.query_analyzer.analyze(query)
         return self.execute_analyzed(analyzed)
 

@@ -52,6 +52,7 @@ class ContextBuilder:
             "intents"      : [i.value for i in aq.intents] if aq else [],
             "customer_name": aq.customer_name if aq else None,
             "category_name": aq.category_name if aq else None,
+            "category_names": aq.category_names if aq else [],
             "invoice_id"   : aq.invoice_id if aq else None,
             "time_filter"  : self._format_time_filter(aq.time_filter) if aq else None,
 
@@ -146,7 +147,9 @@ class ContextBuilder:
 
         if aq.customer_name:
             parts.append(f"khách hàng '{aq.customer_name}'")
-        if aq.category_name:
+        if aq.category_names:
+            parts.append(f"các danh mục {aq.category_names}")
+        elif aq.category_name:
             parts.append(f"danh mục '{aq.category_name}'")
 
         if parts:

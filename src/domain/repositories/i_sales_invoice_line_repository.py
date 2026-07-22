@@ -1,15 +1,14 @@
 from abc import ABC, abstractmethod
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 
-class IInvoiceGoodRepository(ABC):
-
+class ISalesInvoiceLineRepository(ABC):
     @abstractmethod
     async def create(self, data: Dict[str, Any]) -> Dict[str, Any]:
         pass
 
     @abstractmethod
-    async def get_by_id(self, record_id: int) -> Optional[Dict[str, Any]]:
+    async def get_by_id(self, invoice_line_id: str) -> Optional[Dict[str, Any]]:
         pass
 
     @abstractmethod
@@ -17,10 +16,19 @@ class IInvoiceGoodRepository(ABC):
         pass
 
     @abstractmethod
+    async def upsert_snapshot(
+        self,
+        rows: List[Dict[str, Any]],
+        invoice_ids: List[str],
+    ) -> int:
+        """Reconcile a full line snapshot for the supplied invoices."""
+        pass
+
+    @abstractmethod
     async def list(
         self,
-        name: Optional[str] = None,
-        category: Optional[str] = None,
+        product_name: Optional[str] = None,
+        category_name: Optional[str] = None,
         invoice_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
@@ -32,5 +40,5 @@ class IInvoiceGoodRepository(ABC):
         pass
 
     @abstractmethod
-    async def delete(self, record_id: int) -> bool:
+    async def delete(self, invoice_line_id: str) -> bool:
         pass

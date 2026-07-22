@@ -22,6 +22,7 @@ class AnalyzedQuery:
     customer_name  : Optional[str] = None      # tên KH đã match
     customer_score : int = 0                   # fuzzy match score (0-100)
     category_name  : Optional[str] = None      # danh mục hàng
+    category_names : list[str] = field(default_factory=list)  # nhiều danh mục canonical
     category_score : int = 0                   # fuzzy match score (0-100)
     invoice_id     : Optional[str] = None      # số phiếu cụ thể
 
@@ -33,4 +34,4 @@ class AnalyzedQuery:
 
     aggregation_type : AggregationType = field(default_factory=lambda: AggregationType.NONE)
     query_strategy   : QueryStrategy = field(default_factory=lambda: QueryStrategy.SIMPLE)
-    top_n            : int = 10                # số lượng kết quả cho TOP_N
+    top_n            : Optional[int] = None    # chỉ đặt khi người dùng yêu cầu giới hạn

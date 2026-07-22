@@ -5,6 +5,7 @@ from typing import Any
 from src.application.agent.graph.state import AgentState
 from src.application.agent.graph.nodes import (
     make_analyze_query_node,
+    make_prepare_conversation_node,
     make_execute_text_to_sql_node,
     make_execute_rag_node,
     make_execute_hybrid_node,
@@ -42,6 +43,7 @@ def build_agent_graph(
 
     Graph topology:
         analyze_query (IntentClassifier — routing only)
+            ├─[conversation]─► prepare_conversation ─────────────────────────────►┐
             ├─[text_to_sql]──► execute_text_to_sql ──[has_data]──► generate_response
             │     (QueryAnalyzer runs here)         └─[no data]──► execute_rag ──►┐
             ├─[rag]──────────► execute_rag ──────────────────────────────────────►┤
@@ -70,6 +72,7 @@ def build_context_graph(
 
     Graph topology:
         analyze_query
+            ├─[conversation]─► prepare_conversation → END
             ├─[text_to_sql]──► execute_text_to_sql ──[has_data]──► END
             │                                        └─[no data]──► execute_rag → END
             ├─[rag]──────────► execute_rag → END
@@ -98,6 +101,7 @@ def _build_graph(
     graph.add_node("assess_request",      make_assess_request_node())
     graph.add_node("request_clarification", make_clarification_node())
     graph.add_node("analyze_query",       make_analyze_query_node(classifier, query_analyzer))
+    graph.add_node("prepare_conversation", make_prepare_conversation_node())
     graph.add_node("execute_text_to_sql",  make_execute_text_to_sql_node(text_to_sql_tool, query_analyzer, contextualizer))
     graph.add_node("execute_rag",          make_execute_rag_node(rag_tool, query_analyzer, contextualizer))
     graph.add_node("execute_hybrid",       make_execute_hybrid_node(text_to_sql_tool, rag_tool, query_analyzer, contextualizer))
@@ -127,8 +131,10 @@ def _build_graph(
             "text_to_sql": "execute_text_to_sql",
             "rag":         "execute_rag",
             "hybrid":      "execute_hybrid",
+            "conversation": "prepare_conversation",
         },
     )
+    graph.add_edge("prepare_conversation", "evaluate_context")
     graph.add_edge("execute_text_to_sql", "evaluate_context")
     graph.add_edge("execute_rag", "evaluate_context")
     graph.add_edge("execute_hybrid", "evaluate_context")
@@ -140,7 +146,12 @@ def _build_graph(
     graph.add_conditional_edges(
         "replan",
         route_after_analysis,
-        {"text_to_sql": "execute_text_to_sql", "rag": "execute_rag", "hybrid": "execute_hybrid"},
+        {
+            "text_to_sql": "execute_text_to_sql",
+            "rag": "execute_rag",
+            "hybrid": "execute_hybrid",
+            "conversation": "prepare_conversation",
+        },
     )
     if include_response:
         graph.add_edge("generate_response", "evaluate_response")

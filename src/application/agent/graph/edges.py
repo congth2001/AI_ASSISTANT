@@ -7,9 +7,9 @@ def route_after_analysis(state: AgentState) -> str:
 
 
 def route_after_text_to_sql(state: AgentState) -> str:
-    """Fall back to RAG when text_to_sql produced no data."""
+    """A successful SQL query is authoritative even when it returns no rows."""
     context = state.get("context") or {}
-    if context.get("has_data", False):
+    if context.get("has_data", False) or state.get("tool_success"):
         return "generate_response"
     return "rag"
 

@@ -95,6 +95,46 @@ def make_analyze_query_node(classifier: IntentClassifier, query_analyzer: QueryA
     return node
 
 
+def make_prepare_conversation_node():
+    """Prepare a direct conversational response without querying SQL or RAG."""
+    async def node(state: AgentState) -> dict:
+        async def operation():
+            context = {
+                "conversation_history": [
+                    {"role": message.role, "content": message.content}
+                    for message in reversed(
+                        state["messages"][:SearchConfig.HISTORY_WINDOW]
+                    )
+                ],
+                "current_query": state["query"],
+                "intent": "conversation",
+                "has_data": True,
+                "used_fallback": False,
+                "fallback_warning": None,
+                "sources": [],
+                "response_mode": "conversation",
+            }
+            return {
+                "context": context,
+                "tool_name": None,
+                "tool_success": True,
+                "tool_error_code": None,
+                "attempted_routes": [
+                    *state.get("attempted_routes", []),
+                    "conversation",
+                ],
+            }
+
+        return await _run_node(
+            state,
+            "prepare_conversation",
+            operation,
+            timeout_seconds=2,
+        )
+
+    return node
+
+
 # ─────────────────────────────────────────────
 # Layer 2 — execution
 # Full QueryAnalyzer runs here, not at routing level.
@@ -244,6 +284,16 @@ def make_evaluate_context_node():
                 return {"evaluation": {"decision": "respond", "reason": "grounded_context_available"}}
 
             attempted = state.get("attempted_routes", [])
+            if (
+                state.get("tool_name") == "text_to_sql"
+                and state.get("tool_success")
+            ):
+                return {
+                    "evaluation": {
+                        "decision": "respond",
+                        "reason": "sql_completed_without_matching_rows",
+                    }
+                }
             can_retry = state.get("iteration", 0) < state.get("max_iterations", 3)
             if can_retry and "text_to_sql" in attempted and "rag" not in attempted:
                 return {

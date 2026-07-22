@@ -4,7 +4,9 @@ from dependency_injector.providers import Configuration, Singleton
 from src.application.use_cases.chat_use_case import ChatUseCase
 from src.application.use_cases.search_document_use_case import SearchDocumentsUseCase
 from src.application.use_cases.analytics_use_case import AnalyticsUseCase
-from src.application.use_cases.sync_business_data_use_case import SyncBusinessDataUseCase
+from src.application.use_cases.sync_business_data_use_case import (
+    SyncBusinessDataUseCase,
+)
 from src.application.use_cases.conversation_use_case import ConversationUseCase
 from src.application.services.query_analyzer import QueryAnalyzer
 from src.application.services.query_contextualizer import QueryContextualizer
@@ -17,11 +19,22 @@ from src.application.agent.tools.rag_tool import RAGTool
 from src.application.agent.agent_service import AgentService
 
 from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
-from src.infrastructure.repositories.milvus_search_repository import MilvusSearchRepository
-from src.infrastructure.repositories.milvus_ingestion_repository import MilvusIngestionRepository
-from src.infrastructure.repositories.conversation_repository import ConversationRepository
-from src.infrastructure.repositories.invoice_good_repository import InvoiceGoodRepository
-from src.infrastructure.repositories.invoice_customer_repository import InvoiceCustomerRepository
+from src.infrastructure.repositories.milvus_search_repository import (
+    MilvusSearchRepository,
+)
+from src.infrastructure.repositories.milvus_ingestion_repository import (
+    MilvusIngestionRepository,
+)
+from src.infrastructure.repositories.conversation_repository import (
+    ConversationRepository,
+)
+from src.infrastructure.repositories.customer_repository import CustomerRepository
+from src.infrastructure.repositories.sales_invoice_repository import (
+    SalesInvoiceRepository,
+)
+from src.infrastructure.repositories.sales_invoice_line_repository import (
+    SalesInvoiceLineRepository,
+)
 from src.infrastructure.database.milvus_client import MilvusClient
 from src.infrastructure.database.postgres_client import PostgresClient
 from src.infrastructure.llm.openai_adapter import OpenAIAdapter
@@ -54,14 +67,12 @@ class Container(containers.DeclarativeContainer):
         port=config.vector_db.port,
         collection_name=config.vector_db.collection_name,
         vector_dimension=config.vector_db.vector_dimension,
-        metric_type=config.vector_db.metric_type
-    )        
+        metric_type=config.vector_db.metric_type,
+    )
 
     # Infrastructure - LLM
     llm_service = Singleton(
-        OpenAIAdapter,
-        api_key=config.llm.openai_api_key,
-        model=config.llm.model
+        OpenAIAdapter, api_key=config.llm.openai_api_key, model=config.llm.model
     )
 
     # Infrastructure - Vector DB
@@ -75,7 +86,7 @@ class Container(containers.DeclarativeContainer):
         OpenAIEmbedding,
         api_key=config.llm.openai_api_key,
         model=config.embedding.model,
-        vector_dimension=config.vector_db.vector_dimension
+        vector_dimension=config.vector_db.vector_dimension,
     )
 
     # Infrastructure - Milvus repository
@@ -83,29 +94,28 @@ class Container(containers.DeclarativeContainer):
         MilvusIngestionRepository,
         client=milvus_client,
         embedding_service=embedding_service,
-        embedding_dim=config.vector_db.vector_dimension
+        embedding_dim=config.vector_db.vector_dimension,
     )
-    
+
     milvus_search_repository = Singleton(
         MilvusSearchRepository,
         client=milvus_client,
-        embedding_service=embedding_service
+        embedding_service=embedding_service,
     )
 
     # Infrastructure - Persistence
     conversation_repo = Singleton(
-        ConversationRepository,
-        session_factory=session_factory
+        ConversationRepository, session_factory=session_factory
     )
 
-    invoice_customer_repo = Singleton(
-        InvoiceCustomerRepository,
-        session_factory=session_factory
+    customer_repo = Singleton(CustomerRepository, session_factory=session_factory)
+
+    sales_invoice_repo = Singleton(
+        SalesInvoiceRepository, session_factory=session_factory
     )
-    
-    invoice_good_repo = Singleton(
-        InvoiceGoodRepository,
-        session_factory=session_factory
+
+    sales_invoice_line_repo = Singleton(
+        SalesInvoiceLineRepository, session_factory=session_factory
     )
 
     # Infrastructure - Cache
@@ -114,7 +124,7 @@ class Container(containers.DeclarativeContainer):
         host=config.cache.host,
         port=config.cache.port,
         db=config.cache.db,
-        password=config.cache.password
+        password=config.cache.password,
     )
 
     # Application Services
@@ -132,8 +142,8 @@ class Container(containers.DeclarativeContainer):
 
     query_analyzer = Singleton(
         QueryAnalyzer,
-        customer_repo=invoice_customer_repo,
-        good_repo=invoice_good_repo,
+        customer_repo=customer_repo,
+        good_repo=sales_invoice_line_repo,
     )
 
     analytics_repository = Singleton(
@@ -155,14 +165,15 @@ class Container(containers.DeclarativeContainer):
     # Use Cases
     search_documents_use_case = Singleton(
         SearchDocumentsUseCase,
-        search_repo   =milvus_search_repository,
+        search_repo=milvus_search_repository,
         query_analyzer=query_analyzer,
     )
 
     sync_business_data_use_case = Singleton(
         SyncBusinessDataUseCase,
-        invoice_customer_repository=invoice_customer_repo,
-        invoice_good_repository=invoice_good_repo,
+        customer_repository=customer_repo,
+        sales_invoice_repository=sales_invoice_repo,
+        sales_invoice_line_repository=sales_invoice_line_repo,
     )
 
     use_case_conversation = Singleton(
@@ -185,19 +196,19 @@ class Container(containers.DeclarativeContainer):
     # Agent service (holds compiled LangGraph)
     agent_service = Singleton(
         AgentService,
-        classifier       =intent_classifier,
-        query_analyzer   =query_analyzer,
-        contextualizer   =query_contextualizer,
-        text_to_sql_tool =text_to_sql_tool,
-        rag_tool         =rag_tool,
-        llm_service      =llm_service,
+        classifier=intent_classifier,
+        query_analyzer=query_analyzer,
+        contextualizer=query_contextualizer,
+        text_to_sql_tool=text_to_sql_tool,
+        rag_tool=rag_tool,
+        llm_service=llm_service,
     )
 
     chat_use_case = Singleton(
         ChatUseCase,
-        agent_service    =agent_service,
+        agent_service=agent_service,
         conversation_repo=conversation_repo,
-        cache_service    =cache_service,
+        cache_service=cache_service,
     )
 
 
