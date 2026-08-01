@@ -1,0 +1,59 @@
+# ============================================================================
+# OPTIONAL SETTINGS (with defaults)
+# ============================================================================
+
+# LLM Configuration
+llm:
+    model: gpt-5.4-nano
+    temperature: 0.7
+    max_tokens: 4000
+    openai_api_key: "sk-your-openai-api-key"
+    anthropic_api_key: "sk-ant-XXXXXXXXXXXXXXXXXXXXXXXX"
+
+# Vector Database Configuration (Milvus)
+vector_db:
+    provider: milvus
+    host: localhost
+    port: 19530
+    collection_name: business_data
+    vector_dimension: 1024
+    metric_type: Cosine
+
+# Embedding Configuration
+embedding:
+    provider: openai
+    model: text-embedding-3-small
+
+# Database Configuration
+database:
+    host: localhost
+    port: 5432
+    username: congvq
+    password: congvq
+    db_name: ai_assistant
+    echo: false
+
+# Cache Configuration
+cache:
+    provider: redis
+    host: localhost
+    port: 6379
+    db: 0
+    password:
+
+# API Configuration
+api:
+    host: 0.0.0.0
+    port: 8000
+    debug: false
+    cors_origins:
+        - http://localhost:5173
+        - http://127.0.0.1:5173
+
+# Authentication (generate a strong random secret for every environment)
+auth:
+    jwt_secret: "replace-with-at-least-32-random-characters"
+    jwt_issuer: business-chatbot
+    jwt_audience: business-chatbot-web
+    access_token_minutes: 15
+    refresh_token_days: 30
