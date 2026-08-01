@@ -4,6 +4,7 @@ from typing import Optional, List
 from uuid import UUID, uuid4
 
 from src.domain.entities.message import Message
+from src.domain.time import now_vietnam
 
 @dataclass
 class Conversation:
@@ -20,10 +21,10 @@ class Conversation:
         if self.messages is None:
             self.messages = []
         if self.created_at is None:
-            self.created_at = datetime.now()
+            self.created_at = now_vietnam()
         if self.updated_at is None:
-            self.updated_at = datetime.now()
+            self.updated_at = now_vietnam()
 
     def add_message(self, message: Message):
         self.messages.append(message)
-        self.updated_at = datetime.now()
+        self.updated_at = now_vietnam()

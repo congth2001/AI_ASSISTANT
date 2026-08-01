@@ -2,6 +2,7 @@
 Business Chatbot - Main Application Entry Point
 Clean Architecture + SOLID Principles
 """
+import os
 import uvicorn
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -10,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.config_manager import get_settings
 from config.container import container
 from src.presentation.api.v1.chat import router as chat_router
+from src.presentation.api.v1.auth import router as auth_router
 
 def init_config_connections():
     """Initialize connections to external services based on config"""
@@ -41,10 +43,21 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Keep local development origins in YAML and inject deployed frontend origins
+    # at runtime, so config/local.yml never needs to be committed or rewritten.
+    cors_origins = list(settings.api.cors_origins)
+    public_origins = os.getenv("PUBLIC_FRONTEND_ORIGINS", "")
+    cors_origins.extend(
+        origin.strip().rstrip("/")
+        for origin in public_origins.split(",")
+        if origin.strip()
+    )
+    cors_origins = list(dict.fromkeys(cors_origins))
+
     # Configure CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -54,6 +67,7 @@ def create_app() -> FastAPI:
     container.wire(
         modules=[
             "src.presentation.api.v1.chat",
+            "src.presentation.api.v1.auth",
         ]
     )
 
@@ -63,6 +77,7 @@ def create_app() -> FastAPI:
         prefix="/api/v1",
         tags=["chat"]
     )
+    app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 
 
     # Health check endpoint

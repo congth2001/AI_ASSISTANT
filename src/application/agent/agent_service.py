@@ -31,6 +31,7 @@ class AgentService:
         llm_service: ILLMService,
         checkpointer: Any = None,
     ):
+        self._classifier = classifier
         self._llm_service = llm_service
         self._graph = build_agent_graph(
             classifier=classifier,
@@ -101,3 +102,22 @@ class AgentService:
         async with asyncio.timeout(60):
             async for token in self._llm_service.stream_response(query, context):
                 yield token
+
+    async def classify_route(self, query: str) -> str:
+        """Classify a query without executing SQL, RAG, or any data tool."""
+        return await self._classifier.classify(query)
+
+    async def stream_stateless_conversation(self, query: str) -> AsyncGenerator[str, None]:
+        """Answer without history or tools. Used for guests as a hard data boundary."""
+        context = {
+            "conversation_history": [],
+            "current_query": query,
+            "intent": "conversation",
+            "has_data": False,
+            "used_fallback": False,
+            "fallback_warning": None,
+            "sources": [],
+            "response_mode": "conversation",
+        }
+        async for token in self.stream_response(query, context):
+            yield token

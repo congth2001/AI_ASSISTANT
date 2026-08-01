@@ -1,8 +1,8 @@
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from src.domain.repositories.i_conversation_repository import IConversationRepository
+from src.domain.time import now_vietnam
 
 
 class ConversationUseCase:
@@ -22,32 +22,37 @@ class ConversationUseCase:
     async def get_conversation(
         self,
         conversation_id: UUID,
+        user_id: Optional[str],
         turn_limit: int = 50,
     ) -> Optional[Dict[str, Any]]:
-        return await self.conversation_repo.get_conversation(conversation_id, turn_limit)
+        return await self.conversation_repo.get_conversation(conversation_id, turn_limit, user_id)
 
-    async def get_all_conversations(self) -> List[Dict[str, Any]]:
-        return await self.conversation_repo.get_all_conversations()
+    async def get_all_conversations(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
+        return await self.conversation_repo.get_all_conversations(user_id)
 
     async def rename_conversation(
         self,
         conversation_id: UUID,
         title: str,
+        user_id: Optional[str],
     ) -> bool:
         return await self.conversation_repo.update_conversation(
             conversation_id,
-            {"title": title, "updated_at": datetime.now()},
+            {"title": title, "updated_at": now_vietnam()},
+            user_id,
         )
 
-    async def delete_conversation(self, conversation_id: UUID) -> bool:
+    async def delete_conversation(self, conversation_id: UUID, user_id: Optional[str]) -> bool:
         return await self.conversation_repo.update_conversation(
             conversation_id,
-            {"deleted_at": datetime.now()},
+            {"deleted_at": now_vietnam()},
+            user_id,
         )
 
     async def get_messages(
         self,
         conversation_id: UUID,
+        user_id: Optional[str],
         limit: int = 50,
     ) -> List[Dict[str, Any]]:
-        return await self.conversation_repo.get_conversation_messages(conversation_id, limit)
+        return await self.conversation_repo.get_conversation_messages(conversation_id, user_id, limit)

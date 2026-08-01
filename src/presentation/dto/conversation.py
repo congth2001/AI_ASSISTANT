@@ -19,6 +19,13 @@ class MessageResponse(BaseModel):
     timestamp: Optional[datetime] = None
 
 
+class ConversationOwnerResponse(BaseModel):
+    id: str
+    display_name: str
+    email: Optional[str] = None
+    role: str
+
+
 class ConversationResponse(BaseModel):
     id: str
     title: Optional[str] = None
@@ -27,6 +34,7 @@ class ConversationResponse(BaseModel):
     updated_at: Optional[datetime] = None
     messages: Optional[List[MessageResponse]] = None
     metadata: Optional[Dict[str, Any]] = None
+    owner: Optional[ConversationOwnerResponse] = None
 
 
 class CreateConversationResponse(BaseModel):
@@ -34,6 +42,7 @@ class CreateConversationResponse(BaseModel):
     title: str
     user_id: Optional[str] = None
     created_at: Optional[datetime] = None
+    owner: Optional[ConversationOwnerResponse] = None
 
 
 class DeleteConversationResponse(BaseModel):

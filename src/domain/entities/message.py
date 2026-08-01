@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List
 from uuid import UUID, uuid4
+from src.domain.time import now_vietnam
 
 
 @dataclass
@@ -19,4 +20,4 @@ class Message:
             self.id = uuid4()
 
         if self.timestamp is None:
-            self.timestamp = datetime.now()
+            self.timestamp = now_vietnam()

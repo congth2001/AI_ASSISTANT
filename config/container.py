@@ -2,6 +2,7 @@ from dependency_injector import containers
 from dependency_injector.providers import Configuration, Singleton
 
 from src.application.use_cases.chat_use_case import ChatUseCase
+from src.application.use_cases.auth_use_case import AuthUseCase
 from src.application.use_cases.search_document_use_case import SearchDocumentsUseCase
 from src.application.use_cases.analytics_use_case import AnalyticsUseCase
 from src.application.use_cases.sync_business_data_use_case import (
@@ -19,6 +20,7 @@ from src.application.agent.tools.rag_tool import RAGTool
 from src.application.agent.agent_service import AgentService
 
 from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
+from src.infrastructure.repositories.auth_repository import AuthRepository
 from src.infrastructure.repositories.milvus_search_repository import (
     MilvusSearchRepository,
 )
@@ -174,6 +176,18 @@ class Container(containers.DeclarativeContainer):
         customer_repository=customer_repo,
         sales_invoice_repository=sales_invoice_repo,
         sales_invoice_line_repository=sales_invoice_line_repo,
+    )
+
+    auth_repository = Singleton(AuthRepository, session_factory=session_factory)
+
+    auth_use_case = Singleton(
+        AuthUseCase,
+        auth_repository=auth_repository,
+        jwt_secret=config.auth.jwt_secret,
+        jwt_issuer=config.auth.jwt_issuer,
+        jwt_audience=config.auth.jwt_audience,
+        access_token_minutes=config.auth.access_token_minutes,
+        refresh_token_days=config.auth.refresh_token_days,
     )
 
     use_case_conversation = Singleton(

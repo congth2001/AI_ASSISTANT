@@ -12,17 +12,17 @@ class IConversationRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_all_conversations(self) -> List[Dict[str, Any]]:
+    async def get_all_conversations(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
         """Get all conversations"""
         pass
 
     @abstractmethod
-    async def get_conversation(self, conversation_id: UUID, turn_limit: int) -> Optional[Dict[str, Any]]:
+    async def get_conversation(self, conversation_id: UUID, turn_limit: int, user_id: Optional[str]) -> Optional[Dict[str, Any]]:
         """Get conversation by ID"""
         pass
 
     @abstractmethod
-    async def update_conversation(self, conversation_id: UUID, updates: Dict[str, Any]) -> bool:
+    async def update_conversation(self, conversation_id: UUID, updates: Dict[str, Any], user_id: Optional[str]) -> bool:
         """Update conversation"""
         pass
 
@@ -32,6 +32,6 @@ class IConversationRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_conversation_messages(self, conversation_id: UUID, limit: int = 50) -> List[Dict[str, Any]]:
+    async def get_conversation_messages(self, conversation_id: UUID, user_id: Optional[str], limit: int = 50) -> List[Dict[str, Any]]:
         """Get messages for a conversation"""
         pass

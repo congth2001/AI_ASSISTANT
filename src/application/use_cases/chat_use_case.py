@@ -10,6 +10,7 @@ from src.domain.entities.message import Message
 from src.domain.entities.conversation import Conversation
 from src.domain.interfaces.i_cache_service import ICacheService
 from src.domain.repositories.i_conversation_repository import IConversationRepository
+from src.domain.time import now_vietnam
 
 _CACHE_TTL = 3600  # 1 hour
 logger = logging.getLogger(__name__)
@@ -35,13 +36,49 @@ class ChatUseCase:
         self.conversation_repo = conversation_repo
         self.cache_service = cache_service
 
-    async def execute(self, conversation_id: UUID, user_message: str) -> Dict[str, Any]:
-        # ── 1. Load or create conversation ───────────────────────────────
-        conversation_data = await self.conversation_repo.get_conversation(conversation_id, SearchConfig.HISTORY_WINDOW)
-        if not conversation_data:
-            conversation_data = await self.create_conversation(
-                title=self._generate_title(user_message)
+    async def authorize_guest_query(self, user_message: str) -> None:
+        route = await self.agent_service.classify_route(user_message)
+        if route != "conversation":
+            raise PermissionError(
+                "Tài khoản khách không có quyền truy cập dữ liệu kinh doanh của cửa hàng"
             )
+
+    async def execute_guest(self, user_message: str) -> Dict[str, Any]:
+        await self.authorize_guest_query(user_message)
+        chunks = [token async for token in self.agent_service.stream_stateless_conversation(user_message)]
+        return {
+            "conversation_id": None,
+            "response": "".join(chunks),
+            "intent": "conversation",
+            "timestamp": now_vietnam().isoformat(),
+            "metadata": {"stateless": True, "data_access": False},
+        }
+
+    async def execute_guest_stream(self, user_message: str) -> AsyncGenerator[str, None]:
+        """Stream a single guest answer without reading or writing conversation data."""
+        def sse(data: dict) -> str:
+            return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        yield sse({"type": "status", "step": "generating", "message": "Đang tạo câu trả lời..."})
+        async for token in self.agent_service.stream_stateless_conversation(user_message):
+            yield sse({"type": "token", "content": token})
+        yield sse({
+            "type": "done",
+            "conversation_id": None,
+            "intent": "conversation",
+            "timestamp": now_vietnam().isoformat(),
+            "metadata": {"stateless": True, "data_access": False},
+        })
+
+    async def execute(
+        self, conversation_id: UUID, user_message: str, user_id: Optional[str]
+    ) -> Dict[str, Any]:
+        # ── 1. Load or create conversation ───────────────────────────────
+        conversation_data = await self.conversation_repo.get_conversation(
+            conversation_id, SearchConfig.HISTORY_WINDOW, user_id
+        )
+        if not conversation_data:
+            raise ValueError("Conversation not found")
 
         conversation = self._dict_to_conversation(conversation_data)
         is_first_message = len(conversation.messages) == 0
@@ -51,7 +88,7 @@ class ChatUseCase:
         cached_payload = await self._get_cached(cache_key)
         if cached_payload:
             return await self._respond_from_cache(
-                cached_payload, conversation_id, user_message, is_first_message
+                cached_payload, conversation_id, user_message, is_first_message, user_id
             )
 
         # ── 3. Run agent graph ────────────────────────────────────────────
@@ -92,7 +129,7 @@ class ChatUseCase:
         # ── 5. Update title on first exchange ────────────────────────────
         if is_first_message:
             await self.conversation_repo.update_conversation(
-                conversation_id, {"title": self._generate_title(user_message)}
+                conversation_id, {"title": self._generate_title(user_message)}, user_id
             )
 
         # ── 6. Store in cache for future identical queries ────────────────
@@ -110,7 +147,9 @@ class ChatUseCase:
             "metadata": metadata,
         }
 
-    async def execute_stream(self, conversation_id: UUID, user_message: str) -> AsyncGenerator[str, None]:
+    async def execute_stream(
+        self, conversation_id: UUID, user_message: str, user_id: Optional[str]
+    ) -> AsyncGenerator[str, None]:
         """Yield SSE-formatted strings for the streaming chat endpoint.
 
         Event types emitted:
@@ -126,12 +165,10 @@ class ChatUseCase:
         try:
             # ── 1. Load or create conversation ───────────────────────────
             conversation_data = await self.conversation_repo.get_conversation(
-                conversation_id, SearchConfig.HISTORY_WINDOW
+                conversation_id, SearchConfig.HISTORY_WINDOW, user_id
             )
             if not conversation_data:
-                conversation_data = await self.create_conversation(
-                    title=self._generate_title(user_message)
-                )
+                raise ValueError("Conversation not found")
             conversation = self._dict_to_conversation(conversation_data)
             is_first_message = len(conversation.messages) == 0
 
@@ -151,7 +188,7 @@ class ChatUseCase:
                 )
                 if is_first_message:
                     await self.conversation_repo.update_conversation(
-                        conversation_id, {"title": self._generate_title(user_message)}
+                        conversation_id, {"title": self._generate_title(user_message)}, user_id
                     )
                 yield sse({
                     "type": "done",
@@ -221,7 +258,7 @@ class ChatUseCase:
             )
             if is_first_message:
                 await self.conversation_repo.update_conversation(
-                    conversation_id, {"title": self._generate_title(user_message)}
+                    conversation_id, {"title": self._generate_title(user_message)}, user_id
                 )
 
             # ── 6. Cache for future identical queries ────────────────────
@@ -253,13 +290,14 @@ class ChatUseCase:
         conversation_id: UUID,
         user_message: str,
         is_first_message: bool,
+        user_id: Optional[str],
     ) -> Dict[str, Any]:
         _, assistant_msg = await self._persist_messages(
             conversation_id, user_message, payload["response"], metadata=payload["metadata"]
         )
         if is_first_message:
             await self.conversation_repo.update_conversation(
-                conversation_id, {"title": self._generate_title(user_message)}
+                conversation_id, {"title": self._generate_title(user_message)}, user_id
             )
         return {
             "conversation_id": str(conversation_id),
