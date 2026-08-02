@@ -145,6 +145,14 @@ class Customer(Base):
             "customer_identity_key",
             name="uq_customers_customer_identity_key",
         ),
+        {
+            "comment": (
+                "Grain: one row per provisional customer identity. "
+                "customer_id is the stable UUID; customer_identity_key is "
+                "normalized name + ward + village until a source customer "
+                "code exists."
+            )
+        },
     )
 
 
@@ -164,13 +172,32 @@ class SalesInvoice(Base):
             ondelete="RESTRICT",
         ),
         nullable=False,
+        comment=(
+            "Stable UUID foreign key to customers; use this column instead "
+            "of grouping by customer_name_snapshot."
+        ),
     )
     customer_name_snapshot = Column(Text, nullable=False)
     customer_address_detail_snapshot = Column(Text, nullable=True)
     customer_village_name_snapshot = Column(String, nullable=True)
     customer_ward_name_snapshot = Column(String, nullable=True)
-    invoice_total_amount = Column(Numeric(18, 2), nullable=False)
-    debt_delta_amount = Column(Numeric(18, 2), nullable=True)
+    invoice_total_amount = Column(
+        Numeric(18, 2),
+        nullable=False,
+        comment=(
+            "Authoritative invoice-level total; it is not guaranteed to "
+            "equal SUM(sales_invoice_lines.line_amount) until source "
+            "reconciliation is complete."
+        ),
+    )
+    debt_delta_amount = Column(
+        Numeric(18, 2),
+        nullable=True,
+        comment=(
+            "Signed debt movement recorded by this invoice: positive "
+            "increases receivable, negative represents advance/credit."
+        ),
+    )
     created_at = Column(DateTime, default=datetime.utcnow)
     deleted_at = Column(DateTime, nullable=True)
 
@@ -189,6 +216,13 @@ class SalesInvoice(Base):
             "invoice_total_amount >= 0",
             name="ck_sales_invoices_total_nonnegative",
         ),
+        {
+            "comment": (
+                "Grain: one row per sales invoice. Join customers by "
+                "customer_id; snapshot columns preserve the customer text "
+                "printed on the historical invoice."
+            )
+        },
     )
 
 
@@ -207,7 +241,14 @@ class SalesInvoiceLine(Base):
         ),
         nullable=False,
     )
-    line_number = Column(Integer, nullable=False)
+    line_number = Column(
+        Integer,
+        nullable=False,
+        comment=(
+            "Stable ordinal of the source line within its invoice; unique "
+            "together with invoice_id."
+        ),
+    )
     product_name = Column(Text, nullable=False)
     product_category_name = Column(String, nullable=True)
     unit_name = Column(String, nullable=False)
@@ -247,4 +288,10 @@ class SalesInvoiceLine(Base):
             "line_amount >= 0",
             name="ck_sales_invoice_lines_amount_nonnegative",
         ),
+        {
+            "comment": (
+                "Grain: one row per line item within a sales invoice. Use "
+                "line_amount for product/category revenue."
+            )
+        },
     )
