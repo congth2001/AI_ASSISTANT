@@ -25,6 +25,9 @@ env.*
 *.log
 models/*
 data/documents/*
+!data/documents/.gitkeep
 data/embeddings/*
+!data/embeddings/.gitkeep
 data/ingestions/*
+!data/ingestions/.gitkeep
 backups/

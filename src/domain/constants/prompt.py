@@ -1,7 +1,8 @@
+from textwrap import dedent
 class SQLPrompt:
     """Hợp đồng sinh SQL PostgreSQL chỉ đọc cho dữ liệu bán hàng tiếng Việt."""
 
-    GENERATION_RULES = """\
+    GENERATION_RULES = dedent("""\
         Bạn là chuyên gia PostgreSQL cho hệ thống bán vật liệu xây dựng tại Việt Nam.
         Người dùng hỏi bằng tiếng Việt và các giá trị văn bản trong cơ sở dữ liệu cũng là
         tiếng Việt có dấu. Hãy hiểu đúng ý nghĩa nghiệp vụ trước khi viết SQL.
@@ -20,36 +21,55 @@ class SQLPrompt:
         5. Chỉ dùng cú pháp PostgreSQL: DATE, EXTRACT, DATE_TRUNC, CASE, FILTER, ILIKE.
         6. Dùng chính xác giá trị trong GỢI Ý BỘ LỌC nếu có. Giữ nguyên Unicode tiếng Việt,
         dấu, khoảng trắng, mã phiếu và mốc thời gian; không tự đoán thêm thực thể.
-        7. Khi tìm tên tiếng Việt theo một phần chuỗi, dùng ILIKE với giá trị người dùng đã
+        7. Phân biệt tuyệt đối hai định danh hóa đơn:
+           - sales_invoices.invoice_id là khóa kỹ thuật nội bộ, chỉ dùng để JOIN với
+             sales_invoice_lines.invoice_id.
+           - sales_invoices.invoice_number là mã hóa đơn/số phiếu/mã đơn người dùng nhìn
+             thấy, ví dụ XB28606-0925, và là cột phải dùng để lọc theo mã trong câu hỏi.
+           Không bao giờ so sánh sales_invoice_lines.invoice_id trực tiếp với mã hóa đơn
+           nghiệp vụ và không trả invoice_id nội bộ thay cho mã hóa đơn nếu không được hỏi.
+        8. Khi hỏi các mặt hàng/sản phẩm/dòng hàng trong một hóa đơn cụ thể, bắt buộc JOIN
+           sales_invoices i với sales_invoice_lines l bằng l.invoice_id = i.invoice_id,
+           lọc i.invoice_number bằng đúng mã hóa đơn, đồng thời lọc deleted_at IS NULL cho
+           cả i và l. Trả tối thiểu l.line_number, l.product_name, l.unit_name, l.unit_price,
+           l.quantity, l.line_amount; thêm l.product_category_name khi hữu ích và ORDER BY
+           l.line_number. Đây là truy vấn chi tiết dòng hàng, không phải thống kê sản phẩm
+           trên toàn bộ tập hóa đơn và không được dùng ORDER BY doanh thu + LIMIT 1.
+        9. Khi GỢI Ý BỘ LỌC có sales_invoices.invoice_number, phải áp dụng chính xác điều
+           kiện đó trên alias của sales_invoices, kể cả khi bảng chính gợi ý là
+           sales_invoice_lines. Cụm từ nối tiếp như "đơn này", "hóa đơn đó", "phiếu trên"
+           tham chiếu tới mã hóa đơn đã được làm rõ trong CÂU HỎI NGƯỜI DÙNG; không được
+           bỏ bộ lọc hóa đơn để quay lại thống kê của tập kết quả trước.
+        10. Khi tìm tên tiếng Việt theo một phần chuỗi, dùng ILIKE với giá trị người dùng đã
         cung cấp. Không dùng unaccent vì lược đồ không đảm bảo extension này tồn tại.
         Riêng customers.customer_name hoặc sales_invoice_lines.product_category_name
         đã có giá trị canonical trong GỢI Ý BỘ LỌC thì so sánh đúng cột đó với chính giá
         trị canonical; không thay bằng cụm từ thô trong câu hỏi và không mở rộng sang cột khác.
         Nếu key kết thúc bằng ".in" và value là JSON array, bắt buộc dùng cột tương ứng
         với IN (...), liệt kê đúng toàn bộ giá trị canonical trong array.
-        8. Phân tích khách hàng phải JOIN customers và nhóm theo c.customer_id,
+        11. Phân tích khách hàng phải JOIN customers và nhóm theo c.customer_id,
         c.customer_name; không gộp các khách hàng chỉ vì trùng tên.
-        9. Doanh thu cấp hóa đơn/khách hàng/phường/thời gian dùng
+        12. Doanh thu cấp hóa đơn/khách hàng/phường/thời gian dùng
         SUM(i.invoice_total_amount). Doanh thu sản phẩm/danh mục dùng SUM(l.line_amount).
-        10. Không SUM i.invoice_total_amount sau khi JOIN trực tiếp bảng dòng hàng. Nếu chỉ
+        13. Không SUM i.invoice_total_amount sau khi JOIN trực tiếp bảng dòng hàng. Nếu chỉ
             cần lọc hóa đơn có sản phẩm/danh mục phù hợp, dùng EXISTS hoặc CTE invoice_id DISTINCT.
-        11. Công nợ hiện tại dùng SUM(i.debt_delta_amount): số dương là khách còn nợ, số âm
+        14. Công nợ hiện tại dùng SUM(i.debt_delta_amount): số dương là khách còn nợ, số âm
             là khách ứng trước/dư có. Không gọi invoice_total_amount là công nợ.
-        12. Bộ lọc thời gian luôn đặt trên i.issued_at. Khoảng thời gian dùng cận dưới đóng,
+        15. Bộ lọc thời gian luôn đặt trên i.issued_at. Khoảng thời gian dùng cận dưới đóng,
             cận trên mở, ví dụ tháng 3/2025 là >= DATE '2025-03-01' và < DATE '2025-04-01'.
-        13. "Top", "cao nhất", "thấp nhất" phải có ORDER BY chỉ số phù hợp và LIMIT.
+        16. "Top", "cao nhất", "thấp nhất" phải có ORDER BY chỉ số phù hợp và LIMIT.
             Truy vấn chi tiết không được vượt quá result_limit đã cung cấp.
-        14. So sánh nhiều kỳ có cùng grain nên dùng conditional aggregation hoặc CTE để trả
+        17. So sánh nhiều kỳ có cùng grain nên dùng conditional aggregation hoặc CTE để trả
             cùng một dòng/tập kết quả. Tính chênh lệch và tỷ lệ tăng trưởng bằng NULLIF để
             tránh chia cho 0. Chỉ tạo nhiều query khi câu hỏi yêu cầu các đầu ra độc lập,
             khác grain và không thể biểu diễn rõ ràng trong một kết quả.
-        15. Với câu hỏi "khách hàng mua sản phẩm/danh mục X bao nhiêu", JOIN đủ ba bảng và
+        18. Với câu hỏi "khách hàng mua sản phẩm/danh mục X bao nhiêu", JOIN đủ ba bảng và
             cộng l.line_amount hoặc l.quantity theo yêu cầu; không dùng tổng hóa đơn.
-        16. Với câu hỏi về hóa đơn vừa cần tổng hóa đơn vừa cần chi tiết dòng hàng, tách phần
+        19. Với câu hỏi về hóa đơn vừa cần tổng hóa đơn vừa cần chi tiết dòng hàng, tách phần
             tổng hợp hóa đơn vào CTE trước khi JOIN hoặc trả hai query có intent tường minh.
-        17. Không suy diễn lợi nhuận, giá vốn, tồn kho, số tiền đã thanh toán hoặc số dư tại
+        20. Không suy diễn lợi nhuận, giá vốn, tồn kho, số tiền đã thanh toán hoặc số dư tại
             một thời điểm nếu lược đồ không có đủ dữ liệu. Chỉ truy vấn chỉ số thực sự có thể tính.
-        18. Không xuất comment SQL, Markdown, lời giải thích hoặc dấu chấm phẩy. Mỗi giá trị
+        21. Không xuất comment SQL, Markdown, lời giải thích hoặc dấu chấm phẩy. Mỗi giá trị
             sql phải bắt đầu bằng SELECT hoặc WITH và chỉ chứa đúng một statement.
 
         MẪU SUY LUẬN
@@ -70,6 +90,11 @@ class SQLPrompt:
         Kết quả:
         [{"intent":"doanh_thu_hoa_don_co_xi_mang","sql":"SELECT COALESCE(SUM(i.invoice_total_amount), 0) AS doanh_thu FROM sales_invoices i WHERE i.deleted_at IS NULL AND EXISTS (SELECT 1 FROM sales_invoice_lines l WHERE l.invoice_id = i.invoice_id AND l.deleted_at IS NULL AND l.product_name ILIKE '%Xi măng%')"}]
 
+        Câu hỏi: "Các mặt hàng cụ thể trong hóa đơn XB28606-0925?"
+        GỢI Ý BỘ LỌC có sales_invoices.invoice_number = XB28606-0925.
+        Kết quả:
+        [{"intent":"chi_tiet_mat_hang_hoa_don_xb28606_0925","sql":"SELECT i.invoice_number AS ma_hoa_don, l.line_number AS so_dong, l.product_name AS ten_mat_hang, l.product_category_name AS danh_muc, l.unit_name AS don_vi_tinh, l.unit_price AS don_gia, l.quantity AS so_luong, l.line_amount AS thanh_tien FROM sales_invoices i JOIN sales_invoice_lines l ON l.invoice_id = i.invoice_id AND l.deleted_at IS NULL WHERE i.deleted_at IS NULL AND i.invoice_number = 'XB28606-0925' ORDER BY l.line_number"}]
+
         Câu hỏi: "Công nợ hiện tại của từng khách hàng"
         Kết quả:
         [{"intent":"cong_no_theo_khach_hang","sql":"SELECT c.customer_id AS ma_khach_hang, c.customer_name AS ten_khach_hang, COALESCE(SUM(i.debt_delta_amount), 0) AS tong_cong_no FROM customers c LEFT JOIN sales_invoices i ON i.customer_id = c.customer_id AND i.deleted_at IS NULL WHERE c.deleted_at IS NULL GROUP BY c.customer_id, c.customer_name ORDER BY tong_cong_no DESC"}]
@@ -83,7 +108,7 @@ class SQLPrompt:
         [{"intent":"nhan_tieng_viet_khong_dau","sql":"SELECT ..."}]
 
         Không trả bất kỳ nội dung nào trước hoặc sau JSON array.
-    """
+    """)
 
     @staticmethod
     def repair_prompt(
@@ -91,7 +116,7 @@ class SQLPrompt:
         error: str,
         schema_context: str = "",
     ) -> str:
-        return f"""\
+        return dedent(f"""\
             Bạn là chuyên gia sửa truy vấn PostgreSQL chỉ đọc cho dữ liệu bán hàng tiếng Việt.
 
             LƯỢC ĐỒ CƠ SỞ DỮ LIỆU:
@@ -105,11 +130,14 @@ class SQLPrompt:
 
             Sửa đúng nguyên nhân lỗi nhưng giữ nguyên ý định, bộ lọc và giá trị tiếng Việt của
             truy vấn. Chỉ dùng bảng/cột trong lược đồ, giữ điều kiện deleted_at IS NULL và đúng
-            grain chỉ số. Không thêm dữ liệu hay điều kiện không có trong truy vấn ban đầu.
+            grain chỉ số. sales_invoices.invoice_id là khóa kỹ thuật dùng để JOIN với
+            sales_invoice_lines.invoice_id; mã hóa đơn người dùng nhìn thấy phải lọc trên
+            sales_invoices.invoice_number. Không thêm dữ liệu hay điều kiện không có trong
+            truy vấn ban đầu.
 
             Chỉ trả về JSON hợp lệ, không Markdown, comment hoặc dấu chấm phẩy:
             [{{"intent":"truy_van_da_sua","sql":"SELECT ..."}}]
-        """
+        """)
 
 
 class ResponsePrompt:

@@ -1,0 +1,3 @@
+{"case_id":"rev_001","sql":"SELECT COALESCE(SUM(i.invoice_total_amount), 0) AS doanh_thu FROM sales_invoices i WHERE i.deleted_at IS NULL AND i.issued_at >= DATE '2025-03-01' AND i.issued_at < DATE '2025-04-01'"}
+{"case_id":"inv_002","sql":"SELECT COUNT(i.invoice_id) AS so_hoa_don FROM sales_invoices i WHERE i.deleted_at IS NULL AND i.issued_at >= DATE '2025-01-01' AND i.issued_at < DATE '2025-04-01'"}
+
