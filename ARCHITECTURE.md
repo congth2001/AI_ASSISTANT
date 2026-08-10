@@ -130,7 +130,7 @@ Implementations cụ thể của các interfaces trong Domain.
 |-----------|---------------|
 | **LLM** | `OpenAIAdapter` (GPT-4), `AnthropicAdapter` (Claude) |
 | **Embedding** | `OpenAIEmbeddingService` |
-| **Vector DB** | `MilvusAdapter`, `MilvusVectorRepository` |
+| **Vector DB** | `MilvusClient`, `MilvusVectorRepository` |
 | **SQL DB** | SQLAlchemy + PostgreSQL/SQLite |
 | **Cache** | `RedisCacheService` |
 | **Logging** | Structured logger với decorators và middleware |
@@ -163,7 +163,7 @@ ChatUseCase (application/use_cases/)
     ▼
 RAGOrchestrator
     ├── EmbeddingService  → tạo query vector
-    ├── MilvusAdapter     → vector search (semantic)
+    ├── MilvusClient     → vector search (semantic)
     ├── DataRepository    → keyword/metadata filter
     └── Hybrid Merge      → weighted score combination
     │

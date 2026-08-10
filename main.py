@@ -2,15 +2,16 @@
 Business Chatbot - Main Application Entry Point
 Clean Architecture + SOLID Principles
 """
+import os
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config.config_manager import get_settings
 from config.container import container
 from src.presentation.api.v1.chat import router as chat_router
-from src.presentation.api.v1.reports import router as reports_router
-from src.presentation.api.v1.data import router as data_router
+from src.presentation.api.v1.auth import router as auth_router
 
 def init_config_connections():
     """Initialize connections to external services based on config"""
@@ -24,36 +25,49 @@ def init_config_connections():
 
 def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
-    # Load settings using config manager
     settings = get_settings()
+
+    container.config.from_dict(settings.model_dump())
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # DB schema is managed by Alembic migrations — run `alembic upgrade head` before starting
+        yield
 
     app = FastAPI(
         title="Business Chatbot API",
         description="AI-powered business assistant for data analysis and insights",
         version="1.0.0",
         docs_url="/docs",
-        redoc_url="/redoc"
+        redoc_url="/redoc",
+        lifespan=lifespan,
     )
+
+    # Keep local development origins in YAML and inject deployed frontend origins
+    # at runtime, so config/local.yml never needs to be committed or rewritten.
+    cors_origins = list(settings.api.cors_origins)
+    public_origins = os.getenv("PUBLIC_FRONTEND_ORIGINS", "")
+    cors_origins.extend(
+        origin.strip().rstrip("/")
+        for origin in public_origins.split(",")
+        if origin.strip()
+    )
+    cors_origins = list(dict.fromkeys(cors_origins))
 
     # Configure CORS
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
 
-    # Configure dependency injection
-    container.config.from_dict(settings.model_dump())
-    container.database_url.override(settings.database.url)
-
     # Wire dependencies
     container.wire(
         modules=[
             "src.presentation.api.v1.chat",
-            "src.presentation.api.v1.reports",
-            "src.presentation.api.v1.data",
+            "src.presentation.api.v1.auth",
         ]
     )
 
@@ -63,18 +77,8 @@ def create_app() -> FastAPI:
         prefix="/api/v1",
         tags=["chat"]
     )
+    app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
 
-    app.include_router(
-        reports_router,
-        prefix="/api/v1",
-        tags=["reports"]
-    )
-
-    app.include_router(
-        data_router,
-        prefix="/api/v1",
-        tags=["data"]
-    )
 
     # Health check endpoint
     @app.get("/health")

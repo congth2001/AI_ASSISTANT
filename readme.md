@@ -1,250 +1,274 @@
-# Business Chatbot
+# Business Chatbot — LLM-to-SQL & RAG Assistant
 
-AI-powered business assistant for data analysis and insights, built with Clean Architecture and SOLID principles. Uses **Milvus** vector database for semantic search and RAG.
+AI assistant cho phân tích dữ liệu kinh doanh, xây dựng theo **Clean Architecture** với **Agent Graph** (LangGraph). Hệ thống tự động định tuyến câu hỏi sang pipeline phù hợp: truy vấn SQL có cấu trúc hoặc tìm kiếm vector (RAG).
 
-## 🚀 Features
+---
 
-- **Conversational AI**: Natural language chat interface for business queries
-- **Data Analysis**: Automated insights from business data (revenue, profit, customers)
-- **Hybrid RAG (Retrieval-Augmented Generation)**: Context-aware responses using both vector similarity and keyword search
-- **Multi-Provider LLM Support**: OpenAI GPT and Anthropic Claude integration
-- **Milvus Vector Database**: High-performance vector similarity search
-- **Clean Architecture**: Domain-driven design with clear separation of concerns
-- **SOLID Principles**: Maintainable and extensible codebase
-- **Customizable Search**: Fine-tune vector/keyword weights for different query types
+## Tính năng
 
-## 🔍 Retrieval Methods
+- **Agent Graph (LangGraph)**: Tự động phân tích intent → chọn tool → sinh response
+- **Text-to-SQL**: Chuyển câu hỏi tiếng Việt thành SQL, thực thi trên SQLite
+- **Hybrid RAG**: Kết hợp vector search (Milvus) + keyword search để tìm tài liệu liên quan
+- **Fuzzy Entity Matching**: Nhận dạng tên khách hàng, sản phẩm, danh mục với RapidFuzz
+- **Multi-Provider LLM**: OpenAI GPT và Anthropic Claude
+- **Conversation Memory**: Lưu lịch sử hội thoại trên PostgreSQL/SQLite
 
-### Vector Search (Semantic)
-- Finds conceptually similar content
-- Uses embeddings and similarity distance
-- Fast with indexing
+---
 
-### Keyword Search (BM25-like)
-- Finds exact phrase matches
-- Term frequency based scoring
-- Good for specific metrics and names
+## Kiến trúc
 
-### Hybrid Search (RECOMMENDED) ⭐
-- Combines vector + keyword search
-- Configurable weights (default: 70% vector, 30% keyword)
-- Best accuracy for business queries
-- Learn more: [Hybrid Search Documentation](docs/HYBRID_SEARCH.md)
+### Sơ đồ layers
 
-## 🏗️ Architecture
+```
+┌─────────────────────────────────────────────┐
+│              Presentation Layer              │
+│          FastAPI  ·  REST API v1             │
+└──────────────────────┬──────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────┐
+│              Application Layer               │
+│    ChatUseCase  ·  SearchDocumentsUseCase    │
+│    AnalyticsUseCase  ·  IngestDataUseCase    │
+└──────────────────────┬──────────────────────┘
+                       │ delegates to
+┌──────────────────────▼──────────────────────┐
+│                 Agent Layer                  │
+│                                             │
+│  AgentService                               │
+│  ┌─────────────────────────────────────┐   │
+│  │           LangGraph Graph           │   │
+│  │  analyze_query                      │   │
+│  │      ├─[needs_analytics]──► text_to_sql ──[has_data]──► generate_response │
+│  │      │                    └─[empty]───► rag_tool ──►┐  │
+│  │      └─[rag]──────────────► rag_tool ───────────────►┤  │
+│  │                                              generate_response → END │
+│  └─────────────────────────────────────┘   │
+│                                             │
+│  Tools: TextToSQLTool · RAGTool             │
+└──────────────────────┬──────────────────────┘
+                       │ uses
+┌──────────────────────▼──────────────────────┐
+│               Domain Layer                   │
+│  Entities · Value Objects · Interfaces       │
+└──────────────────────┬──────────────────────┘
+                       │ implemented by
+┌──────────────────────▼──────────────────────┐
+│            Infrastructure Layer              │
+│  OpenAI · Milvus · SQLite · Redis · Pg       │
+└─────────────────────────────────────────────┘
+```
 
-### Clean Architecture Layers
+### Luồng xử lý câu hỏi
+
+```
+User message
+    ↓
+[analyze_query]  — QueryAnalyzer: intent, entity, time extraction (rule-based + fuzzy)
+    ↓
+[route]  — needs_analytics?
+    ├── YES → [execute_text_to_sql]  — SchemaLinker → SQLGenerator (LLM) → SQLValidator → Execute
+    │              └── no data? → [execute_rag]
+    └── NO  → [execute_rag]          — Milvus search → ContextBuilder
+                    ↓
+          [generate_response]  — LLM (OpenAI/Claude) + context
+                    ↓
+              Response to user
+```
+
+### Cấu trúc thư mục
 
 ```
 src/
-├── domain/                      # Domain Layer (Business Rules)
-│   ├── entities/               # Business Entities
-│   ├── value_objects/          # Value Objects
-│   ├── interfaces/             # Repository & Service Interfaces
-│   └── services/               # Domain Services
-├── application/                # Application Layer (Use Cases)
-│   ├── use_cases/             # Application Use Cases
-│   ├── services/              # Application Services
-│   └── dto/                   # Data Transfer Objects
-├── infrastructure/             # Infrastructure Layer (External Concerns)
-│   ├── llm/                   # LLM Implementations
-│   ├── vector_db/             # Milvus Vector Database Implementation
-│   ├── persistence/           # Database Implementations
-│   ├── embedding/             # Embedding Service Implementations
-│   └── cache/                 # Cache Implementations
-└── presentation/               # Presentation Layer (API)
-    ├── api/                   # FastAPI Routes
-    ├── dependencies.py        # Dependency Injection
-    └── schemas/               # Pydantic Schemas
+├── application/                 # Application Layer
+│   ├── agent/                   # Agent sub-layer
+│   │   ├── agent_service.py     # Public interface cho ChatUseCase
+│   │   ├── graph/
+│   │   │   ├── state.py         # AgentState (TypedDict)
+│   │   │   ├── nodes.py         # Node factories: analyze, text_to_sql, rag, respond
+│   │   │   ├── edges.py         # Routing: route_after_analysis, route_after_text_to_sql
+│   │   │   └── builder.py       # build_agent_graph() → CompiledGraph
+│   │   └── tools/
+│   │       ├── base.py          # BaseTool ABC
+│   │       ├── text_to_sql.py   # Wrap AnalyticsUseCase (SQL pipeline)
+│   │       └── rag_tool.py      # Wrap SearchDocumentsUseCase + ContextBuilder
+│   ├── use_cases/
+│   │   ├── chat_use_case.py     # Conversation management + delegate to AgentService
+│   │   ├── analytics_use_case.py# SQL pipeline: schema link → generate → validate → execute
+│   │   ├── search_document_use_case.py
+│   │   └── ingest_data_use_case.py
+│   └── services/
+│       ├── query_analyzer.py    # 9-step rule-based query analysis
+│       ├── schema_linker.py     # Map entities → DB schema
+│       ├── sql_generator.py     # LLM → SQLQueryPlan[]
+│       ├── sql_validator.py     # Safety check (blocklist + EXPLAIN)
+│       ├── context_builder.py   # Build context dict for LLM
+│       ├── rag_orchestrator.py  # Vector/hybrid search orchestration
+│       └── serialization_factory.py
+│
+├── domain/                      # Domain Layer
+│   ├── entities/                # AnalyzedQuery, Message, Conversation, ...
+│   ├── value_objects/           # QueryIntent, DocType, AggregationType, ...
+│   └── interfaces/              # ILLMService, ISearchRepository, IVectorDB, ...
+│
+├── infrastructure/              # Infrastructure Layer
+│   ├── llm/                     # openai_adapter.py, anthropic_adapter.py
+│   ├── vector_db/               # milvus_adapter.py
+│   ├── repositories/            # milvus_search_repository.py, analytics_repository.py
+│   ├── persistence/             # SQLAlchemy models, conversation_repository.py
+│   ├── embedding/               # openai_embedding.py
+│   ├── cache/                   # redis_cache.py
+│   ├── serializers/             # transaction, customer, period_summary serializers
+│   └── utils/                   # logger, singleton
+│
+└── presentation/                # Presentation Layer
+    ├── api/v1/
+    │   ├── chat.py              # POST /api/v1/chat
+    │   ├── data.py              # POST /api/v1/data/ingest
+    │   └── reports.py           # GET  /api/v1/reports
+    └── dto/                     # Request/Response schemas
 ```
 
-### SOLID Principles
+---
 
-- **Single Responsibility**: Each class has one reason to change
-- **Open/Closed**: Open for extension, closed for modification
-- **Liskov Substitution**: Subtypes are substitutable for their base types
-- **Interface Segregation**: Clients depend only on methods they use
-- **Dependency Inversion**: Depend on abstractions, not concretions
+## Cài đặt
 
-## 📡 API Endpoints
+### Yêu cầu
 
-### Chat APIs
-- `POST /api/v1/chat` - Send chat message and get AI response
-- `GET /api/v1/chat/{conversation_id}` - Get conversation history
-
-### Data APIs
-- `POST /api/v1/data/ingest` - Ingest business data
-- `POST /api/v1/data/batch` - Batch ingest multiple records
-
-### Reports APIs
-- `GET /api/v1/reports` - Query business reports with date range
-- `POST /api/v1/reports/custom` - Generate custom reports
-
-## 🛠️ Quick Start
-
-### Prerequisites
 - Python 3.11+
 - OpenAI API key
-- PostgreSQL (optional, uses SQLite by default)
-- Redis (optional, for caching)
+- Milvus (Docker hoặc Milvus Lite)
+- PostgreSQL (production) hoặc SQLite (development)
+- Redis (optional, cho caching)
 
-### 1. Clone and Install
+### 1. Clone và cài dependencies
+
 ```bash
 git clone <repository-url>
 cd business-chatbot
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Environment Setup
-Create `.env` file:
-```bash
-# Required
-OPENAI_API_KEY=your_openai_api_key_here
+### 2. Cấu hình môi trường
 
-# Optional (defaults provided)
-LLM__MODEL=gpt-4
-VECTOR_DB__PROVIDER=milvus
+Tạo file `.env`:
+
+```bash
+# LLM
+OPENAI_API_KEY=your_openai_api_key_here
+LLM__MODEL=gpt-4o-mini
+
+# Vector DB (Milvus)
 VECTOR_DB__HOST=localhost
 VECTOR_DB__PORT=19530
+VECTOR_DB__COLLECTION_NAME=business_docs
 VECTOR_DB__VECTOR_DIMENSION=512
+
+# Database
 DATABASE__URL=sqlite+aiosqlite:///./business_chatbot.db
+
+# Cache (optional)
 CACHE__HOST=localhost
 CACHE__PORT=6379
 ```
 
-### 3. Run with Docker (Recommended)
+### 3. Chạy với Docker (khuyến nghị)
+
 ```bash
 cd deploy
 docker-compose up -d
 ```
 
-### 4. Or Run Locally
-```bash
-# Seed sample data (optional)
-python scripts/seed_database.py
+### 4. Chạy local
 
-# Run the application
+```bash
+# Ingest dữ liệu mẫu
+python scripts/ingest_data.py
+
+# Khởi động server
 python main.py
 ```
 
-## 📊 Usage Examples
+---
 
-### Chat with the Bot
+## API
+
+| Method | Endpoint | Mô tả |
+|--------|----------|-------|
+| `POST` | `/api/v1/chat` | Gửi tin nhắn, nhận phản hồi AI |
+| `GET`  | `/api/v1/chat/{conversation_id}` | Lấy lịch sử hội thoại |
+| `POST` | `/api/v1/data/ingest` | Ingest dữ liệu kinh doanh |
+| `GET`  | `/api/v1/reports` | Truy vấn báo cáo theo khoảng thời gian |
+| `GET`  | `/health` | Health check |
+| `GET`  | `/docs` | Swagger UI |
+
+### Ví dụ
+
 ```bash
+# Chat
 curl -X POST "http://localhost:8000/api/v1/chat" \
   -H "Content-Type: application/json" \
-  -d '{
-    "message": "What were our total sales last month?",
-    "conversation_id": "conv_123"
-  }'
+  -d '{"message": "Doanh thu tháng 3 của khách hàng Anh Hùng là bao nhiêu?", "conversation_id": "uuid-here"}'
+
+# Response
+{
+  "conversation_id": "...",
+  "response": "Doanh thu tháng 3/2024 của khách hàng Anh Hùng là 125,000,000 VND...",
+  "intent": "REVENUE",
+  "timestamp": "2024-03-15T10:30:00",
+  "metadata": {
+    "has_data": true,
+    "used_fallback": false,
+    "tool_used": "text_to_sql"
+  }
+}
 ```
 
-### Ingest Business Data
-```bash
-curl -X POST "http://localhost:8000/api/v1/data/ingest" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "data_type": "revenue",
-    "value": 15000.00,
-    "date": "2024-01-15",
-    "category": "sales",
-    "metadata": {"source": "api"}
-  }'
-```
+---
 
-### Query Reports
-```bash
-curl "http://localhost:8000/api/v1/reports?start_date=2024-01-01&end_date=2024-01-31&query=monthly+revenue"
-```
+## Dữ liệu ingestion
 
-## 🔧 Configuration
+Hệ thống ingest theo 3 lớp tài liệu từ file JSONL trong `data/ingestions/`:
 
-### Settings Structure
-```python
-# config/settings.py
-class Settings(BaseSettings):
-    llm: LLMSettings
-    vector_db: VectorDBSettings
-    embedding: EmbeddingSettings
-    database: DatabaseSettings
-    cache: CacheSettings
-    api: APISettings
-```
-
-### Environment Variables
-- `LLM__OPENAI_API_KEY`: OpenAI API key
-- `LLM__ANTHROPIC_API_KEY`: Anthropic API key (optional)
-- `VECTOR_DB__HOST`: Milvus host (default: localhost)
-- `VECTOR_DB__PORT`: Milvus port (default: 19530)
-- `VECTOR_DB__COLLECTION_NAME`: Milvus collection name
-- `VECTOR_DB__VECTOR_DIMENSION`: Vector dimension (default: 512)
-- `DATABASE__URL`: Database connection URL
-- `CACHE__HOST`: Redis host
-- `CACHE__PORT`: Redis port
-
-## 📁 Project Structure
-
-```
-business-chatbot/
-├── src/                        # Source code
-│   ├── domain/                 # Business domain
-│   ├── application/            # Use cases & services
-│   ├── infrastructure/         # External integrations
-│   └── presentation/           # API & interfaces
-├── config/                     # Configuration
-│   ├── settings.py            # Pydantic settings
-│   └── container.py           # Dependency injection
-├── scripts/                    # Utility scripts
-│   ├── ingest_data.py         # Data ingestion
-│   └── seed_database.py       # Database seeding
-├── deploy/                     # Deployment files
-│   ├── Dockerfile
-│   └── docker-compose.yml
-├── data/                       # Data directory
-├── logs/                       # Log files
-├── main.py                     # Application entry point
-├── requirements.txt            # Python dependencies
-└── README.md                   # This file
-```
-
-## 🧪 Testing
+| File | Mô tả | Lớp |
+|------|-------|-----|
+| `transactions.jsonl` | Từng giao dịch (1 row = 1 doc) | Layer 1 |
+| `customers.jsonl` | Hồ sơ tổng hợp theo khách hàng | Layer 2 |
+| `period_summaries.jsonl` | Tổng hợp theo tháng/quý | Layer 3 |
 
 ```bash
-# Run tests
+python scripts/ingest_data.py
+```
+
+---
+
+## Testing
+
+```bash
+# Tất cả tests
 pytest
 
-# Run with coverage
+# Với coverage
 pytest --cov=src --cov-report=html
+
+# Chỉ unit tests
+pytest tests/unit/
+
+# Chỉ integration tests
+pytest tests/integrate/
 ```
 
-## 📈 Data Ingestion
+---
 
-### CSV Data
-```bash
-python scripts/ingest_data.py --csv data/revenue.csv --data-type revenue
+## Dependency Injection
+
+Toàn bộ dependencies được quản lý trong `config/container.py` bằng `dependency-injector`:
+
 ```
-
-### Knowledge Base
-```bash
-python scripts/ingest_data.py --knowledge-base docs/
+Container
+├── Infrastructure: llm_service, milvus_client, embedding_service, conversation_repo, ...
+├── Application:    query_analyzer, schema_linker, sql_generator, sql_validator, context_builder
+├── Application/Agent:  text_to_sql_tool → analytics_use_case
+│                       rag_tool         → search_documents_use_case + context_builder
+│                       agent_service    → query_analyzer + tools + llm_service
+└── Use Cases:      chat_use_case    → agent_service + conversation_repo
 ```
-
-## 🔍 Monitoring
-
-- Health check: `GET /health`
-- API documentation: `GET /docs`
-- Alternative docs: `GET /redoc`
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.

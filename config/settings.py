@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 from typing import Optional
 
@@ -26,8 +26,16 @@ class EmbeddingSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
-    url: str = "sqlite+aiosqlite:///./business_chatbot.db"
+    host: str = "localhost"
+    port: int = 5432
+    username: str = "congvq"
+    password: str = "congvq"
+    db_name: str = "ai_assistant"
     echo: bool = False
+
+    @property
+    def url(self) -> str:
+        return f"postgresql+asyncpg://{self.username}:{self.password}@{self.host}:{self.port}/{self.db_name}"
 
 
 class CacheSettings(BaseModel):
@@ -42,6 +50,17 @@ class APISettings(BaseModel):
     host: str = "0.0.0.0"
     port: int = 8000
     debug: bool = False
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
+
+
+class AuthSettings(BaseModel):
+    jwt_secret: str = "change-this-development-secret-key-before-production"
+    jwt_issuer: str = "business-chatbot"
+    jwt_audience: str = "business-chatbot-web"
+    access_token_minutes: int = 15
+    refresh_token_days: int = 30
 
 
 class Settings(BaseSettings):
@@ -52,6 +71,7 @@ class Settings(BaseSettings):
     database: DatabaseSettings = DatabaseSettings()
     cache: CacheSettings = CacheSettings()
     api: APISettings = APISettings()
+    auth: AuthSettings = AuthSettings()
 
     class Config:
         env_nested_delimiter = "__"

@@ -1,69 +1,23 @@
 import asyncio
-import uuid
-
-from pymilvus import (
-    MilvusClient,
-    DataType
-)
-from src.domain.interfaces.i_ingestion_repository import IIngestionRepository
+from src.domain.repositories.i_ingestion_repository import IIngestionRepository
 from src.domain.entities.document_chunk import DocumentChunk
-from src.infrastructure.embedding.openai_embedding import OpenAIEmbedding
-
-
-COLLECTION_NAME = "business_docs"
-EMBEDDING_DIM   = 1536  # text-embedding-3-small
-
+from src.domain.interfaces.i_embedding_service import IEmbeddingService
+from src.domain.interfaces.i_vector_db import IVectorDB
 
 class MilvusIngestionRepository(IIngestionRepository):
 
     def __init__(
         self,
-        embedding_service: OpenAIEmbedding,
-        host: str = "localhost",
-        port: str = "19530",
-        collection_name: str = COLLECTION_NAME,
-        embedding_dim: int = EMBEDDING_DIM,
+        embedding_service: IEmbeddingService,
+        client: IVectorDB = None,
+        collection_name: str = "business_data",
+        embedding_dim: int = 1024,
     ):
-        self.client = MilvusClient(uri=f"http://{host}:{port}")
+        self.client = client
         self.embedder = embedding_service
         self.collection_name = collection_name
         self.embedding_dim = embedding_dim
-        self._ensure_collection()
-
-    # ─────────────────────────────────────────
-    # Setup collection
-    # ─────────────────────────────────────────
-
-    def _ensure_collection(self) -> None:
-        if self.client.has_collection(self.collection_name):
-            return
-
-        schema = self.client.create_schema(auto_id=False)
-        schema.add_field("doc_id",    DataType.VARCHAR, max_length=128, is_primary=True)
-        schema.add_field("doc_type",  DataType.VARCHAR, max_length=32)
-        schema.add_field("text",      DataType.VARCHAR, max_length=4096)
-        schema.add_field("embedding", DataType.FLOAT_VECTOR, dim=self.embedding_dim)
-
-        # Metadata fields để filter trước khi search
-        schema.add_field("year",       DataType.INT16)
-        schema.add_field("month",      DataType.INT8)
-        schema.add_field("customer_id",DataType.VARCHAR, max_length=128)
-        schema.add_field("co_no",      DataType.BOOL)
-        schema.add_field("doanh_thu",  DataType.DOUBLE)
-
-        index_params = self.client.prepare_index_params()
-        index_params.add_index(
-            field_name  = "embedding",
-            index_type  = "HNSW",
-            metric_type = "COSINE",
-            params      = {"M": 16, "efConstruction": 200},
-        )
-
-        self.client.create_collection(
-            collection_name = self.collection_name,
-            schema          = schema,
-            index_params    = index_params,
-        )
+        
 
     # ─────────────────────────────────────────
     # IIngestionRepository implementation
@@ -83,11 +37,13 @@ class MilvusIngestionRepository(IIngestionRepository):
 
         results = await asyncio.to_thread(
             self.client.query,
-            collection_name = self.collection_name,
             filter          = " && ".join(expr_parts) if expr_parts else "",
             output_fields   = ["doc_id"],
             limit           = page_size,
         )
+
+        if not results:
+            return set(), None
 
         doc_ids     = sorted(r["doc_id"] for r in results)
         next_cursor = doc_ids[-1] if len(doc_ids) == page_size else None
@@ -110,7 +66,6 @@ class MilvusIngestionRepository(IIngestionRepository):
         filter_str = f'doc_type == "period_summary" && year == {year} && month == {month}'
         results = await asyncio.to_thread(
             self.client.query,
-            collection_name = self.collection_name,
             filter          = filter_str,
             output_fields   = ["doanh_thu"],
             limit           = 1,
@@ -124,7 +79,6 @@ class MilvusIngestionRepository(IIngestionRepository):
         filter_str = f'doc_id == "{doc_id}"'
         results = await asyncio.to_thread(
             self.client.query,
-            collection_name = self.collection_name,
             filter          = filter_str,
             output_fields   = ["doc_id", "doanh_thu", "co_no"],
             limit           = 1,
@@ -188,10 +142,9 @@ class MilvusIngestionRepository(IIngestionRepository):
             for j, c in enumerate(batch):
                 existed_doc = await asyncio.to_thread(
                     self.client.query,
-                    collection_name = self.collection_name,
-                    filter          = f'doc_id == "{c.doc_id}"',
-                    output_fields   = ["embedding"],
-                    limit           = 1,
+                    filter        = f'doc_id == "{c.doc_id}"',
+                    output_fields = ["embedding"],
+                    limit         = 1,
                 )
                 rows = [
                     {

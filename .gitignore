@@ -27,3 +27,4 @@ models/*
 data/documents/*
 data/embeddings/*
 data/ingestions/*
+backups/

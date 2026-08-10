@@ -1,5 +1,5 @@
 import anthropic
-from typing import Optional, Dict, Any
+from typing import AsyncGenerator, Optional, Dict, Any
 from src.domain.interfaces.i_llm_service import ILLMService
 
 
@@ -10,6 +10,7 @@ class AnthropicAdapter(ILLMService):
         self.api_key = api_key
         self.model = model
         self.client = anthropic.Anthropic(api_key=api_key)
+        self._async_client = anthropic.AsyncAnthropic(api_key=api_key)
 
     async def generate_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Generate response using Anthropic Claude"""
@@ -91,3 +92,56 @@ class AnthropicAdapter(ILLMService):
 
         except Exception as e:
             return "general"  # fallback
+
+    async def stream_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
+        """Stream response tokens using Anthropic Claude"""
+        system_prompt = "Bạn là một trợ lý chatbot chuyên về phân tích kinh doanh. Hãy trả lời các câu hỏi của người dùng một cách chính xác và hữu ích."
+        retrieved = context.get('retrieved_text') if context else None
+        if retrieved:
+            system_prompt = (
+                "Bạn là một trợ lý chatbot chuyên về phân tích kinh doanh. "
+                "Sử dụng thông tin ngữ cảnh được truy xuất dưới đây để cung cấp câu trả lời chính xác:\n\n"
+                f"{retrieved}"
+            )
+        messages = []
+        if context and 'conversation_history' in context:
+            for msg in context['conversation_history']:
+                messages.append({"role": msg['role'], "content": msg['content']})
+        messages.append({"role": "user", "content": prompt})
+        async with self._async_client.messages.stream(
+            model=self.model,
+            max_tokens=1000,
+            system=system_prompt,
+            messages=messages,
+        ) as stream:
+            async for text in stream.text_stream:
+                yield text
+
+    async def classify_route(self, query: str) -> str:
+        """Classify query into routing label."""
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=20,
+                system='Classify into one of: "text_to_sql", "rag", "hybrid", "conversation". Return only valid JSON: {"route": "<label>"}',
+                messages=[{"role": "user", "content": query}],
+            )
+            import json
+            data = json.loads(response.content[0].text)
+            route = data.get("route", "rag")
+            return route if route in ("text_to_sql", "rag", "hybrid", "conversation") else "conversation"
+        except Exception:
+            return "rag"
+
+    async def rewrite_query(self, prompt: str) -> str:
+        """Rewrite an ambiguous query into a fully explicit one."""
+        try:
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=200,
+                system="Viết lại câu hỏi thành câu hoàn chỉnh, tường minh dựa trên lịch sử hội thoại. Chỉ trả về đúng một câu.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text.strip()
+        except Exception:
+            return prompt
