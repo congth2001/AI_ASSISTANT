@@ -144,6 +144,37 @@ async def test_generation_prompt_uses_linked_schema_and_json_contract():
     assert not prompt.startswith(" ")
 
 
+@pytest.mark.asyncio
+async def test_generation_prompt_teaches_business_invoice_line_lookup():
+    llm = RecordingLLM(
+        json.dumps(
+            [
+                {
+                    "intent": "chi_tiet_hoa_don",
+                    "sql": (
+                        "SELECT l.product_name AS ten_mat_hang "
+                        "FROM sales_invoice_lines l"
+                    ),
+                }
+            ]
+        )
+    )
+    service = SQLService(llm)
+    query = analyzed_query(
+        intent=QueryIntent.PRODUCT,
+        invoice_id="XB28606-0925",
+    )
+
+    await service.generate(query, SchemaLinker().link(query))
+
+    prompt = llm.prompts[0]
+    assert "sales_invoices.invoice_id là khóa kỹ thuật nội bộ" in prompt
+    assert "sales_invoices.invoice_number là mã hóa đơn" in prompt
+    assert "l.invoice_id = i.invoice_id" in prompt
+    assert "i.invoice_number = 'XB28606-0925'" in prompt
+    assert '"sales_invoices.invoice_number": "XB28606-0925"' in prompt
+
+
 def test_parser_fallback_accepts_fenced_cte():
     plans = SQLService._parse("""```sql
         WITH totals AS (
