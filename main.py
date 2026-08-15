@@ -12,6 +12,7 @@ from config.config_manager import get_settings
 from config.container import container
 from src.presentation.api.v1.chat import router as chat_router
 from src.presentation.api.v1.auth import router as auth_router
+from src.presentation.api.v1.analytics import router as analytics_router
 
 def init_config_connections():
     """Initialize connections to external services based on config"""
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
         modules=[
             "src.presentation.api.v1.chat",
             "src.presentation.api.v1.auth",
+            "src.presentation.api.v1.analytics",
         ]
     )
 
@@ -78,6 +80,11 @@ def create_app() -> FastAPI:
         tags=["chat"]
     )
     app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
+    app.include_router(
+        analytics_router,
+        prefix="/api/v1",
+        tags=["analytics"],
+    )
 
 
     # Health check endpoint

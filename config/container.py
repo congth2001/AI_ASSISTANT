@@ -5,6 +5,9 @@ from src.application.use_cases.chat_use_case import ChatUseCase
 from src.application.use_cases.auth_use_case import AuthUseCase
 from src.application.use_cases.search_document_use_case import SearchDocumentsUseCase
 from src.application.use_cases.analytics_use_case import AnalyticsUseCase
+from src.application.use_cases.dashboard_analytics_use_case import (
+    DashboardAnalyticsUseCase,
+)
 from src.application.use_cases.sync_business_data_use_case import (
     SyncBusinessDataUseCase,
 )
@@ -20,6 +23,9 @@ from src.application.agent.tools.rag_tool import RAGTool
 from src.application.agent.agent_service import AgentService
 
 from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
+from src.infrastructure.repositories.dashboard_analytics_repository import (
+    DashboardAnalyticsRepository,
+)
 from src.infrastructure.repositories.auth_repository import AuthRepository
 from src.infrastructure.repositories.milvus_search_repository import (
     MilvusSearchRepository,
@@ -153,6 +159,11 @@ class Container(containers.DeclarativeContainer):
         engine=postgres_client.provided.engine,
     )
 
+    dashboard_analytics_repository = Singleton(
+        DashboardAnalyticsRepository,
+        session_factory=session_factory,
+    )
+
     # SQL pipeline services (steps 4-6)
     schema_linker = Singleton(SchemaLinker)
     sql_service = Singleton(SQLService, llm_service=llm_service)
@@ -162,6 +173,11 @@ class Container(containers.DeclarativeContainer):
         analytics_repo=analytics_repository,
         schema_linker=schema_linker,
         sql_service=sql_service,
+    )
+
+    dashboard_analytics_use_case = Singleton(
+        DashboardAnalyticsUseCase,
+        repository=dashboard_analytics_repository,
     )
 
     # Use Cases
