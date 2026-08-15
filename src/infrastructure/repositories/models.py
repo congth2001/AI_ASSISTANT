@@ -141,6 +141,16 @@ class Customer(Base):
 
     __table_args__ = (
         Index("ix_customers_customer_name", "customer_name"),
+        Index(
+            "ix_customers_active_ward_name",
+            "ward_name",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "ix_customers_active_village_name",
+            "village_name",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         UniqueConstraint(
             "customer_identity_key",
             name="uq_customers_customer_identity_key",
@@ -211,6 +221,11 @@ class SalesInvoice(Base):
             unique=True,
         ),
         Index("ix_sales_invoices_issued_at", "issued_at"),
+        Index(
+            "ix_sales_invoices_active_issued_at",
+            "issued_at",
+            postgresql_where=text("deleted_at IS NULL"),
+        ),
         Index("ix_sales_invoices_customer_id", "customer_id"),
         CheckConstraint(
             "invoice_total_amount >= 0",
