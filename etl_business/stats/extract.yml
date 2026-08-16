@@ -1,0 +1,56 @@
+# Deterministic mapping from the real iShopman schema to the ETL canonical contract.
+datasets:
+  products:
+    enabled: true
+    table: goods
+    columns:
+      product_id: goods_id
+      category_id: category_id
+      product_name: goods_name
+      unit_name: unit
+    filename: products
+
+  product_categories:
+    enabled: true
+    table: goods_category
+    columns:
+      category_id: category_id
+      product_category_name: category_name
+    filename: product_categories
+
+  customers:
+    enabled: true
+    table: contacts
+    columns:
+      customer_id: contact_id
+      customer_name: contact_name
+      address_detail: address_local
+    filename: customers
+
+  sales:
+    enabled: true
+    table: exim_export_invoice
+    columns:
+      invoice_id: invoice_id
+      invoice_number: invoice_no
+      customer_id: contact_id
+      issued_at: invoice_date
+      invoice_total_amount: total_cost
+      debt_delta_amount: money_debit
+    order_by: "[invoice_id]"
+    filename: sales
+
+  sale_items:
+    enabled: true
+    table: exim_export_invoice_details
+    columns:
+      source_line_id: id
+      invoice_id: invoice_id
+      product_id: goods_id
+      quantity: quantity
+      unit_price: unit_price
+      discount: discount
+    order_by: "[invoice_id], [id]"
+    filename: sale_items
+
+extra_tables: []

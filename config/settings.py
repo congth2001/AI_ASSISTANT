@@ -63,6 +63,17 @@ class AuthSettings(BaseModel):
     refresh_token_days: int = 30
 
 
+class ETLSettings(BaseModel):
+    source_path: str = ""
+    mdb_member: Optional[str] = None
+    mdb_password: str = ""
+    output_dir: str = "data/etl"
+    snapshot_dir: str = "data/documents"
+    extract_config_path: str = "etl_business/stats/extract.yml"
+    product_aliases_path: str = "etl_business/stats/product_aliases.json"
+    lock_path: str = "data/etl/business-etl.lock"
+
+
 class Settings(BaseSettings):
     """Main application settings — populated from local.yml via ConfigManager"""
     llm: LLMSettings
@@ -72,6 +83,7 @@ class Settings(BaseSettings):
     cache: CacheSettings = CacheSettings()
     api: APISettings = APISettings()
     auth: AuthSettings = AuthSettings()
+    etl: ETLSettings = ETLSettings()
 
     class Config:
         env_nested_delimiter = "__"
