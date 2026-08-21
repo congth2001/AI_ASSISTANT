@@ -3,7 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, distinct, exists, func, select
+from sqlalchemy import Select, distinct, exists, func, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.domain.entities.dashboard_analytics import (
@@ -21,8 +21,11 @@ from src.domain.repositories.i_dashboard_analytics_repository import (
 )
 from src.infrastructure.repositories.models import (
     Customer,
+    CustomerDebtTransaction,
     SalesInvoice,
     SalesInvoiceLine,
+    SalesReturn,
+    SalesReturnLine,
 )
 
 
@@ -99,23 +102,116 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
             predicates.append(Customer.deleted_at.is_(None))
         return predicates
 
+    @staticmethod
+    def _sales_return_scope(filters: DashboardFilters):
+        """Return FROM/predicates for revenue-reducing customer returns."""
+        needs_customer = bool(
+            filters.customer_id or filters.ward_names or filters.village_names
+        )
+        from_clause = CustomerDebtTransaction.__table__
+        predicates = [
+            CustomerDebtTransaction.deleted_at.is_(None),
+            CustomerDebtTransaction.source_type == "sales_return",
+            CustomerDebtTransaction.occurred_at >= filters.date_from,
+            CustomerDebtTransaction.occurred_at < filters.date_to,
+        ]
+        if needs_customer:
+            from_clause = from_clause.join(
+                Customer.__table__,
+                Customer.customer_id == CustomerDebtTransaction.customer_id,
+            )
+            predicates.append(Customer.deleted_at.is_(None))
+            if filters.customer_id:
+                predicates.append(Customer.customer_id == filters.customer_id)
+            if filters.ward_names:
+                predicates.append(Customer.ward_name.in_(filters.ward_names))
+            if filters.village_names:
+                predicates.append(Customer.village_name.in_(filters.village_names))
+        return from_clause, predicates
+
     async def get_metric_snapshot(
         self, filters: DashboardFilters
     ) -> DashboardMetricSnapshot:
         from_clause, predicates = self._invoice_scope(filters)
+        debt_from = CustomerDebtTransaction.__table__
+        debt_predicates = [
+            CustomerDebtTransaction.deleted_at.is_(None),
+            CustomerDebtTransaction.occurred_at >= filters.date_from,
+            CustomerDebtTransaction.occurred_at < filters.date_to,
+        ]
+        if filters.customer_id or filters.ward_names or filters.village_names:
+            debt_from = debt_from.join(
+                Customer.__table__,
+                Customer.customer_id == CustomerDebtTransaction.customer_id,
+            )
+            debt_predicates.append(Customer.deleted_at.is_(None))
+            if filters.customer_id:
+                debt_predicates.append(Customer.customer_id == filters.customer_id)
+            if filters.ward_names:
+                debt_predicates.append(Customer.ward_name.in_(filters.ward_names))
+            if filters.village_names:
+                debt_predicates.append(Customer.village_name.in_(filters.village_names))
+        debt_delta = (
+            select(func.coalesce(func.sum(CustomerDebtTransaction.amount), 0))
+            .select_from(debt_from)
+            .where(*debt_predicates)
+            .scalar_subquery()
+        )
+        return_from, return_predicates = self._sales_return_scope(filters)
+        return_amount = (
+            select(func.coalesce(func.sum(CustomerDebtTransaction.amount), 0))
+            .select_from(return_from)
+            .where(*return_predicates)
+            .scalar_subquery()
+        )
+        gross_revenue = func.coalesce(func.sum(SalesInvoice.invoice_total_amount), 0)
+        total_revenue = gross_revenue + return_amount
+        if filters.category_names or filters.product_names:
+            line_from = SalesInvoiceLine.__table__.join(
+                SalesInvoice.__table__, SalesInvoice.invoice_id == SalesInvoiceLine.invoice_id
+            )
+            if filters.customer_id or filters.ward_names or filters.village_names:
+                line_from = line_from.join(Customer.__table__, Customer.customer_id == SalesInvoice.customer_id)
+            sales_line_total = (
+                select(func.coalesce(func.sum(SalesInvoiceLine.line_amount), 0))
+                .select_from(line_from)
+                .where(*self._line_predicates(filters))
+                .scalar_subquery()
+            )
+            return_line_from = SalesReturnLine.__table__.join(
+                SalesReturn.__table__, SalesReturn.return_id == SalesReturnLine.return_id
+            )
+            return_line_predicates = [
+                SalesReturnLine.deleted_at.is_(None), SalesReturn.deleted_at.is_(None),
+                SalesReturn.returned_at >= filters.date_from, SalesReturn.returned_at < filters.date_to,
+            ]
+            if filters.category_names:
+                return_line_predicates.append(SalesReturnLine.product_category_name.in_(filters.category_names))
+            if filters.product_names:
+                return_line_predicates.append(SalesReturnLine.product_name.in_(filters.product_names))
+            if filters.customer_id or filters.ward_names or filters.village_names:
+                return_line_from = return_line_from.join(Customer.__table__, Customer.customer_id == SalesReturn.customer_id)
+                return_line_predicates.append(Customer.deleted_at.is_(None))
+                if filters.customer_id:
+                    return_line_predicates.append(Customer.customer_id == filters.customer_id)
+                if filters.ward_names:
+                    return_line_predicates.append(Customer.ward_name.in_(filters.ward_names))
+                if filters.village_names:
+                    return_line_predicates.append(Customer.village_name.in_(filters.village_names))
+            returned_line_total = (
+                select(func.coalesce(func.sum(SalesReturnLine.line_amount), 0))
+                .select_from(return_line_from).where(*return_line_predicates).scalar_subquery()
+            )
+            total_revenue = sales_line_total - returned_line_total
         statement = (
             select(
-                func.coalesce(func.sum(SalesInvoice.invoice_total_amount), 0).label(
-                    "total_revenue"
-                ),
+                total_revenue.label("total_revenue"),
                 func.count(SalesInvoice.invoice_id).label("invoice_count"),
                 func.count(distinct(SalesInvoice.customer_id)).label("customer_count"),
                 func.coalesce(func.avg(SalesInvoice.invoice_total_amount), 0).label(
                     "average_invoice_value"
                 ),
-                func.coalesce(func.sum(SalesInvoice.debt_delta_amount), 0).label(
-                    "net_debt_delta"
-                ),
+                debt_delta.label("net_debt_delta"),
             )
             .select_from(from_clause)
             .where(*predicates)
@@ -133,6 +229,63 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
     async def get_time_series(
         self, filters: DashboardFilters, grain: TimeGrain
     ) -> list[TimeSeriesPoint]:
+        if filters.category_names or filters.product_names:
+            sales_from = SalesInvoiceLine.__table__.join(
+                SalesInvoice.__table__, SalesInvoice.invoice_id == SalesInvoiceLine.invoice_id
+            )
+            returns_from = SalesReturnLine.__table__.join(
+                SalesReturn.__table__, SalesReturn.return_id == SalesReturnLine.return_id
+            )
+            sales_predicates = self._line_predicates(filters)
+            return_predicates = [
+                SalesReturnLine.deleted_at.is_(None), SalesReturn.deleted_at.is_(None),
+                SalesReturn.returned_at >= filters.date_from, SalesReturn.returned_at < filters.date_to,
+            ]
+            if filters.customer_id or filters.ward_names or filters.village_names:
+                sales_from = sales_from.join(Customer.__table__, Customer.customer_id == SalesInvoice.customer_id)
+                returns_from = returns_from.join(Customer.__table__, Customer.customer_id == SalesReturn.customer_id)
+                return_predicates.append(Customer.deleted_at.is_(None))
+                if filters.customer_id:
+                    return_predicates.append(Customer.customer_id == filters.customer_id)
+                if filters.ward_names:
+                    return_predicates.append(Customer.ward_name.in_(filters.ward_names))
+                if filters.village_names:
+                    return_predicates.append(Customer.village_name.in_(filters.village_names))
+            if filters.category_names:
+                return_predicates.append(SalesReturnLine.product_category_name.in_(filters.category_names))
+            if filters.product_names:
+                return_predicates.append(SalesReturnLine.product_name.in_(filters.product_names))
+            movements = union_all(
+                select(
+                    func.date_trunc(grain.value, SalesInvoice.issued_at).label("period_start"),
+                    SalesInvoiceLine.line_amount.label("amount"),
+                    func.concat("sale:", SalesInvoice.invoice_id).label("document_key"),
+                ).select_from(sales_from).where(*sales_predicates),
+                select(
+                    func.date_trunc(grain.value, SalesReturn.returned_at).label("period_start"),
+                    (-SalesReturnLine.line_amount).label("amount"),
+                    func.concat("return:", SalesReturn.return_id).label("document_key"),
+                ).select_from(returns_from).where(*return_predicates),
+            ).subquery("line_movements")
+            statement = (
+                select(
+                    movements.c.period_start,
+                    func.sum(movements.c.amount).label("revenue"),
+                    func.count(distinct(movements.c.document_key)).label("invoice_count"),
+                )
+                .group_by(movements.c.period_start)
+                .order_by(movements.c.period_start)
+            )
+            async with self._session_factory() as session:
+                rows = (await session.execute(statement)).all()
+            return [
+                TimeSeriesPoint(
+                    period_start=row.period_start.date() if isinstance(row.period_start, datetime) else row.period_start,
+                    revenue=Decimal(row.revenue), invoice_count=int(row.invoice_count),
+                )
+                for row in rows
+            ]
+
         from_clause, predicates = self._invoice_scope(filters)
         bucket = func.date_trunc(grain.value, SalesInvoice.issued_at).label(
             "period_start"
@@ -152,17 +305,42 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
         )
         async with self._session_factory() as session:
             rows = (await session.execute(statement)).all()
-        return [
-            TimeSeriesPoint(
-                period_start=(
-                    row.period_start.date()
-                    if isinstance(row.period_start, datetime)
-                    else row.period_start
-                ),
-                revenue=Decimal(row.revenue),
-                invoice_count=int(row.invoice_count),
+            return_rows = []
+            if not (filters.category_names or filters.product_names):
+                return_from, return_predicates = self._sales_return_scope(filters)
+                return_bucket = func.date_trunc(
+                    grain.value, CustomerDebtTransaction.occurred_at
+                ).label("period_start")
+                return_statement = (
+                    select(
+                        return_bucket,
+                        func.sum(CustomerDebtTransaction.amount).label("amount"),
+                    )
+                    .select_from(return_from)
+                    .where(*return_predicates)
+                    .group_by(return_bucket)
+                )
+                return_rows = (await session.execute(return_statement)).all()
+
+        points = {}
+        for row in rows:
+            period_start = (
+                row.period_start.date()
+                if isinstance(row.period_start, datetime)
+                else row.period_start
             )
-            for row in rows
+            points[period_start] = [Decimal(row.revenue), int(row.invoice_count)]
+        for row in return_rows:
+            period_start = (
+                row.period_start.date()
+                if isinstance(row.period_start, datetime)
+                else row.period_start
+            )
+            current = points.setdefault(period_start, [Decimal("0"), 0])
+            current[0] += Decimal(row.amount)
+        return [
+            TimeSeriesPoint(period_start=period, revenue=value[0], invoice_count=value[1])
+            for period, value in sorted(points.items())
         ]
 
     async def get_ranking(
@@ -218,11 +396,26 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
                 predicates.append(Customer.ward_name.in_(filters.ward_names))
             if filters.village_names:
                 predicates.append(Customer.village_name.in_(filters.village_names))
+            revenue = func.sum(SalesInvoice.invoice_total_amount)
+            if not (filters.category_names or filters.product_names):
+                customer_returns = (
+                    select(func.coalesce(func.sum(CustomerDebtTransaction.amount), 0))
+                    .where(
+                        CustomerDebtTransaction.deleted_at.is_(None),
+                        CustomerDebtTransaction.source_type == "sales_return",
+                        CustomerDebtTransaction.customer_id == Customer.customer_id,
+                        CustomerDebtTransaction.occurred_at >= filters.date_from,
+                        CustomerDebtTransaction.occurred_at < filters.date_to,
+                    )
+                    .correlate(Customer)
+                    .scalar_subquery()
+                )
+                revenue = revenue + customer_returns
             return (
                 select(
                     Customer.customer_id.label("key"),
                     Customer.customer_name.label("label"),
-                    func.sum(SalesInvoice.invoice_total_amount).label("revenue"),
+                    revenue.label("revenue"),
                     func.count(SalesInvoice.invoice_id).label("invoice_count"),
                 )
                 .select_from(from_clause)
@@ -241,41 +434,93 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
             )
         predicates = self._line_predicates(filters)
 
+        return_from = SalesReturnLine.__table__.join(
+            SalesReturn.__table__, SalesReturn.return_id == SalesReturnLine.return_id
+        )
+        if filters.customer_id or filters.ward_names or filters.village_names:
+            return_from = return_from.join(
+                Customer.__table__, Customer.customer_id == SalesReturn.customer_id
+            )
+        return_predicates = [
+            SalesReturnLine.deleted_at.is_(None),
+            SalesReturn.deleted_at.is_(None),
+            SalesReturn.returned_at >= filters.date_from,
+            SalesReturn.returned_at < filters.date_to,
+        ]
+        if filters.customer_id:
+            return_predicates.append(SalesReturn.customer_id == filters.customer_id)
+        if filters.ward_names:
+            return_predicates.append(Customer.ward_name.in_(filters.ward_names))
+        if filters.village_names:
+            return_predicates.append(Customer.village_name.in_(filters.village_names))
+        if filters.category_names:
+            return_predicates.append(SalesReturnLine.product_category_name.in_(filters.category_names))
+        if filters.product_names:
+            return_predicates.append(SalesReturnLine.product_name.in_(filters.product_names))
+        if filters.customer_id or filters.ward_names or filters.village_names:
+            return_predicates.append(Customer.deleted_at.is_(None))
+
         if dimension == RankingDimension.PRODUCT:
-            key = func.concat_ws(
+            sales_key = func.concat_ws(
                 "|", SalesInvoiceLine.product_name, SalesInvoiceLine.unit_name
             )
+            return_key = func.concat_ws(
+                "|", SalesReturnLine.product_name, SalesReturnLine.unit_name
+            )
+            movements = union_all(
+                select(
+                    sales_key.label("key"),
+                    SalesInvoiceLine.product_name.label("label"),
+                    SalesInvoiceLine.unit_name.label("unit_name"),
+                    SalesInvoiceLine.line_amount.label("revenue"),
+                    SalesInvoiceLine.quantity.label("quantity"),
+                    func.concat("sale:", SalesInvoiceLine.invoice_id).label("document_key"),
+                ).select_from(from_clause).where(*predicates),
+                select(
+                    return_key.label("key"),
+                    SalesReturnLine.product_name.label("label"),
+                    SalesReturnLine.unit_name.label("unit_name"),
+                    (-SalesReturnLine.line_amount).label("revenue"),
+                    (-SalesReturnLine.quantity).label("quantity"),
+                    func.concat("return:", SalesReturnLine.return_id).label("document_key"),
+                ).select_from(return_from).where(*return_predicates),
+            ).subquery("product_movements")
             return (
                 select(
-                    key.label("key"),
-                    SalesInvoiceLine.product_name.label("label"),
-                    func.sum(SalesInvoiceLine.line_amount).label("revenue"),
-                    func.count(distinct(SalesInvoiceLine.invoice_id)).label(
-                        "invoice_count"
-                    ),
-                    func.sum(SalesInvoiceLine.quantity).label("quantity"),
-                    SalesInvoiceLine.unit_name.label("unit_name"),
+                    movements.c.key,
+                    movements.c.label,
+                    func.sum(movements.c.revenue).label("revenue"),
+                    func.count(distinct(movements.c.document_key)).label("invoice_count"),
+                    func.sum(movements.c.quantity).label("quantity"),
+                    movements.c.unit_name,
                 )
-                .select_from(from_clause)
-                .where(*predicates)
-                .group_by(SalesInvoiceLine.product_name, SalesInvoiceLine.unit_name)
+                .select_from(movements)
+                .group_by(movements.c.key, movements.c.label, movements.c.unit_name)
             )
 
-        return (
+        movements = union_all(
             select(
                 SalesInvoiceLine.product_category_name.label("key"),
                 SalesInvoiceLine.product_category_name.label("label"),
-                func.sum(SalesInvoiceLine.line_amount).label("revenue"),
-                func.count(distinct(SalesInvoiceLine.invoice_id)).label(
-                    "invoice_count"
-                ),
+                SalesInvoiceLine.line_amount.label("revenue"),
+                func.concat("sale:", SalesInvoiceLine.invoice_id).label("document_key"),
+            ).select_from(from_clause).where(*predicates, SalesInvoiceLine.product_category_name.is_not(None)),
+            select(
+                SalesReturnLine.product_category_name.label("key"),
+                SalesReturnLine.product_category_name.label("label"),
+                (-SalesReturnLine.line_amount).label("revenue"),
+                func.concat("return:", SalesReturnLine.return_id).label("document_key"),
+            ).select_from(return_from).where(*return_predicates, SalesReturnLine.product_category_name.is_not(None)),
+        ).subquery("category_movements")
+        return (
+            select(
+                movements.c.key,
+                movements.c.label,
+                func.sum(movements.c.revenue).label("revenue"),
+                func.count(distinct(movements.c.document_key)).label("invoice_count"),
             )
-            .select_from(from_clause)
-            .where(
-                *predicates,
-                SalesInvoiceLine.product_category_name.is_not(None),
-            )
-            .group_by(SalesInvoiceLine.product_category_name)
+            .select_from(movements)
+            .group_by(movements.c.key, movements.c.label)
         )
 
     async def get_filter_options(
@@ -367,7 +612,7 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
         search: str | None,
         limit: int,
     ) -> list[str]:
-        statement = (
+        sales_statement = (
             select(distinct(value_column).label("value"))
             .select_from(
                 SalesInvoiceLine.__table__.join(
@@ -381,7 +626,24 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
                 value_column.is_not(None),
             )
         )
+        return_column = getattr(SalesReturnLine, value_column.key)
+        return_statement = (
+            select(distinct(return_column).label("value"))
+            .select_from(
+                SalesReturnLine.__table__.join(
+                    SalesReturn.__table__,
+                    SalesReturn.return_id == SalesReturnLine.return_id,
+                )
+            )
+            .where(
+                SalesReturnLine.deleted_at.is_(None),
+                SalesReturn.deleted_at.is_(None),
+                return_column.is_not(None),
+            )
+        )
         if search:
-            statement = statement.where(value_column.ilike(f"%{search}%"))
-        statement = statement.order_by(value_column).limit(limit)
+            sales_statement = sales_statement.where(value_column.ilike(f"%{search}%"))
+            return_statement = return_statement.where(return_column.ilike(f"%{search}%"))
+        values = union_all(sales_statement, return_statement).subquery("line_filter_values")
+        statement = select(distinct(values.c.value)).order_by(values.c.value).limit(limit)
         return list((await session.execute(statement)).scalars().all())

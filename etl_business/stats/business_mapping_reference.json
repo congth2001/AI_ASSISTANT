@@ -1,0 +1,51 @@
+{
+  "products": {
+    "purpose": "Danh mục sản phẩm/hàng hóa",
+    "recommended_output_columns": [
+      "product_id",
+      "product_name",
+      "product_category_name",
+      "unit_name"
+    ]
+  },
+  "customers": {
+    "purpose": "Khách hàng",
+    "recommended_output_columns": [
+      "customer_id",
+      "customer_name",
+      "address_detail",
+      "village_name",
+      "ward_name"
+    ]
+  },
+  "sales": {
+    "purpose": "Header hóa đơn/giao dịch",
+    "recommended_output_columns": [
+      "invoice_id",
+      "invoice_number",
+      "customer_id",
+      "issued_at",
+      "invoice_total_amount",
+      "debt_delta_amount"
+    ]
+  },
+  "sale_items": {
+    "purpose": "Chi tiết dòng hàng của hóa đơn",
+    "recommended_output_columns": [
+      "invoice_id",
+      "product_id",
+      "quantity",
+      "unit_price",
+      "line_amount"
+    ]
+  },
+  "inventory": {
+    "purpose": "Tồn kho",
+    "recommended_output_columns": [
+      "product_id",
+      "warehouse_id",
+      "quantity",
+      "updated_at"
+    ]
+  }
+}

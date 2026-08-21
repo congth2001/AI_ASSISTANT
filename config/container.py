@@ -37,12 +37,16 @@ from src.infrastructure.repositories.conversation_repository import (
     ConversationRepository,
 )
 from src.infrastructure.repositories.customer_repository import CustomerRepository
+from src.infrastructure.repositories.customer_debt_transaction_repository import (
+    CustomerDebtTransactionRepository,
+)
 from src.infrastructure.repositories.sales_invoice_repository import (
     SalesInvoiceRepository,
 )
 from src.infrastructure.repositories.sales_invoice_line_repository import (
     SalesInvoiceLineRepository,
 )
+from src.infrastructure.repositories.sales_return_repository import SalesReturnRepository
 from src.infrastructure.database.milvus_client import MilvusClient
 from src.infrastructure.database.postgres_client import PostgresClient
 from src.infrastructure.llm.openai_adapter import OpenAIAdapter
@@ -126,6 +130,11 @@ class Container(containers.DeclarativeContainer):
         SalesInvoiceLineRepository, session_factory=session_factory
     )
 
+    customer_debt_transaction_repo = Singleton(
+        CustomerDebtTransactionRepository, session_factory=session_factory
+    )
+    sales_return_repo = Singleton(SalesReturnRepository, session_factory=session_factory)
+
     # Infrastructure - Cache
     cache_service = Singleton(
         RedisCache,
@@ -192,6 +201,8 @@ class Container(containers.DeclarativeContainer):
         customer_repository=customer_repo,
         sales_invoice_repository=sales_invoice_repo,
         sales_invoice_line_repository=sales_invoice_line_repo,
+        customer_debt_transaction_repository=customer_debt_transaction_repo,
+        sales_return_repository=sales_return_repo,
     )
 
     auth_repository = Singleton(AuthRepository, session_factory=session_factory)

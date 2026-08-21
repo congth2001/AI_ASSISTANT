@@ -138,7 +138,9 @@ async def test_generation_prompt_uses_linked_schema_and_json_contract():
     assert "gợi ý bộ lọc: {}" in prompt
     assert "Chỉ trả về một JSON array hợp lệ" in prompt
     assert "Luôn dùng bí danh bảng" in prompt
-    assert "Công nợ hiện tại dùng SUM(i.debt_delta_amount)" in prompt
+    assert "Công nợ dùng SUM(customer_debt_transactions.amount)" in prompt
+    assert 'source_type = \'sales_return\'' in prompt
+    assert "bộ lọc thời gian của nhập trả" in prompt
     assert "So sánh doanh thu tháng 2 và tháng 3 năm 2025" in prompt
     assert "CÂU HỎI NGƯỜI DÙNG:\nCâu hỏi kiểm thử" in prompt
     assert not prompt.startswith(" ")
@@ -207,6 +209,8 @@ async def test_repair_prompt_receives_current_schema():
     assert repaired.intent == "invoice"
     assert "invoice_number" in repaired.sql
     assert "Table: sales_invoices" in llm.prompts[0]
+    assert "source_type = 'sales_return'" in llm.prompts[0]
+    assert "occurred_at" in llm.prompts[0]
 
 
 @pytest.mark.parametrize(

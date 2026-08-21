@@ -30,4 +30,6 @@ data/embeddings/*
 !data/embeddings/.gitkeep
 data/ingestions/*
 !data/ingestions/.gitkeep
+data/etl/*
+!data/etl/.gitkeep
 backups/

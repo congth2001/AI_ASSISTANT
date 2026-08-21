@@ -1,0 +1,95 @@
+# Deterministic mapping from the real iShopman schema to the ETL canonical contract.
+datasets:
+  products:
+    enabled: true
+    table: goods
+    columns:
+      product_id: goods_id
+      category_id: category_id
+      product_name: goods_name
+      unit_name: unit
+    filename: products
+
+  product_categories:
+    enabled: true
+    table: goods_category
+    columns:
+      category_id: category_id
+      product_category_name: category_name
+    filename: product_categories
+
+  customers:
+    enabled: true
+    table: contacts
+    columns:
+      customer_id: contact_id
+      customer_name: contact_name
+      address_detail: address_local
+      opening_receivable: phaithu_dauky
+    filename: customers
+
+  sales:
+    enabled: true
+    table: exim_export_invoice
+    columns:
+      invoice_id: invoice_id
+      invoice_number: invoice_no
+      customer_id: contact_id
+      issued_at: invoice_date
+      invoice_total_amount: total_cost
+      debt_delta_amount: money_debit
+    order_by: "[invoice_id]"
+    filename: sales
+
+  sale_items:
+    enabled: true
+    table: exim_export_invoice_details
+    columns:
+      source_line_id: id
+      invoice_id: invoice_id
+      product_id: goods_id
+      quantity: quantity
+      unit_price: unit_price
+      discount: discount
+    order_by: "[invoice_id], [id]"
+    filename: sale_items
+
+  debt_receipts:
+    enabled: true
+    table: receipt_debt
+    columns:
+      source_id: invoice_id
+      customer_id: contact_id
+      occurred_at: invoice_date
+      amount: invoice_val
+    order_by: "[invoice_id]"
+    filename: debt_receipts
+
+  sales_returns:
+    enabled: true
+    table: exim_import_invoice
+    columns:
+      source_id: invoice_id
+      return_number: invoice_no
+      customer_id: contact_id
+      occurred_at: invoice_date
+      return_total_amount: total_cost
+      amount: money_debit
+    where: "[reason] = 'NT'"
+    order_by: "[invoice_id]"
+    filename: sales_returns
+
+  sales_return_items:
+    enabled: true
+    table: exim_import_invoice_details
+    columns:
+      source_line_id: id
+      source_id: invoice_id
+      product_id: goods_id
+      quantity: quantity
+      unit_price: unit_price
+      discount: discount
+    order_by: "[invoice_id], [id]"
+    filename: sales_return_items
+
+extra_tables: []

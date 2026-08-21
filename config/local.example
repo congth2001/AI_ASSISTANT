@@ -57,3 +57,16 @@ auth:
     jwt_audience: business-chatbot-web
     access_token_minutes: 15
     refresh_token_days: 30
+
+# Business ETL Configuration (Microsoft Access/iShopman)
+etl:
+    source_path: D:\Backup
+    mdb_member: iShopman.mdb
+    mdb_password: ""
+    output_dir: data/etl
+    snapshot_dir: data/documents
+    extract_config_path: etl_business/stats/extract.yml
+    product_aliases_path: etl_business/stats/product_aliases.json
+    customer_ward_aliases_path: etl_business/stats/customer_ward_aliases.json
+    lock_path: data/etl/business-etl.lock
+    opening_balance_date: "2019-01-01"

@@ -1,11 +1,16 @@
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import exists, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from src.domain.repositories.i_customer_repository import ICustomerRepository
-from src.infrastructure.repositories.models import Customer
+from src.infrastructure.repositories.models import (
+    Customer,
+    CustomerDebtTransaction,
+    SalesInvoice,
+    SalesReturn,
+)
 from src.infrastructure.repositories.repository_utils import chunked, model_to_dict
 
 
@@ -86,6 +91,33 @@ class CustomerRepository(ICustomerRepository):
                 )
             await session.commit()
         return customer_ids
+
+    async def soft_delete_unreferenced(self) -> int:
+        async with self.session_factory() as session:
+            active_invoice = exists().where(
+                SalesInvoice.customer_id == Customer.customer_id,
+                SalesInvoice.deleted_at.is_(None),
+            )
+            active_debt = exists().where(
+                CustomerDebtTransaction.customer_id == Customer.customer_id,
+                CustomerDebtTransaction.deleted_at.is_(None),
+            )
+            active_return = exists().where(
+                SalesReturn.customer_id == Customer.customer_id,
+                SalesReturn.deleted_at.is_(None),
+            )
+            result = await session.execute(
+                update(Customer)
+                .where(
+                    Customer.deleted_at.is_(None),
+                    ~active_invoice,
+                    ~active_debt,
+                    ~active_return,
+                )
+                .values(deleted_at=func.now(), updated_at=func.now())
+            )
+            await session.commit()
+            return result.rowcount
 
     async def list(
         self,

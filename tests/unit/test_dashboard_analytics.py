@@ -17,7 +17,7 @@ from src.domain.entities.dashboard_analytics import (
 from src.infrastructure.repositories.dashboard_analytics_repository import (
     DashboardAnalyticsRepository,
 )
-from src.infrastructure.repositories.models import SalesInvoice
+from src.infrastructure.repositories.models import CustomerDebtTransaction, SalesInvoice
 
 
 class FakeDashboardRepository:
@@ -143,6 +143,21 @@ def test_invoice_metric_scope_enforces_soft_delete_time_boundary_and_exists():
     assert "JOIN sales_invoice_lines" not in sql
 
 
+def test_sales_return_scope_only_uses_active_returns_in_same_period():
+    filters = DashboardFilters(date(2025, 3, 1), date(2025, 4, 1))
+    from_clause, predicates = DashboardAnalyticsRepository._sales_return_scope(filters)
+    statement = select(func.sum(CustomerDebtTransaction.amount)).select_from(
+        from_clause
+    ).where(*predicates)
+
+    sql = _compile(statement)
+
+    assert "customer_debt_transactions.deleted_at IS NULL" in sql
+    assert "customer_debt_transactions.source_type = 'sales_return'" in sql
+    assert "customer_debt_transactions.occurred_at >= '2025-03-01'" in sql
+    assert "customer_debt_transactions.occurred_at < '2025-04-01'" in sql
+
+
 def test_product_ranking_uses_line_revenue_and_groups_quantity_by_unit():
     repository = DashboardAnalyticsRepository(session_factory=None)
     statement = repository._ranking_statement(
@@ -152,10 +167,14 @@ def test_product_ranking_uses_line_revenue_and_groups_quantity_by_unit():
 
     sql = _compile(statement)
 
-    assert "sum(sales_invoice_lines.line_amount) AS revenue" in sql
+    assert "UNION ALL" in sql
+    assert "sales_return_lines.line_amount" in sql
+    assert "-sales_return_lines.line_amount" in sql
+    assert "sales_return_lines.quantity" in sql
     assert "sales_invoice_lines.deleted_at IS NULL" in sql
     assert "sales_invoices.deleted_at IS NULL" in sql
-    assert "GROUP BY sales_invoice_lines.product_name, sales_invoice_lines.unit_name" in sql
+    assert "sales_returns.returned_at >= '2025-01-01'" in sql
+    assert "GROUP BY product_movements.key, product_movements.label, product_movements.unit_name" in sql
     assert "sum(sales_invoices.invoice_total_amount)" not in sql
 
 
