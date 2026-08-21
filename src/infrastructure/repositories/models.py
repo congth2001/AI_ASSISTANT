@@ -310,3 +310,106 @@ class SalesInvoiceLine(Base):
             )
         },
     )
+
+
+class SalesReturn(Base):
+    """One row per customer sales-return document from iShopman."""
+
+    __tablename__ = "sales_returns"
+
+    return_id = Column(String(36), primary_key=True)
+    source_id = Column(String(100), nullable=False, unique=True)
+    return_number = Column(String(100), nullable=False, unique=True)
+    returned_at = Column(DateTime, nullable=False)
+    customer_id = Column(
+        postgresql.UUID(as_uuid=False),
+        ForeignKey("customers.customer_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    customer_name_snapshot = Column(Text, nullable=False)
+    customer_address_detail_snapshot = Column(Text, nullable=True)
+    customer_village_name_snapshot = Column(String, nullable=True)
+    customer_ward_name_snapshot = Column(String, nullable=True)
+    return_total_amount = Column(Numeric(18, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    lines = relationship("SalesReturnLine", back_populates="sales_return")
+
+    __table_args__ = (
+        Index("ix_sales_returns_returned_at", "returned_at"),
+        Index("ix_sales_returns_customer_id", "customer_id"),
+        CheckConstraint("return_total_amount >= 0", name="ck_sales_returns_total_nonnegative"),
+        {"comment": "Grain: one customer sales-return document (MDB reason NT)."},
+    )
+
+
+class SalesReturnLine(Base):
+    """One returned product line within a sales-return document."""
+
+    __tablename__ = "sales_return_lines"
+
+    return_line_id = Column(String(36), primary_key=True)
+    return_id = Column(
+        String(36),
+        ForeignKey("sales_returns.return_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_line_id = Column(String(100), nullable=False)
+    line_number = Column(Integer, nullable=False)
+    product_name = Column(Text, nullable=False)
+    product_category_name = Column(String, nullable=True)
+    unit_name = Column(String, nullable=False)
+    unit_price = Column(Numeric(18, 2), nullable=False)
+    quantity = Column(Numeric(18, 3), nullable=False)
+    line_amount = Column(Numeric(18, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    sales_return = relationship("SalesReturn", back_populates="lines")
+
+    __table_args__ = (
+        UniqueConstraint("return_id", "source_line_id", name="uq_sales_return_lines_source"),
+        UniqueConstraint("return_id", "line_number", name="uq_sales_return_lines_line_number"),
+        Index("ix_sales_return_lines_return_id", "return_id"),
+        Index("ix_sales_return_lines_product_name", "product_name"),
+        Index("ix_sales_return_lines_category", "product_category_name"),
+        CheckConstraint("line_number > 0", name="ck_sales_return_lines_line_number_positive"),
+        CheckConstraint("quantity >= 0", name="ck_sales_return_lines_quantity_nonnegative"),
+        CheckConstraint("unit_price >= 0", name="ck_sales_return_lines_unit_price_nonnegative"),
+        CheckConstraint("line_amount >= 0", name="ck_sales_return_lines_amount_nonnegative"),
+        {"comment": "Grain: one returned product line; subtract quantity and line_amount from sales."},
+    )
+
+
+class CustomerDebtTransaction(Base):
+    """Signed customer receivable ledger entry from the source system."""
+
+    __tablename__ = "customer_debt_transactions"
+
+    debt_transaction_id = Column(String(36), primary_key=True)
+    customer_id = Column(
+        postgresql.UUID(as_uuid=False),
+        ForeignKey("customers.customer_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    source_type = Column(String(32), nullable=False)
+    source_id = Column(String(100), nullable=False)
+    occurred_at = Column(DateTime, nullable=False)
+    amount = Column(Numeric(18, 2), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=True)
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_id", name="uq_debt_transactions_source"),
+        Index("ix_debt_transactions_customer_id", "customer_id"),
+        Index("ix_debt_transactions_occurred_at", "occurred_at"),
+        CheckConstraint(
+            "source_type IN ('opening', 'sale', 'receipt', 'sales_return')",
+            name="ck_debt_transactions_source_type",
+        ),
+        {"comment": "Signed receivable ledger: positive increases debt; negative decreases debt."},
+    )

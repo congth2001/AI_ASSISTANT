@@ -71,7 +71,9 @@ class ETLSettings(BaseModel):
     snapshot_dir: str = "data/documents"
     extract_config_path: str = "etl_business/stats/extract.yml"
     product_aliases_path: str = "etl_business/stats/product_aliases.json"
+    customer_ward_aliases_path: str = "etl_business/stats/customer_ward_aliases.json"
     lock_path: str = "data/etl/business-etl.lock"
+    opening_balance_date: str = "2019-01-01"
 
 
 class Settings(BaseSettings):

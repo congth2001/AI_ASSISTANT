@@ -49,13 +49,23 @@ class SQLPrompt:
         với IN (...), liệt kê đúng toàn bộ giá trị canonical trong array.
         11. Phân tích khách hàng phải JOIN customers và nhóm theo c.customer_id,
         c.customer_name; không gộp các khách hàng chỉ vì trùng tên.
-        12. Doanh thu cấp hóa đơn/khách hàng/phường/thời gian dùng
-        SUM(i.invoice_total_amount). Doanh thu sản phẩm/danh mục dùng SUM(l.line_amount).
+        12. "Doanh thu" cấp tổng thể/khách hàng/phường/thời gian mặc định là DOANH THU THUẦN:
+            tổng bán từ SUM(i.invoice_total_amount) cộng với tổng d.amount của các giao dịch
+            customer_debt_transactions có source_type = 'sales_return' (amount nhập trả đã là số âm).
+            Phải tổng hợp bán và nhập trả riêng bằng CTE/subquery rồi mới cộng; lọc bán theo i.issued_at,
+            lọc nhập trả theo d.occurred_at trong cùng khoảng thời gian. Khi nhóm/lọc khách hàng hoặc
+            địa bàn, cả hai vế phải JOIN customers bằng customer_id và áp dụng cùng bộ lọc.
+            Doanh thu sản phẩm/danh mục là doanh thu thuần: tổng sales_invoice_lines.line_amount
+            trừ tổng sales_return_lines.line_amount tại cùng product_name/category/unit_name.
+            Số lượng bán thuần cũng bằng sales_invoice_lines.quantity trừ sales_return_lines.quantity.
+            Phải tổng hợp hai vế riêng rồi ghép theo đúng grain; lọc bán theo issued_at và trả theo returned_at.
         13. Không SUM i.invoice_total_amount sau khi JOIN trực tiếp bảng dòng hàng. Nếu chỉ
             cần lọc hóa đơn có sản phẩm/danh mục phù hợp, dùng EXISTS hoặc CTE invoice_id DISTINCT.
-        14. Công nợ hiện tại dùng SUM(i.debt_delta_amount): số dương là khách còn nợ, số âm
-            là khách ứng trước/dư có. Không gọi invoice_total_amount là công nợ.
-        15. Bộ lọc thời gian luôn đặt trên i.issued_at. Khoảng thời gian dùng cận dưới đóng,
+        14. Công nợ dùng SUM(customer_debt_transactions.amount), luôn lọc deleted_at IS NULL.
+            Số dương là khách còn nợ, số âm là khách ứng trước/dư có.
+            Không dùng sales_invoices.debt_delta_amount hoặc invoice_total_amount để tính công nợ hiện tại.
+        15. Bộ lọc thời gian của hóa đơn bán đặt trên i.issued_at; bộ lọc thời gian của nhập trả
+            đặt trên d.occurred_at. Hai vế doanh thu thuần phải dùng cùng một khoảng cận dưới đóng,
             cận trên mở, ví dụ tháng 3/2025 là >= DATE '2025-03-01' và < DATE '2025-04-01'.
         16. "Top", "cao nhất", "thấp nhất" phải có ORDER BY chỉ số phù hợp và LIMIT.
             Truy vấn chi tiết không được vượt quá result_limit đã cung cấp.
@@ -76,15 +86,15 @@ class SQLPrompt:
 
         Câu hỏi: "Doanh thu tháng 3 năm 2025 là bao nhiêu?"
         Kết quả:
-        [{"intent":"doanh_thu_thang_3_2025","sql":"SELECT COALESCE(SUM(i.invoice_total_amount), 0) AS doanh_thu FROM sales_invoices i WHERE i.deleted_at IS NULL AND i.issued_at >= DATE '2025-03-01' AND i.issued_at < DATE '2025-04-01'"}]
+        [{"intent":"doanh_thu_thang_3_2025","sql":"WITH ban AS (SELECT COALESCE(SUM(i.invoice_total_amount), 0) AS amount FROM sales_invoices i WHERE i.deleted_at IS NULL AND i.issued_at >= DATE '2025-03-01' AND i.issued_at < DATE '2025-04-01'), tra AS (SELECT COALESCE(SUM(d.amount), 0) AS amount FROM customer_debt_transactions d WHERE d.deleted_at IS NULL AND d.source_type = 'sales_return' AND d.occurred_at >= DATE '2025-03-01' AND d.occurred_at < DATE '2025-04-01') SELECT ban.amount + tra.amount AS doanh_thu FROM ban CROSS JOIN tra"}]
 
         Câu hỏi: "Top 5 khách hàng mua nhiều nhất năm 2025"
         Kết quả:
-        [{"intent":"top_5_khach_hang_nam_2025","sql":"SELECT c.customer_id AS ma_khach_hang, c.customer_name AS ten_khach_hang, SUM(i.invoice_total_amount) AS doanh_thu FROM customers c JOIN sales_invoices i ON i.customer_id = c.customer_id AND i.deleted_at IS NULL WHERE c.deleted_at IS NULL AND i.issued_at >= DATE '2025-01-01' AND i.issued_at < DATE '2026-01-01' GROUP BY c.customer_id, c.customer_name ORDER BY doanh_thu DESC LIMIT 5"}]
+        [{"intent":"top_5_khach_hang_nam_2025","sql":"WITH ban AS (SELECT i.customer_id, SUM(i.invoice_total_amount) AS amount FROM sales_invoices i WHERE i.deleted_at IS NULL AND i.issued_at >= DATE '2025-01-01' AND i.issued_at < DATE '2026-01-01' GROUP BY i.customer_id), tra AS (SELECT d.customer_id, SUM(d.amount) AS amount FROM customer_debt_transactions d WHERE d.deleted_at IS NULL AND d.source_type = 'sales_return' AND d.occurred_at >= DATE '2025-01-01' AND d.occurred_at < DATE '2026-01-01' GROUP BY d.customer_id) SELECT c.customer_id AS ma_khach_hang, c.customer_name AS ten_khach_hang, COALESCE(ban.amount, 0) + COALESCE(tra.amount, 0) AS doanh_thu FROM customers c LEFT JOIN ban ON ban.customer_id = c.customer_id LEFT JOIN tra ON tra.customer_id = c.customer_id WHERE c.deleted_at IS NULL AND (ban.customer_id IS NOT NULL OR tra.customer_id IS NOT NULL) ORDER BY doanh_thu DESC LIMIT 5"}]
 
         Câu hỏi: "Doanh thu các sản phẩm thuộc danh mục Gạch trong quý 1 năm 2025"
         Kết quả:
-        [{"intent":"doanh_thu_san_pham_gach_quy_1_2025","sql":"SELECT l.product_name AS ten_san_pham, SUM(l.line_amount) AS doanh_thu FROM sales_invoice_lines l JOIN sales_invoices i ON i.invoice_id = l.invoice_id AND i.deleted_at IS NULL WHERE l.deleted_at IS NULL AND l.product_category_name ILIKE '%Gạch%' AND i.issued_at >= DATE '2025-01-01' AND i.issued_at < DATE '2025-04-01' GROUP BY l.product_name ORDER BY doanh_thu DESC"}]
+        [{"intent":"doanh_thu_san_pham_gach_quy_1_2025","sql":"WITH movements AS (SELECT l.product_name, l.product_category_name, l.line_amount AS amount FROM sales_invoice_lines l JOIN sales_invoices i ON i.invoice_id = l.invoice_id WHERE l.deleted_at IS NULL AND i.deleted_at IS NULL AND i.issued_at >= DATE '2025-01-01' AND i.issued_at < DATE '2025-04-01' UNION ALL SELECT rl.product_name, rl.product_category_name, -rl.line_amount AS amount FROM sales_return_lines rl JOIN sales_returns r ON r.return_id = rl.return_id WHERE rl.deleted_at IS NULL AND r.deleted_at IS NULL AND r.returned_at >= DATE '2025-01-01' AND r.returned_at < DATE '2025-04-01') SELECT product_name AS ten_san_pham, SUM(amount) AS doanh_thu FROM movements WHERE product_category_name ILIKE '%Gạch%' GROUP BY product_name ORDER BY doanh_thu DESC"}]
 
         Câu hỏi: "Tổng doanh thu của các hóa đơn có bán Xi măng"
         Kết quả:
@@ -97,11 +107,11 @@ class SQLPrompt:
 
         Câu hỏi: "Công nợ hiện tại của từng khách hàng"
         Kết quả:
-        [{"intent":"cong_no_theo_khach_hang","sql":"SELECT c.customer_id AS ma_khach_hang, c.customer_name AS ten_khach_hang, COALESCE(SUM(i.debt_delta_amount), 0) AS tong_cong_no FROM customers c LEFT JOIN sales_invoices i ON i.customer_id = c.customer_id AND i.deleted_at IS NULL WHERE c.deleted_at IS NULL GROUP BY c.customer_id, c.customer_name ORDER BY tong_cong_no DESC"}]
+        [{"intent":"cong_no_theo_khach_hang","sql":"SELECT c.customer_id AS ma_khach_hang, c.customer_name AS ten_khach_hang, COALESCE(SUM(d.amount) FILTER (WHERE d.deleted_at IS NULL), 0) AS tong_cong_no FROM customers c LEFT JOIN customer_debt_transactions d ON d.customer_id = c.customer_id WHERE c.deleted_at IS NULL GROUP BY c.customer_id, c.customer_name ORDER BY tong_cong_no DESC"}]
 
         Câu hỏi: "So sánh doanh thu tháng 2 và tháng 3 năm 2025"
         Kết quả:
-        [{"intent":"so_sanh_doanh_thu_thang_2_3_2025","sql":"WITH doanh_thu AS (SELECT COALESCE(SUM(i.invoice_total_amount) FILTER (WHERE i.issued_at >= DATE '2025-02-01' AND i.issued_at < DATE '2025-03-01'), 0) AS doanh_thu_thang_2, COALESCE(SUM(i.invoice_total_amount) FILTER (WHERE i.issued_at >= DATE '2025-03-01' AND i.issued_at < DATE '2025-04-01'), 0) AS doanh_thu_thang_3 FROM sales_invoices i WHERE i.deleted_at IS NULL) SELECT doanh_thu_thang_2, doanh_thu_thang_3, doanh_thu_thang_3 - doanh_thu_thang_2 AS chenh_lech, ROUND((doanh_thu_thang_3 - doanh_thu_thang_2) * 100.0 / NULLIF(doanh_thu_thang_2, 0), 2) AS ty_le_tang_truong_phan_tram FROM doanh_thu"}]
+        [{"intent":"so_sanh_doanh_thu_thang_2_3_2025","sql":"WITH movements AS (SELECT i.issued_at AS occurred_at, i.invoice_total_amount AS amount FROM sales_invoices i WHERE i.deleted_at IS NULL UNION ALL SELECT d.occurred_at, d.amount FROM customer_debt_transactions d WHERE d.deleted_at IS NULL AND d.source_type = 'sales_return'), doanh_thu AS (SELECT COALESCE(SUM(amount) FILTER (WHERE occurred_at >= DATE '2025-02-01' AND occurred_at < DATE '2025-03-01'), 0) AS doanh_thu_thang_2, COALESCE(SUM(amount) FILTER (WHERE occurred_at >= DATE '2025-03-01' AND occurred_at < DATE '2025-04-01'), 0) AS doanh_thu_thang_3 FROM movements) SELECT doanh_thu_thang_2, doanh_thu_thang_3, doanh_thu_thang_3 - doanh_thu_thang_2 AS chenh_lech, ROUND((doanh_thu_thang_3 - doanh_thu_thang_2) * 100.0 / NULLIF(doanh_thu_thang_2, 0), 2) AS ty_le_tang_truong_phan_tram FROM doanh_thu"}]
 
         ĐỊNH DẠNG ĐẦU RA
         Chỉ trả về một JSON array hợp lệ theo đúng cấu trúc:
@@ -133,7 +143,9 @@ class SQLPrompt:
             grain chỉ số. sales_invoices.invoice_id là khóa kỹ thuật dùng để JOIN với
             sales_invoice_lines.invoice_id; mã hóa đơn người dùng nhìn thấy phải lọc trên
             sales_invoices.invoice_number. Không thêm dữ liệu hay điều kiện không có trong
-            truy vấn ban đầu.
+            truy vấn ban đầu. Phải tiếp tục tuân thủ Mandatory metric rules trong lược đồ; khi sửa
+            truy vấn doanh thu thuần không được làm mất vế nhập trả source_type = 'sales_return',
+            và phải giữ cùng khoảng ngày trên issued_at của bán và occurred_at của nhập trả.
 
             Chỉ trả về JSON hợp lệ, không Markdown, comment hoặc dấu chấm phẩy:
             [{{"intent":"truy_van_da_sua","sql":"SELECT ..."}}]

@@ -44,7 +44,11 @@ def load_settings(config_path: str | Path | None = None) -> dict:
         "product_aliases_path": str(
             _resolve_path(etl_settings.product_aliases_path, PROJECT_ROOT)
         ),
+        "customer_ward_aliases_path": str(
+            _resolve_path(etl_settings.customer_ward_aliases_path, PROJECT_ROOT)
+        ),
         "lock_path": str(_resolve_path(etl_settings.lock_path, PROJECT_ROOT)),
+        "opening_balance_date": etl_settings.opening_balance_date,
         "project_config_path": str(local_config),
         "config_path": str(cfg_path),
     }

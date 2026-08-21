@@ -12,6 +12,7 @@ from .extractor import extract_all
 from .reports import export_excel, export_manifest_csv
 from etl_business.pipeline import build_business_snapshots
 from etl_business.job import run_business_etl
+from etl_business.normalization import load_customer_ward_aliases
 
 def require_mdb(runtime: dict):
     if not runtime["source_path"]:
@@ -50,8 +51,14 @@ def cmd_extract(cfg: dict):
         sys.exit(2)
 
     if all(name in datasets for name in ("customers", "sales", "sale_items", "products")):
-        paths = build_business_snapshots(datasets).write_excel(runtime["snapshot_dir"])
-        print(f"Application snapshots: {paths[0]}, {paths[1]}")
+        paths = build_business_snapshots(
+            datasets,
+            customer_ward_aliases=load_customer_ward_aliases(
+                runtime["customer_ward_aliases_path"]
+            ),
+            opening_balance_date=runtime["opening_balance_date"],
+        ).write_excel(runtime["snapshot_dir"])
+        print(f"Application snapshots: {paths[0]}, {paths[1]}, {paths[2]}")
 
 
 def cmd_run(cfg: dict):

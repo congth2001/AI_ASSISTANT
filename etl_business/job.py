@@ -7,7 +7,10 @@ from filelock import FileLock, Timeout
 
 from config.config_manager import ConfigManager
 from config.container import container
-from etl_business.normalization import load_product_aliases
+from etl_business.normalization import (
+    load_customer_ward_aliases,
+    load_product_aliases,
+)
 from etl_business.pipeline import build_business_snapshots
 from etl_business.shop_data_extractor.access import open_mdb_source, resolve_mdb_source
 from etl_business.shop_data_extractor.extractor import extract_all
@@ -39,8 +42,18 @@ async def run_business_etl(config: dict) -> dict[str, Any]:
                 raise RuntimeError(f"Extraction failed for datasets: {names}")
 
             aliases = load_product_aliases(runtime["product_aliases_path"])
-            snapshots = build_business_snapshots(datasets, aliases)
-            customer_path, goods_path = snapshots.write_excel(runtime["snapshot_dir"])
+            ward_aliases = load_customer_ward_aliases(
+                runtime["customer_ward_aliases_path"]
+            )
+            snapshots = build_business_snapshots(
+                datasets,
+                aliases,
+                ward_aliases,
+                runtime["opening_balance_date"],
+            )
+            customer_path, goods_path, debt_path, returns_path, return_lines_path = snapshots.write_excel(
+                runtime["snapshot_dir"]
+            )
 
             app_settings = ConfigManager(
                 runtime["project_config_path"]
@@ -50,6 +63,9 @@ async def run_business_etl(config: dict) -> dict[str, Any]:
                 sync_result = await container.sync_business_data_use_case().sync_all(
                     snapshots.customers,
                     snapshots.goods,
+                    snapshots.debt_transactions,
+                    snapshots.sales_returns,
+                    snapshots.sales_return_lines,
                 )
             finally:
                 await container.postgres_client().close()
@@ -58,8 +74,12 @@ async def run_business_etl(config: dict) -> dict[str, Any]:
                 "status": "SUCCESS",
                 "source": str(selected_source),
                 "aliases": len(aliases),
+                "ward_aliases": len(ward_aliases),
                 "customer_snapshot": str(customer_path),
                 "goods_snapshot": str(goods_path),
+                "debt_snapshot": str(debt_path),
+                "returns_snapshot": str(returns_path),
+                "return_lines_snapshot": str(return_lines_path),
                 **sync_result,
             }
     except Timeout as exc:

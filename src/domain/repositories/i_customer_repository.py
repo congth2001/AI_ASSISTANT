@@ -21,6 +21,11 @@ class ICustomerRepository(ABC):
         pass
 
     @abstractmethod
+    async def soft_delete_unreferenced(self) -> int:
+        """Soft-delete active customers with no active invoice or debt entry."""
+        pass
+
+    @abstractmethod
     async def list(
         self,
         name: Optional[str] = None,

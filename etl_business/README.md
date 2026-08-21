@@ -16,6 +16,7 @@ iShopman.mdb
   -> etl_business/stats/extract.yml (source column -> canonical column)
   -> data/etl/csv/*.csv + data/etl/ishopman_extract.xlsx
   -> data/documents/Khach_hang.xlsx + Hang_hoa.xlsx
+  -> data/documents/Cong_no.xlsx
   -> SyncBusinessDataUseCase -> PostgreSQL
 ```
 
@@ -27,6 +28,24 @@ Hai notebook `normalize_customer.ipynb` và `normalize_good.ipynb` chỉ là ngu
 tham khảo ban đầu. Production ETL không đọc hoặc execute notebook: thuật toán
 nằm trong `etl_business/normalization.py`, bảng alias đã được version hóa tại
 `etl_business/stats/product_aliases.json`.
+
+Ledger công nợ được dựng từ bốn nguồn có dấu: `phaithu_dauky`
+và `exim_export_invoice.money_debit` là số dương; `receipt_debt.invoice_val`
+và phiếu nhập trả `NT` là số âm. PostgreSQL reconcile theo khóa
+`(source_type, source_id)` và soft-delete giao dịch biến mất khỏi full snapshot.
+
+Doanh thu tổng thể/theo khách hàng/địa bàn/thời gian là **doanh thu thuần**:
+doanh thu bán từ `sales_invoices.invoice_total_amount` cộng các giao dịch âm
+`customer_debt_transactions.amount` có `source_type = 'sales_return'`, với cùng
+khoảng thời gian. Chi tiết nhập trả được trích từ
+`exim_import_invoice_details` vào `sales_return_lines`. Doanh thu và số lượng
+theo sản phẩm/danh mục là số thuần: dòng bán trừ dòng nhập trả theo cùng sản
+phẩm, danh mục, đơn vị và khoảng ngày.
+
+Tên xã của khách hàng được canonicalize trước khi tạo
+`customer_identity_key`, theo mapping versioned tại
+`etl_business/stats/customer_ward_aliases.json`. Giá trị không rỗng ngoài
+danh sách được map thành `Khác`; giá trị rỗng được giữ là `NULL`.
 
 Bốn dataset `customers`, `sales`, `sale_items`, `products` phải được map sang
 các cột canonical sau; pipeline sẽ fail-fast nếu thiếu cột hoặc sai foreign key:
