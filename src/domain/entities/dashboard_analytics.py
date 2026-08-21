@@ -1,7 +1,7 @@
 """Domain value objects and results for deterministic dashboard analytics."""
 
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import Enum
 
@@ -110,3 +110,34 @@ class DashboardFilterOptions:
     categories: tuple[str, ...]
     products: tuple[str, ...]
 
+
+@dataclass(frozen=True)
+class CustomerOverviewMetrics:
+    total_customers: int
+    purchasing_customers: int
+    total_revenue: Decimal
+    invoice_count: int
+    receivables: Decimal
+    advances: Decimal
+    net_balance: Decimal
+
+
+@dataclass(frozen=True)
+class CustomerOverviewItem:
+    key: str
+    label: str
+    ward_name: str | None
+    village_name: str | None
+    revenue: Decimal
+    invoice_count: int
+    last_purchase_at: datetime | None
+    current_debt: Decimal
+
+
+@dataclass(frozen=True)
+class CustomerOverviewPage:
+    metrics: CustomerOverviewMetrics
+    items: tuple[CustomerOverviewItem, ...]
+    total: int
+    limit: int
+    offset: int

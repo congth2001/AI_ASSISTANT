@@ -21,6 +21,9 @@ from src.presentation.dto.analytics import (
     AnalyticsFilterOptionsResponse,
     AnalyticsPeriodResponse,
     AnalyticsSummaryResponse,
+    CustomerOverviewItemResponse,
+    CustomerOverviewMetricsResponse,
+    CustomerOverviewResponse,
     FilterOptionResponse,
     MetricSnapshotResponse,
     RankingItemResponse,
@@ -67,6 +70,30 @@ def _period(filters: DashboardFilters) -> AnalyticsPeriodResponse:
     return AnalyticsPeriodResponse(
         date_from=filters.date_from,
         date_to=filters.date_to,
+    )
+
+
+@router.get("/customer-overview", response_model=CustomerOverviewResponse)
+@inject
+async def get_customer_overview(
+    filters: DashboardFilters = Depends(dashboard_filters),
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: DashboardAnalyticsUseCase = Depends(
+        Provide[Container.dashboard_analytics_use_case]
+    ),
+) -> CustomerOverviewResponse:
+    page = await use_case.get_customer_overview(filters, limit, offset)
+    return CustomerOverviewResponse(
+        period=_period(filters),
+        metrics=CustomerOverviewMetricsResponse.model_validate(page.metrics),
+        items=[
+            CustomerOverviewItemResponse.model_validate(item) for item in page.items
+        ],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
     )
 
 

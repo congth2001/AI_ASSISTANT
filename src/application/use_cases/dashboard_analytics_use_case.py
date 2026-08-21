@@ -6,6 +6,7 @@ from src.domain.entities.dashboard_analytics import (
     DashboardFilterOptions,
     DashboardFilters,
     DashboardSummary,
+    CustomerOverviewPage,
     RankingDimension,
     RankingPage,
     TimeGrain,
@@ -74,4 +75,18 @@ class DashboardAnalyticsUseCase:
             limit,
             ward_names=ward_names,
             village_names=village_names,
+        )
+
+    async def get_customer_overview(
+        self, filters: DashboardFilters, limit: int, offset: int
+    ) -> CustomerOverviewPage:
+        metrics, items, total = await self._repository.get_customer_overview(
+            filters, limit, offset
+        )
+        return CustomerOverviewPage(
+            metrics=metrics,
+            items=tuple(items),
+            total=total,
+            limit=limit,
+            offset=offset,
         )

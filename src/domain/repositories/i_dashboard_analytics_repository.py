@@ -6,6 +6,8 @@ from src.domain.entities.dashboard_analytics import (
     DashboardFilterOptions,
     DashboardFilters,
     DashboardMetricSnapshot,
+    CustomerOverviewItem,
+    CustomerOverviewMetrics,
     RankingDimension,
     RankingItem,
     TimeGrain,
@@ -44,4 +46,13 @@ class IDashboardAnalyticsRepository(ABC):
         ward_names: tuple[str, ...] = (),
         village_names: tuple[str, ...] = (),
     ) -> DashboardFilterOptions:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_customer_overview(
+        self,
+        filters: DashboardFilters,
+        limit: int,
+        offset: int,
+    ) -> tuple[CustomerOverviewMetrics, list[CustomerOverviewItem], int]:
         raise NotImplementedError
