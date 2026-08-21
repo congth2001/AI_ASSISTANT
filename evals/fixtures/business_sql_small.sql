@@ -40,6 +40,33 @@ CREATE TEMP TABLE sales_invoice_lines (
     UNIQUE (invoice_id, line_number)
 ) ON COMMIT PRESERVE ROWS;
 
+CREATE TEMP TABLE customer_debt_transactions (
+    debt_transaction_id TEXT PRIMARY KEY,
+    customer_id UUID NOT NULL REFERENCES customers(customer_id),
+    source_type TEXT NOT NULL,
+    source_id TEXT NOT NULL,
+    occurred_at TIMESTAMP NOT NULL,
+    amount NUMERIC(18, 2) NOT NULL,
+    deleted_at TIMESTAMP,
+    UNIQUE (source_type, source_id)
+) ON COMMIT PRESERVE ROWS;
+
+CREATE TEMP TABLE sales_returns (
+    return_id TEXT PRIMARY KEY, source_id TEXT NOT NULL UNIQUE,
+    return_number TEXT NOT NULL UNIQUE, returned_at TIMESTAMP NOT NULL,
+    customer_id UUID NOT NULL REFERENCES customers(customer_id),
+    customer_name_snapshot TEXT NOT NULL, return_total_amount NUMERIC(18,2) NOT NULL,
+    deleted_at TIMESTAMP
+) ON COMMIT PRESERVE ROWS;
+
+CREATE TEMP TABLE sales_return_lines (
+    return_line_id TEXT PRIMARY KEY, return_id TEXT NOT NULL REFERENCES sales_returns(return_id),
+    source_line_id TEXT NOT NULL, line_number INTEGER NOT NULL,
+    product_name TEXT NOT NULL, product_category_name TEXT, unit_name TEXT NOT NULL,
+    unit_price NUMERIC(18,2) NOT NULL, quantity NUMERIC(18,3) NOT NULL,
+    line_amount NUMERIC(18,2) NOT NULL, deleted_at TIMESTAMP
+) ON COMMIT PRESERVE ROWS;
+
 INSERT INTO customers (
     customer_id, customer_identity_key, customer_name, ward_name, deleted_at
 ) VALUES
@@ -69,6 +96,39 @@ INSERT INTO sales_invoices (
     ('I008', 'HD-2025-008', TIMESTAMP '2025-04-01 00:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 9000.00, 9000.00, NULL),
     ('I009', 'HD-2025-009', TIMESTAMP '2025-03-20 10:00:00', '00000000-0000-0000-0000-000000000002', 'Cửa hàng Bình Minh', 9999.00, 9999.00, TIMESTAMP '2025-03-21 08:00:00'),
     ('I010', 'HD-2025-010', TIMESTAMP '2025-02-10 10:00:00', '00000000-0000-0000-0000-000000000002', 'Cửa hàng Bình Minh', 700.00, 0.00, NULL);
+
+INSERT INTO customer_debt_transactions (
+    debt_transaction_id, customer_id, source_type, source_id, occurred_at, amount, deleted_at
+) VALUES
+    ('D001', '00000000-0000-0000-0000-000000000001', 'sale', 'I001', TIMESTAMP '2025-01-05 09:00:00', 400.00, NULL),
+    ('D002', '00000000-0000-0000-0000-000000000002', 'sale', 'I002', TIMESTAMP '2025-01-31 23:59:59', 2000.00, NULL),
+    ('D003', '00000000-0000-0000-0000-000000000001', 'receipt', 'R001', TIMESTAMP '2025-02-01 00:00:00', -200.00, NULL),
+    ('D004', '00000000-0000-0000-0000-000000000003', 'sale', 'I004', TIMESTAMP '2025-02-28 23:59:59', 1000.00, NULL),
+    ('D005', '00000000-0000-0000-0000-000000000002', 'sale', 'I005', TIMESTAMP '2025-03-01 00:00:00', 500.00, NULL),
+    ('D006', '00000000-0000-0000-0000-000000000001', 'sale', 'I006', TIMESTAMP '2025-03-15 12:00:00', 3500.00, NULL),
+    ('D007', '00000000-0000-0000-0000-000000000001', 'sale', 'I008', TIMESTAMP '2025-04-01 00:00:00', 9000.00, NULL),
+    ('D008', '00000000-0000-0000-0000-000000000001', 'sales_return', 'NT001', TIMESTAMP '2025-01-20 10:00:00', -100.00, NULL),
+    ('D009', '00000000-0000-0000-0000-000000000001', 'sales_return', 'NT002', TIMESTAMP '2025-03-20 10:00:00', -300.00, NULL),
+    ('D010', '00000000-0000-0000-0000-000000000002', 'sales_return', 'NT003', TIMESTAMP '2025-03-25 10:00:00', -999.00, TIMESTAMP '2025-03-26 08:00:00'),
+    ('D011', '00000000-0000-0000-0000-000000000001', 'sales_return', 'NT004', TIMESTAMP '2025-04-01 12:00:00', -500.00, NULL);
+
+INSERT INTO sales_returns (
+    return_id, source_id, return_number, returned_at, customer_id,
+    customer_name_snapshot, return_total_amount, deleted_at
+) VALUES
+    ('RT001', 'NT001', 'NT-001', TIMESTAMP '2025-01-20 10:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 100.00, NULL),
+    ('RT002', 'NT002', 'NT-002', TIMESTAMP '2025-03-20 10:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 300.00, NULL),
+    ('RT003', 'NT003', 'NT-003', TIMESTAMP '2025-03-25 10:00:00', '00000000-0000-0000-0000-000000000002', 'Cửa hàng Bình Minh', 999.00, TIMESTAMP '2025-03-26 08:00:00'),
+    ('RT004', 'NT004', 'NT-004', TIMESTAMP '2025-04-01 12:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 500.00, NULL);
+
+INSERT INTO sales_return_lines (
+    return_line_id, return_id, source_line_id, line_number, product_name,
+    product_category_name, unit_name, unit_price, quantity, line_amount, deleted_at
+) VALUES
+    ('RL001', 'RT001', '1', 1, 'Gạch A', 'Gạch', 'viên', 10.00, 10.000, 100.00, NULL),
+    ('RL002', 'RT002', '2', 1, 'Thép D10', 'Sắt', 'cây', 60.00, 5.000, 300.00, NULL),
+    ('RL003', 'RT003', '3', 1, 'Gạch A', 'Gạch', 'viên', 99.90, 10.000, 999.00, NULL),
+    ('RL004', 'RT004', '4', 1, 'Thép D10', 'Sắt', 'cây', 50.00, 10.000, 500.00, NULL);
 
 INSERT INTO sales_invoice_lines (
     invoice_line_id,

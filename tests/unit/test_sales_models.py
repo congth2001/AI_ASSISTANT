@@ -7,6 +7,9 @@ from src.infrastructure.repositories.models import (
     Customer,
     SalesInvoice,
     SalesInvoiceLine,
+    CustomerDebtTransaction,
+    SalesReturn,
+    SalesReturnLine,
 )
 from src.infrastructure.repositories.repository_utils import to_decimal
 
@@ -42,6 +45,27 @@ def test_sales_foreign_keys_target_primary_entities():
 
     assert invoice_customer_fk.target_fullname == "customers.customer_id"
     assert line_invoice_fk.target_fullname == "sales_invoices.invoice_id"
+
+
+def test_customer_debt_transaction_uses_signed_exact_amount():
+    assert CustomerDebtTransaction.__tablename__ == "customer_debt_transactions"
+    amount_type = CustomerDebtTransaction.__table__.c.amount.type
+    assert isinstance(amount_type, Numeric)
+    assert (amount_type.precision, amount_type.scale) == (18, 2)
+    customer_fk = next(
+        iter(CustomerDebtTransaction.__table__.c.customer_id.foreign_keys)
+    )
+    assert customer_fk.target_fullname == "customers.customer_id"
+
+
+def test_sales_return_models_preserve_product_quantity_and_value():
+    assert SalesReturn.__tablename__ == "sales_returns"
+    assert SalesReturnLine.__tablename__ == "sales_return_lines"
+    assert (SalesReturn.__table__.c.return_total_amount.type.precision, SalesReturn.__table__.c.return_total_amount.type.scale) == (18, 2)
+    assert (SalesReturnLine.__table__.c.quantity.type.precision, SalesReturnLine.__table__.c.quantity.type.scale) == (18, 3)
+    assert (SalesReturnLine.__table__.c.line_amount.type.precision, SalesReturnLine.__table__.c.line_amount.type.scale) == (18, 2)
+    return_fk = next(iter(SalesReturnLine.__table__.c.return_id.foreign_keys))
+    assert return_fk.target_fullname == "sales_returns.return_id"
 
 
 def test_decimal_conversion_does_not_keep_binary_float_artifacts():

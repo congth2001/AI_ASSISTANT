@@ -21,6 +21,9 @@ class FakeCustomerRepository:
             self.rows[key] = {**row, "customer_id": customer_id}
         return {key: row["customer_id"] for key, row in self.rows.items()}
 
+    async def soft_delete_unreferenced(self):
+        return 0
+
 
 class FakeSalesInvoiceRepository:
     def __init__(self):
@@ -57,6 +60,26 @@ class FakeSalesInvoiceLineRepository:
         for row in rows:
             self.rows[(row["invoice_id"], row["line_number"])] = row
         return len(rows)
+
+
+class FakeDebtTransactionRepository:
+    def __init__(self):
+        self.rows = []
+
+    async def sync_snapshot(self, rows):
+        self.rows = rows
+        return {"synced": len(rows), "deleted": 0}
+
+
+class FakeSalesReturnRepository:
+    def __init__(self):
+        self.returns = []
+        self.lines = []
+
+    async def sync_snapshot(self, returns, lines):
+        self.returns = returns
+        self.lines = lines
+        return {"returns": len(returns), "lines": len(lines)}
 
 
 def build_use_case():
@@ -186,3 +209,83 @@ async def test_sync_rejects_duplicate_invoice_numbers():
 
     with pytest.raises(ValueError, match="duplicate invoice numbers"):
         await use_case.sync_all(customers, line_snapshot())
+
+
+@pytest.mark.asyncio
+async def test_sync_persists_signed_debt_ledger():
+    customers = FakeCustomerRepository()
+    invoices = FakeSalesInvoiceRepository()
+    lines = FakeSalesInvoiceLineRepository()
+    debts = FakeDebtTransactionRepository()
+    use_case = SyncBusinessDataUseCase(customers, invoices, lines, debts)
+    debt_snapshot = pd.DataFrame(
+        [
+            {
+                "source_type": "sale",
+                "source_id": "1",
+                "occurred_at": "2025-01-01",
+                "customer_name": "Anh Tiệc",
+                "address_detail": "Nhà 1",
+                "village_name": "Xóm 3",
+                "ward_name": "Thụy Hưng",
+                "amount": 100,
+            },
+            {
+                "source_type": "receipt",
+                "source_id": "2",
+                "occurred_at": "2025-01-02",
+                "customer_name": "Anh Tiệc",
+                "address_detail": "Nhà 1",
+                "village_name": "Xóm 3",
+                "ward_name": "Thụy Hưng",
+                "amount": -40,
+            },
+        ]
+    )
+
+    result = await use_case.sync_all(
+        customer_snapshot(), line_snapshot(), debt_snapshot
+    )
+
+    assert result["debt_transactions"] == {"synced": 2, "deleted": 0}
+    assert result["customers_deleted"] == 0
+    assert [row["amount"] for row in debts.rows] == [Decimal("100"), Decimal("-40")]
+    assert debts.rows[0]["customer_id"] == debts.rows[1]["customer_id"]
+
+
+@pytest.mark.asyncio
+async def test_sync_persists_sales_return_headers_and_product_lines():
+    customers = FakeCustomerRepository()
+    returns = FakeSalesReturnRepository()
+    use_case = SyncBusinessDataUseCase(
+        customers,
+        FakeSalesInvoiceRepository(),
+        FakeSalesInvoiceLineRepository(),
+        sales_return_repository=returns,
+    )
+    return_snapshot = pd.DataFrame([
+        {
+            "source_id": "8", "return_number": "NT8-0919",
+            "occurred_at": "2025-03-10", "return_total_amount": 150,
+            "customer_name": "Anh Tiệc", "address_detail": "Nhà 1",
+            "village_name": "Xóm 3", "ward_name": "Thụy Hưng",
+        }
+    ])
+    return_lines = pd.DataFrame([
+        {
+            "source_id": "8",
+            "source_line_id": "5", "product_name": "gạch",
+            "product_category_name": "Gạch", "unit_name": "viên",
+            "unit_price": 15, "quantity": 10, "line_amount": 150,
+        }
+    ])
+
+    result = await use_case.sync_all(
+        customer_snapshot(), line_snapshot(), returns_df=return_snapshot,
+        return_lines_df=return_lines,
+    )
+
+    assert result["sales_returns"] == {"returns": 1, "lines": 1}
+    assert returns.returns[0]["return_number"] == "NT8-0919"
+    assert returns.lines[0]["quantity"] == Decimal("10")
+    assert returns.lines[0]["line_amount"] == Decimal("150")

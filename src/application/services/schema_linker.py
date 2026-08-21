@@ -32,7 +32,7 @@ Columns:
     customer_address_detail_snapshot TEXT
     customer_village_name_snapshot   TEXT
     customer_ward_name_snapshot      TEXT
-    invoice_total_amount             NUMERIC(18,2) -- authoritative invoice-level revenue
+    invoice_total_amount             NUMERIC(18,2) -- gross sales before customer returns
     debt_delta_amount                NUMERIC(18,2) -- positive increases receivable; negative is advance/credit
     created_at                       TIMESTAMP
     deleted_at                       TIMESTAMP -- active row requires deleted_at IS NULL
@@ -55,17 +55,70 @@ Columns:
     deleted_at           TIMESTAMP -- active row requires deleted_at IS NULL
 """
 
+_CUSTOMER_DEBT_TRANSACTIONS_SCHEMA = """\
+Table: customer_debt_transactions
+Grain: one signed customer receivable movement from the source ledger.
+Columns:
+    debt_transaction_id TEXT PRIMARY KEY
+    customer_id         UUID REFERENCES customers.customer_id
+    source_type         TEXT -- opening, sale, receipt, sales_return
+    source_id           TEXT -- unique together with source_type
+    occurred_at         TIMESTAMP
+    amount              NUMERIC(18,2) -- positive increases debt; negative decreases debt
+    deleted_at          TIMESTAMPTZ -- active row requires deleted_at IS NULL
+"""
+
+_SALES_RETURNS_SCHEMA = """\
+Table: sales_returns
+Grain: one customer sales-return document (MDB reason NT).
+Columns:
+    return_id          TEXT PRIMARY KEY
+    source_id          TEXT UNIQUE
+    return_number      TEXT UNIQUE
+    returned_at        TIMESTAMP
+    customer_id        UUID REFERENCES customers.customer_id
+    customer_name_snapshot TEXT
+    return_total_amount NUMERIC(18,2) -- positive return-document total
+    deleted_at         TIMESTAMPTZ
+
+Table: sales_return_lines
+Grain: one returned product line.
+Columns:
+    return_line_id      TEXT PRIMARY KEY
+    return_id           TEXT REFERENCES sales_returns.return_id
+    source_line_id      TEXT
+    line_number         INTEGER
+    product_name        TEXT
+    product_category_name TEXT
+    unit_name           TEXT
+    unit_price          NUMERIC(18,2)
+    quantity            NUMERIC(18,3) -- positive returned quantity
+    line_amount         NUMERIC(18,2) -- positive returned value
+    deleted_at          TIMESTAMPTZ
+"""
+
 _RELATIONSHIPS_AND_METRICS = """\
 Relationships:
     customers.customer_id = sales_invoices.customer_id
+    customers.customer_id = customer_debt_transactions.customer_id
     sales_invoices.invoice_id = sales_invoice_lines.invoice_id
+    sales_returns.return_id = sales_return_lines.return_id
+    customers.customer_id = sales_returns.customer_id
 
 Mandatory metric rules:
-    1. Total revenue/by customer/by ward/by invoice:
-       SUM(sales_invoices.invoice_total_amount).
-    2. Product/category revenue:
-       SUM(sales_invoice_lines.line_amount).
-    3. Never SUM invoice_total_amount after a direct one-to-many line join.
+    1. Net revenue overall/by customer/by ward/by time is gross sales minus returns:
+       SUM(sales_invoices.invoice_total_amount) + SUM(customer_debt_transactions.amount)
+       restricted to source_type = 'sales_return'. Return amounts are already negative.
+       Aggregate sales and returns separately before combining them; join both to customers
+       when grouping/filtering by customer or geography. Filter sales on issued_at and
+       returns on occurred_at using the same closed-open date range.
+    2. Net product/category revenue is sales line revenue minus returned line value.
+       Aggregate sales_invoice_lines.line_amount by product/category/unit and subtract
+       sales_return_lines.line_amount at the same grain. Filter sales by issued_at and
+       returns by returned_at using the same date range.
+    3. Net product quantity is SUM(sales_invoice_lines.quantity) minus
+       SUM(sales_return_lines.quantity), grouped by product and unit_name.
+    4. Never SUM invoice_total_amount after a direct one-to-many line join.
        Filter qualifying invoices with EXISTS or a DISTINCT invoice_id CTE.
     4. Group customer analytics by customers.customer_id and customers.customer_name,
        not by customer_name_snapshot alone.
@@ -77,6 +130,10 @@ Mandatory metric rules:
        EXTRACT(MONTH FROM i.issued_at) = 3
        EXTRACT(QUARTER FROM i.issued_at) = 1
        i.issued_at >= DATE '2025-03-01' AND i.issued_at < DATE '2025-04-01'
+    8. Current customer debt is SUM(customer_debt_transactions.amount), never
+       SUM(sales_invoices.debt_delta_amount). Filter debt dates on occurred_at.
+    9. When customer_debt_transactions is used for revenue, include only active rows with
+       source_type = 'sales_return'; do not include opening, sale, or receipt movements.
 """
 
 _FULL_SCHEMA = "\n".join(
@@ -84,6 +141,8 @@ _FULL_SCHEMA = "\n".join(
         _CUSTOMERS_SCHEMA,
         _SALES_INVOICES_SCHEMA,
         _SALES_INVOICE_LINES_SCHEMA,
+        _CUSTOMER_DEBT_TRANSACTIONS_SCHEMA,
+        _SALES_RETURNS_SCHEMA,
         _RELATIONSHIPS_AND_METRICS,
     )
 )
