@@ -3,13 +3,16 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, distinct, exists, func, select, union_all
+from sqlalchemy import Select, and_, distinct, exists, func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.domain.entities.dashboard_analytics import (
     DashboardFilterOptions,
     DashboardFilters,
     DashboardMetricSnapshot,
+    CustomerOverviewItem,
+    CustomerOverviewCursor,
+    CustomerOverviewMetrics,
     FilterOption,
     RankingDimension,
     RankingItem,
@@ -225,6 +228,209 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
             average_invoice_value=Decimal(row.average_invoice_value),
             net_debt_delta=Decimal(row.net_debt_delta),
         )
+
+    @staticmethod
+    def _customer_return_activity(filters: DashboardFilters):
+        return (
+            select(
+                CustomerDebtTransaction.customer_id.label("customer_id"),
+                func.coalesce(func.sum(CustomerDebtTransaction.amount), 0).label(
+                    "return_amount"
+                ),
+            )
+            .where(
+                CustomerDebtTransaction.deleted_at.is_(None),
+                CustomerDebtTransaction.source_type == "sales_return",
+                CustomerDebtTransaction.occurred_at >= filters.date_from,
+                CustomerDebtTransaction.occurred_at < filters.date_to,
+            )
+            .group_by(CustomerDebtTransaction.customer_id)
+            .subquery("customer_return_activity")
+        )
+
+    @staticmethod
+    def _customer_debt_balance(filters: DashboardFilters):
+        return (
+            select(
+                CustomerDebtTransaction.customer_id.label("customer_id"),
+                func.coalesce(
+                    func.sum(CustomerDebtTransaction.amount), 0
+                ).label("current_debt"),
+            )
+            .where(
+                CustomerDebtTransaction.deleted_at.is_(None),
+                CustomerDebtTransaction.occurred_at < filters.date_to,
+            )
+            .group_by(CustomerDebtTransaction.customer_id)
+            .subquery("customer_debt_balance")
+        )
+
+    async def get_customer_overview(
+        self,
+        filters: DashboardFilters,
+        limit: int,
+        cursor: CustomerOverviewCursor | None,
+    ) -> tuple[CustomerOverviewMetrics, list[CustomerOverviewItem], int, bool]:
+        """Return period activity and debt balance as of the period end."""
+        period_predicates = [
+            SalesInvoice.deleted_at.is_(None),
+            SalesInvoice.issued_at >= filters.date_from,
+            SalesInvoice.issued_at < filters.date_to,
+        ]
+        if filters.category_names or filters.product_names:
+            line_predicates = [
+                SalesInvoiceLine.invoice_id == SalesInvoice.invoice_id,
+                SalesInvoiceLine.deleted_at.is_(None),
+            ]
+            if filters.category_names:
+                line_predicates.append(
+                    SalesInvoiceLine.product_category_name.in_(
+                        filters.category_names
+                    )
+                )
+            if filters.product_names:
+                line_predicates.append(
+                    SalesInvoiceLine.product_name.in_(filters.product_names)
+                )
+            period_predicates.append(exists(select(1).where(*line_predicates)))
+
+        period_activity = (
+            select(
+                SalesInvoice.customer_id.label("customer_id"),
+                func.sum(SalesInvoice.invoice_total_amount).label("revenue"),
+                func.count(SalesInvoice.invoice_id).label("invoice_count"),
+                func.max(SalesInvoice.issued_at).label("last_purchase_at"),
+            )
+            .where(*period_predicates)
+            .group_by(SalesInvoice.customer_id)
+            .subquery("customer_period_activity")
+        )
+        return_activity = self._customer_return_activity(filters)
+        debt_balance = self._customer_debt_balance(filters)
+
+        customer_predicates = [Customer.deleted_at.is_(None)]
+        if filters.customer_id:
+            customer_predicates.append(Customer.customer_id == filters.customer_id)
+        if filters.ward_names:
+            customer_predicates.append(Customer.ward_name.in_(filters.ward_names))
+        if filters.village_names:
+            customer_predicates.append(
+                Customer.village_name.in_(filters.village_names)
+            )
+
+        overview = (
+            select(
+                Customer.customer_id.label("key"),
+                Customer.customer_name.label("label"),
+                Customer.ward_name.label("ward_name"),
+                Customer.village_name.label("village_name"),
+                (
+                    func.coalesce(period_activity.c.revenue, 0)
+                    + func.coalesce(return_activity.c.return_amount, 0)
+                ).label("revenue"),
+                func.coalesce(period_activity.c.invoice_count, 0).label(
+                    "invoice_count"
+                ),
+                period_activity.c.last_purchase_at.label("last_purchase_at"),
+                func.coalesce(debt_balance.c.current_debt, 0).label(
+                    "current_debt"
+                ),
+            )
+            .select_from(Customer.__table__)
+            .outerjoin(
+                period_activity,
+                period_activity.c.customer_id == Customer.customer_id,
+            )
+            .outerjoin(
+                debt_balance,
+                debt_balance.c.customer_id == Customer.customer_id,
+            )
+            .outerjoin(
+                return_activity,
+                return_activity.c.customer_id == Customer.customer_id,
+            )
+            .where(*customer_predicates)
+            .subquery("customer_overview")
+        )
+
+        metrics_statement = select(
+            func.count(overview.c.key).label("total_customers"),
+            func.count(overview.c.key)
+            .filter(overview.c.invoice_count > 0)
+            .label("purchasing_customers"),
+            func.coalesce(func.sum(overview.c.revenue), 0).label("total_revenue"),
+            func.coalesce(func.sum(overview.c.invoice_count), 0).label(
+                "invoice_count"
+            ),
+            func.coalesce(
+                func.sum(func.greatest(overview.c.current_debt, 0)), 0
+            ).label("receivables"),
+            func.coalesce(
+                func.sum(func.greatest(-overview.c.current_debt, 0)), 0
+            ).label("advances"),
+            func.coalesce(func.sum(overview.c.current_debt), 0).label(
+                "net_balance"
+            ),
+        )
+        page_statement = select(overview)
+        if cursor:
+            page_statement = page_statement.where(
+                or_(
+                    overview.c.current_debt < cursor.current_debt,
+                    and_(
+                        overview.c.current_debt == cursor.current_debt,
+                        overview.c.revenue < cursor.revenue,
+                    ),
+                    and_(
+                        overview.c.current_debt == cursor.current_debt,
+                        overview.c.revenue == cursor.revenue,
+                        overview.c.label > cursor.label,
+                    ),
+                    and_(
+                        overview.c.current_debt == cursor.current_debt,
+                        overview.c.revenue == cursor.revenue,
+                        overview.c.label == cursor.label,
+                        overview.c.key > cursor.key,
+                    ),
+                )
+            )
+        page_statement = page_statement.order_by(
+            overview.c.current_debt.desc(),
+            overview.c.revenue.desc(),
+            overview.c.label.asc(),
+            overview.c.key.asc(),
+        ).limit(limit + 1)
+
+        async with self._session_factory() as session:
+            metric_row = (await session.execute(metrics_statement)).one()
+            rows = (await session.execute(page_statement)).all()
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+
+        metrics = CustomerOverviewMetrics(
+            total_customers=int(metric_row.total_customers),
+            purchasing_customers=int(metric_row.purchasing_customers),
+            total_revenue=Decimal(metric_row.total_revenue),
+            invoice_count=int(metric_row.invoice_count),
+            receivables=Decimal(metric_row.receivables),
+            advances=Decimal(metric_row.advances),
+            net_balance=Decimal(metric_row.net_balance),
+        )
+        items = [
+            CustomerOverviewItem(
+                key=str(row.key),
+                label=row.label,
+                ward_name=row.ward_name,
+                village_name=row.village_name,
+                revenue=Decimal(row.revenue),
+                invoice_count=int(row.invoice_count),
+                last_purchase_at=row.last_purchase_at,
+                current_debt=Decimal(row.current_debt),
+            )
+            for row in rows
+        ]
+        return metrics, items, metrics.total_customers, has_more
 
     async def get_time_series(
         self, filters: DashboardFilters, grain: TimeGrain

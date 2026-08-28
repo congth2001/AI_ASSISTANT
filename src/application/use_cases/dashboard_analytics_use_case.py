@@ -1,11 +1,16 @@
 """Application orchestration for dashboard analytics."""
 
+import base64
+import binascii
+import json
 from decimal import Decimal, ROUND_HALF_UP
 
 from src.domain.entities.dashboard_analytics import (
     DashboardFilterOptions,
     DashboardFilters,
     DashboardSummary,
+    CustomerOverviewPage,
+    CustomerOverviewCursor,
     RankingDimension,
     RankingPage,
     TimeGrain,
@@ -75,3 +80,66 @@ class DashboardAnalyticsUseCase:
             ward_names=ward_names,
             village_names=village_names,
         )
+
+    async def get_customer_overview(
+        self, filters: DashboardFilters, limit: int, cursor: str | None
+    ) -> CustomerOverviewPage:
+        decoded_cursor = self._decode_customer_cursor(cursor) if cursor else None
+        metrics, items, total, has_more = await self._repository.get_customer_overview(
+            filters, limit, decoded_cursor
+        )
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = self._encode_customer_cursor(
+                CustomerOverviewCursor(
+                    current_debt=last.current_debt,
+                    revenue=last.revenue,
+                    label=last.label,
+                    key=last.key,
+                )
+            )
+        return CustomerOverviewPage(
+            metrics=metrics,
+            items=tuple(items),
+            total=total,
+            limit=limit,
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
+
+    @staticmethod
+    def _encode_customer_cursor(cursor: CustomerOverviewCursor) -> str:
+        payload = json.dumps(
+            {
+                "debt": str(cursor.current_debt),
+                "revenue": str(cursor.revenue),
+                "label": cursor.label,
+                "key": cursor.key,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_customer_cursor(value: str) -> CustomerOverviewCursor:
+        try:
+            padded = value + "=" * (-len(value) % 4)
+            payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+            cursor = CustomerOverviewCursor(
+                current_debt=Decimal(payload["debt"]),
+                revenue=Decimal(payload["revenue"]),
+                label=str(payload["label"]),
+                key=str(payload["key"]),
+            )
+            if (
+                not cursor.current_debt.is_finite()
+                or not cursor.revenue.is_finite()
+                or not cursor.label
+                or not cursor.key
+            ):
+                raise ValueError("Invalid cursor values")
+            return cursor
+        except (binascii.Error, KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Invalid customer overview cursor") from exc

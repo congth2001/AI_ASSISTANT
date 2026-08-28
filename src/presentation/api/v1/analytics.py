@@ -21,6 +21,9 @@ from src.presentation.dto.analytics import (
     AnalyticsFilterOptionsResponse,
     AnalyticsPeriodResponse,
     AnalyticsSummaryResponse,
+    CustomerOverviewItemResponse,
+    CustomerOverviewMetricsResponse,
+    CustomerOverviewResponse,
     FilterOptionResponse,
     MetricSnapshotResponse,
     RankingItemResponse,
@@ -67,6 +70,37 @@ def _period(filters: DashboardFilters) -> AnalyticsPeriodResponse:
     return AnalyticsPeriodResponse(
         date_from=filters.date_from,
         date_to=filters.date_to,
+    )
+
+
+@router.get("/customer-overview", response_model=CustomerOverviewResponse)
+@inject
+async def get_customer_overview(
+    filters: DashboardFilters = Depends(dashboard_filters),
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    cursor: Annotated[str | None, Query(max_length=1000)] = None,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: DashboardAnalyticsUseCase = Depends(
+        Provide[Container.dashboard_analytics_use_case]
+    ),
+) -> CustomerOverviewResponse:
+    try:
+        page = await use_case.get_customer_overview(filters, limit, cursor)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    return CustomerOverviewResponse(
+        period=_period(filters),
+        metrics=CustomerOverviewMetricsResponse.model_validate(page.metrics),
+        items=[
+            CustomerOverviewItemResponse.model_validate(item) for item in page.items
+        ],
+        total=page.total,
+        limit=page.limit,
+        next_cursor=page.next_cursor,
+        has_more=page.has_more,
     )
 
 

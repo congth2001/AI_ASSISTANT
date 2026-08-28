@@ -1,6 +1,6 @@
 """Stable API contracts shared by dashboard endpoints."""
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -83,3 +83,37 @@ class AnalyticsFilterOptionsResponse(BaseModel):
     categories: list[str]
     products: list[str]
 
+
+class CustomerOverviewMetricsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    total_customers: int
+    purchasing_customers: int
+    total_revenue: Decimal
+    invoice_count: int
+    receivables: Decimal
+    advances: Decimal
+    net_balance: Decimal
+
+
+class CustomerOverviewItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    label: str
+    ward_name: str | None
+    village_name: str | None
+    revenue: Decimal
+    invoice_count: int
+    last_purchase_at: datetime | None
+    current_debt: Decimal
+
+
+class CustomerOverviewResponse(BaseModel):
+    period: AnalyticsPeriodResponse
+    metrics: CustomerOverviewMetricsResponse
+    items: list[CustomerOverviewItemResponse]
+    total: int
+    limit: int
+    next_cursor: str | None
+    has_more: bool
