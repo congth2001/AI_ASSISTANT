@@ -12,6 +12,7 @@ from src.domain.entities.dashboard_analytics import (
     DashboardFilterOptions,
     DashboardFilters,
     DashboardMetricSnapshot,
+    CustomerOverviewCursor,
     RankingDimension,
 )
 from src.infrastructure.repositories.dashboard_analytics_repository import (
@@ -156,6 +157,49 @@ def test_sales_return_scope_only_uses_active_returns_in_same_period():
     assert "customer_debt_transactions.source_type = 'sales_return'" in sql
     assert "customer_debt_transactions.occurred_at >= '2025-03-01'" in sql
     assert "customer_debt_transactions.occurred_at < '2025-04-01'" in sql
+
+
+def test_customer_overview_debt_uses_full_signed_ledger_until_period_end():
+    filters = DashboardFilters(date(2025, 3, 1), date(2025, 4, 1))
+    balance = DashboardAnalyticsRepository._customer_debt_balance(filters)
+
+    sql = _compile(select(balance))
+
+    assert "sum(customer_debt_transactions.amount)" in sql
+    assert "customer_debt_transactions.deleted_at IS NULL" in sql
+    assert "customer_debt_transactions.occurred_at < '2025-04-01'" in sql
+    assert "customer_debt_transactions.occurred_at >=" not in sql
+    assert "sales_invoices.debt_delta_amount" not in sql
+
+
+def test_customer_overview_revenue_subtracts_returns_in_selected_period():
+    filters = DashboardFilters(date(2025, 3, 1), date(2025, 4, 1))
+    returns = DashboardAnalyticsRepository._customer_return_activity(filters)
+
+    sql = _compile(select(returns))
+
+    assert "sum(customer_debt_transactions.amount)" in sql
+    assert "customer_debt_transactions.source_type = 'sales_return'" in sql
+    assert "customer_debt_transactions.occurred_at >= '2025-03-01'" in sql
+    assert "customer_debt_transactions.occurred_at < '2025-04-01'" in sql
+
+
+def test_customer_overview_cursor_round_trip_preserves_decimal_and_unicode():
+    cursor = CustomerOverviewCursor(
+        current_debt=Decimal("1200.50"),
+        revenue=Decimal("7000.25"),
+        label="Khách hàng Ánh",
+        key="customer-id",
+    )
+
+    encoded = DashboardAnalyticsUseCase._encode_customer_cursor(cursor)
+
+    assert DashboardAnalyticsUseCase._decode_customer_cursor(encoded) == cursor
+
+
+def test_customer_overview_rejects_invalid_cursor():
+    with pytest.raises(ValueError, match="Invalid customer overview cursor"):
+        DashboardAnalyticsUseCase._decode_customer_cursor("not-a-valid-cursor")
 
 
 def test_product_ranking_uses_line_revenue_and_groups_quantity_by_unit():

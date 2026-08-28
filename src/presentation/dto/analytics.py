@@ -115,4 +115,5 @@ class CustomerOverviewResponse(BaseModel):
     items: list[CustomerOverviewItemResponse]
     total: int
     limit: int
-    offset: int
+    next_cursor: str | None
+    has_more: bool

@@ -135,9 +135,18 @@ class CustomerOverviewItem:
 
 
 @dataclass(frozen=True)
+class CustomerOverviewCursor:
+    current_debt: Decimal
+    revenue: Decimal
+    label: str
+    key: str
+
+
+@dataclass(frozen=True)
 class CustomerOverviewPage:
     metrics: CustomerOverviewMetrics
     items: tuple[CustomerOverviewItem, ...]
     total: int
     limit: int
-    offset: int
+    next_cursor: str | None
+    has_more: bool

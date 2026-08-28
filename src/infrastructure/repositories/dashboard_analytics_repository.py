@@ -3,7 +3,7 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import Select, distinct, exists, func, select, union_all
+from sqlalchemy import Select, and_, distinct, exists, func, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.domain.entities.dashboard_analytics import (
@@ -11,6 +11,7 @@ from src.domain.entities.dashboard_analytics import (
     DashboardFilters,
     DashboardMetricSnapshot,
     CustomerOverviewItem,
+    CustomerOverviewCursor,
     CustomerOverviewMetrics,
     FilterOption,
     RankingDimension,
@@ -228,12 +229,48 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
             net_debt_delta=Decimal(row.net_debt_delta),
         )
 
+    @staticmethod
+    def _customer_return_activity(filters: DashboardFilters):
+        return (
+            select(
+                CustomerDebtTransaction.customer_id.label("customer_id"),
+                func.coalesce(func.sum(CustomerDebtTransaction.amount), 0).label(
+                    "return_amount"
+                ),
+            )
+            .where(
+                CustomerDebtTransaction.deleted_at.is_(None),
+                CustomerDebtTransaction.source_type == "sales_return",
+                CustomerDebtTransaction.occurred_at >= filters.date_from,
+                CustomerDebtTransaction.occurred_at < filters.date_to,
+            )
+            .group_by(CustomerDebtTransaction.customer_id)
+            .subquery("customer_return_activity")
+        )
+
+    @staticmethod
+    def _customer_debt_balance(filters: DashboardFilters):
+        return (
+            select(
+                CustomerDebtTransaction.customer_id.label("customer_id"),
+                func.coalesce(
+                    func.sum(CustomerDebtTransaction.amount), 0
+                ).label("current_debt"),
+            )
+            .where(
+                CustomerDebtTransaction.deleted_at.is_(None),
+                CustomerDebtTransaction.occurred_at < filters.date_to,
+            )
+            .group_by(CustomerDebtTransaction.customer_id)
+            .subquery("customer_debt_balance")
+        )
+
     async def get_customer_overview(
         self,
         filters: DashboardFilters,
         limit: int,
-        offset: int,
-    ) -> tuple[CustomerOverviewMetrics, list[CustomerOverviewItem], int]:
+        cursor: CustomerOverviewCursor | None,
+    ) -> tuple[CustomerOverviewMetrics, list[CustomerOverviewItem], int, bool]:
         """Return period activity and debt balance as of the period end."""
         period_predicates = [
             SalesInvoice.deleted_at.is_(None),
@@ -268,20 +305,8 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
             .group_by(SalesInvoice.customer_id)
             .subquery("customer_period_activity")
         )
-        debt_balance = (
-            select(
-                SalesInvoice.customer_id.label("customer_id"),
-                func.coalesce(func.sum(SalesInvoice.debt_delta_amount), 0).label(
-                    "current_debt"
-                ),
-            )
-            .where(
-                SalesInvoice.deleted_at.is_(None),
-                SalesInvoice.issued_at < filters.date_to,
-            )
-            .group_by(SalesInvoice.customer_id)
-            .subquery("customer_debt_balance")
-        )
+        return_activity = self._customer_return_activity(filters)
+        debt_balance = self._customer_debt_balance(filters)
 
         customer_predicates = [Customer.deleted_at.is_(None)]
         if filters.customer_id:
@@ -299,7 +324,10 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
                 Customer.customer_name.label("label"),
                 Customer.ward_name.label("ward_name"),
                 Customer.village_name.label("village_name"),
-                func.coalesce(period_activity.c.revenue, 0).label("revenue"),
+                (
+                    func.coalesce(period_activity.c.revenue, 0)
+                    + func.coalesce(return_activity.c.return_amount, 0)
+                ).label("revenue"),
                 func.coalesce(period_activity.c.invoice_count, 0).label(
                     "invoice_count"
                 ),
@@ -316,6 +344,10 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
             .outerjoin(
                 debt_balance,
                 debt_balance.c.customer_id == Customer.customer_id,
+            )
+            .outerjoin(
+                return_activity,
+                return_activity.c.customer_id == Customer.customer_id,
             )
             .where(*customer_predicates)
             .subquery("customer_overview")
@@ -340,20 +372,41 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
                 "net_balance"
             ),
         )
-        page_statement = (
-            select(overview)
-            .order_by(
-                overview.c.current_debt.desc(),
-                overview.c.revenue.desc(),
-                overview.c.label.asc(),
+        page_statement = select(overview)
+        if cursor:
+            page_statement = page_statement.where(
+                or_(
+                    overview.c.current_debt < cursor.current_debt,
+                    and_(
+                        overview.c.current_debt == cursor.current_debt,
+                        overview.c.revenue < cursor.revenue,
+                    ),
+                    and_(
+                        overview.c.current_debt == cursor.current_debt,
+                        overview.c.revenue == cursor.revenue,
+                        overview.c.label > cursor.label,
+                    ),
+                    and_(
+                        overview.c.current_debt == cursor.current_debt,
+                        overview.c.revenue == cursor.revenue,
+                        overview.c.label == cursor.label,
+                        overview.c.key > cursor.key,
+                    ),
+                )
             )
-            .limit(limit)
-            .offset(offset)
-        )
+        page_statement = page_statement.order_by(
+            overview.c.current_debt.desc(),
+            overview.c.revenue.desc(),
+            overview.c.label.asc(),
+            overview.c.key.asc(),
+        ).limit(limit + 1)
 
         async with self._session_factory() as session:
             metric_row = (await session.execute(metrics_statement)).one()
             rows = (await session.execute(page_statement)).all()
+
+        has_more = len(rows) > limit
+        rows = rows[:limit]
 
         metrics = CustomerOverviewMetrics(
             total_customers=int(metric_row.total_customers),
@@ -377,7 +430,7 @@ class DashboardAnalyticsRepository(IDashboardAnalyticsRepository):
             )
             for row in rows
         ]
-        return metrics, items, metrics.total_customers
+        return metrics, items, metrics.total_customers, has_more
 
     async def get_time_series(
         self, filters: DashboardFilters, grain: TimeGrain

@@ -5,6 +5,9 @@ from main import create_app
 from fastapi.testclient import TestClient
 
 from config.container import container
+from src.application.use_cases.dashboard_analytics_use_case import (
+    DashboardAnalyticsUseCase,
+)
 from src.domain.entities.dashboard_analytics import (
     DashboardFilterOptions,
     DashboardMetricSnapshot,
@@ -141,7 +144,8 @@ def test_filter_options_api_forwards_geography_context():
 
 def test_customer_overview_contract_for_staff():
     class FakeUseCase:
-        async def get_customer_overview(self, filters, limit, offset):
+        async def get_customer_overview(self, filters, limit, cursor):
+            assert cursor is None
             return CustomerOverviewPage(
                 metrics=CustomerOverviewMetrics(
                     total_customers=2,
@@ -166,7 +170,8 @@ def test_customer_overview_contract_for_staff():
                 ),
                 total=2,
                 limit=limit,
-                offset=offset,
+                next_cursor="next-page-token",
+                has_more=True,
             )
 
     container.dashboard_analytics_use_case.override(providers.Object(FakeUseCase()))
@@ -188,3 +193,31 @@ def test_customer_overview_contract_for_staff():
     assert body["metrics"]["receivables"] == "1200.00"
     assert body["metrics"]["advances"] == "200.00"
     assert body["items"][0]["current_debt"] == "1200.00"
+    assert body["next_cursor"] == "next-page-token"
+    assert body["has_more"] is True
+    assert "offset" not in body
+
+
+def test_customer_overview_rejects_invalid_cursor():
+    container.dashboard_analytics_use_case.override(
+        providers.Object(DashboardAnalyticsUseCase(repository=object()))
+    )
+    try:
+        app = create_app()
+        app.dependency_overrides[get_current_user] = lambda: {
+            "id": "staff-id",
+            "role": "staff",
+        }
+        response = TestClient(app).get(
+            "/api/v1/analytics/customer-overview",
+            params={
+                "date_from": "2025-03-01",
+                "date_to": "2025-04-01",
+                "cursor": "invalid-cursor",
+            },
+        )
+    finally:
+        container.dashboard_analytics_use_case.reset_override()
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Invalid customer overview cursor"

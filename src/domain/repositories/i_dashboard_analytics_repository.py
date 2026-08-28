@@ -7,6 +7,7 @@ from src.domain.entities.dashboard_analytics import (
     DashboardFilters,
     DashboardMetricSnapshot,
     CustomerOverviewItem,
+    CustomerOverviewCursor,
     CustomerOverviewMetrics,
     RankingDimension,
     RankingItem,
@@ -53,6 +54,6 @@ class IDashboardAnalyticsRepository(ABC):
         self,
         filters: DashboardFilters,
         limit: int,
-        offset: int,
-    ) -> tuple[CustomerOverviewMetrics, list[CustomerOverviewItem], int]:
+        cursor: CustomerOverviewCursor | None,
+    ) -> tuple[CustomerOverviewMetrics, list[CustomerOverviewItem], int, bool]:
         raise NotImplementedError
