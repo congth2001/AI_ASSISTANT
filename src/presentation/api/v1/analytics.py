@@ -1,18 +1,29 @@
 """Authenticated deterministic analytics endpoints for dashboards."""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from dependency_injector.wiring import Provide, inject
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
 
 from config.container import Container
 from src.application.use_cases.dashboard_analytics_use_case import (
     DashboardAnalyticsUseCase,
 )
+from src.application.use_cases.export_customer_debt_use_case import (
+    ExportCustomerDebtUseCase,
+)
+from src.application.use_cases.export_order_ledger_use_case import (
+    ExportOrderLedgerUseCase,
+)
 from src.domain.entities.dashboard_analytics import (
+    CustomerDebtExportFilters,
+    CustomerDebtSheetMode,
     DashboardFilters,
+    OrderFilters,
+    OrderLedgerExportFilters,
     RankingDimension,
     TimeGrain,
 )
@@ -26,6 +37,9 @@ from src.presentation.dto.analytics import (
     CustomerOverviewResponse,
     FilterOptionResponse,
     MetricSnapshotResponse,
+    OrderDetailResponse,
+    OrderPageResponse,
+    OrderSummaryResponse,
     RankingItemResponse,
     RankingResponse,
     RevenueComparisonResponse,
@@ -34,6 +48,8 @@ from src.presentation.dto.analytics import (
 )
 
 router = APIRouter(prefix="/analytics")
+
+EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def dashboard_filters(
@@ -73,19 +89,122 @@ def _period(filters: DashboardFilters) -> AnalyticsPeriodResponse:
     )
 
 
+@router.get("/orders", response_model=OrderPageResponse)
+@inject
+async def list_orders(
+    date_from: Annotated[date | None, Query(description="Inclusive start date")] = None,
+    date_to: Annotated[date | None, Query(description="Exclusive end date")] = None,
+    invoice_number: Annotated[str | None, Query(max_length=100)] = None,
+    customer_id: Annotated[UUID | None, Query()] = None,
+    ward: Annotated[list[str] | None, Query()] = None,
+    village: Annotated[list[str] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: DashboardAnalyticsUseCase = Depends(
+        Provide[Container.dashboard_analytics_use_case]
+    ),
+) -> OrderPageResponse:
+    try:
+        filters = OrderFilters(
+            date_from=date_from,
+            date_to=date_to,
+            invoice_number=(
+                invoice_number.strip()
+                if invoice_number and invoice_number.strip()
+                else None
+            ),
+            customer_id=str(customer_id) if customer_id else None,
+            ward_names=tuple(ward or ()),
+            village_names=tuple(village or ()),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    page = await use_case.list_orders(filters, limit, offset)
+    return OrderPageResponse(
+        items=[OrderSummaryResponse.model_validate(item) for item in page.items],
+        total=page.total,
+        limit=page.limit,
+        offset=page.offset,
+    )
+
+
+@router.get("/orders/export")
+@inject
+async def export_order_ledger(
+    customer_id: Annotated[UUID, Query()],
+    date_from: Annotated[date | None, Query()] = None,
+    date_to: Annotated[date | None, Query()] = None,
+    invoice_number: Annotated[str | None, Query(max_length=100)] = None,
+    ward: Annotated[list[str] | None, Query()] = None,
+    village: Annotated[list[str] | None, Query()] = None,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: ExportOrderLedgerUseCase = Depends(
+        Provide[Container.export_order_ledger_use_case]
+    ),
+) -> Response:
+    try:
+        filters = OrderLedgerExportFilters(
+            date_from=date_from,
+            date_to=date_to,
+            invoice_number=(
+                invoice_number.strip()
+                if invoice_number and invoice_number.strip()
+                else None
+            ),
+            customer_id=str(customer_id),
+            ward_names=tuple(ward or ()),
+            village_names=tuple(village or ()),
+        )
+        content = await use_case.execute(filters)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    filename = f"chi-tiet-giao-dich-cong-no-{datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%Y%m%d-%H%M%S')}.xlsx"
+    return Response(
+        content=content,
+        media_type=EXCEL_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+@router.get("/orders/{invoice_id}", response_model=OrderDetailResponse)
+@inject
+async def get_order_detail(
+    invoice_id: Annotated[str, Path(min_length=1, max_length=200)],
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: DashboardAnalyticsUseCase = Depends(
+        Provide[Container.dashboard_analytics_use_case]
+    ),
+) -> OrderDetailResponse:
+    order = await use_case.get_order_detail(invoice_id)
+    if order is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found")
+    return OrderDetailResponse.model_validate(order)
+
+
 @router.get("/customer-overview", response_model=CustomerOverviewResponse)
 @inject
 async def get_customer_overview(
     filters: DashboardFilters = Depends(dashboard_filters),
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
     cursor: Annotated[str | None, Query(max_length=1000)] = None,
+    offset: Annotated[int, Query(ge=0)] = 0,
     _current_user: dict = Depends(require_role("staff", "admin")),
     use_case: DashboardAnalyticsUseCase = Depends(
         Provide[Container.dashboard_analytics_use_case]
     ),
 ) -> CustomerOverviewResponse:
     try:
-        page = await use_case.get_customer_overview(filters, limit, cursor)
+        page = await use_case.get_customer_overview(filters, limit, cursor, offset)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -101,6 +220,46 @@ async def get_customer_overview(
         limit=page.limit,
         next_cursor=page.next_cursor,
         has_more=page.has_more,
+    )
+
+
+@router.get("/customer-debt/export")
+@inject
+async def export_customer_debt(
+    date_from: Annotated[date | None, Query()] = None,
+    date_to: Annotated[date | None, Query()] = None,
+    customer_id: Annotated[list[UUID] | None, Query()] = None,
+    ward: Annotated[list[str] | None, Query()] = None,
+    positive_debt_only: Annotated[bool, Query()] = False,
+    sheet_mode: Annotated[CustomerDebtSheetMode, Query()] = CustomerDebtSheetMode.SINGLE,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: ExportCustomerDebtUseCase = Depends(
+        Provide[Container.export_customer_debt_use_case]
+    ),
+) -> Response:
+    try:
+        filters = CustomerDebtExportFilters(
+            date_from=date_from,
+            date_to=date_to,
+            customer_ids=tuple(str(value) for value in customer_id or ()),
+            ward_names=tuple(ward or ()),
+            positive_debt_only=positive_debt_only,
+            sheet_mode=sheet_mode,
+        )
+        content = await use_case.execute(filters)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    filename = f"cong-no-khach-hang-{datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%Y%m%d-%H%M%S')}.xlsx"
+    return Response(
+        content=content,
+        media_type=EXCEL_MEDIA_TYPE,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
     )
 
 

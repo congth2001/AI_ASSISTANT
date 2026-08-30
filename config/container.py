@@ -8,6 +8,12 @@ from src.application.use_cases.analytics_use_case import AnalyticsUseCase
 from src.application.use_cases.dashboard_analytics_use_case import (
     DashboardAnalyticsUseCase,
 )
+from src.application.use_cases.export_customer_debt_use_case import (
+    ExportCustomerDebtUseCase,
+)
+from src.application.use_cases.export_order_ledger_use_case import (
+    ExportOrderLedgerUseCase,
+)
 from src.application.use_cases.sync_business_data_use_case import (
     SyncBusinessDataUseCase,
 )
@@ -25,6 +31,12 @@ from src.application.agent.agent_service import AgentService
 from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
 from src.infrastructure.repositories.dashboard_analytics_repository import (
     DashboardAnalyticsRepository,
+)
+from src.infrastructure.exporters.customer_debt_workbook_exporter import (
+    OpenpyxlCustomerDebtWorkbookExporter,
+)
+from src.infrastructure.exporters.order_ledger_workbook_exporter import (
+    OpenpyxlOrderLedgerWorkbookExporter,
 )
 from src.infrastructure.repositories.auth_repository import AuthRepository
 from src.infrastructure.repositories.milvus_search_repository import (
@@ -187,6 +199,26 @@ class Container(containers.DeclarativeContainer):
     dashboard_analytics_use_case = Singleton(
         DashboardAnalyticsUseCase,
         repository=dashboard_analytics_repository,
+    )
+
+    customer_debt_workbook_exporter = Singleton(
+        OpenpyxlCustomerDebtWorkbookExporter,
+    )
+
+    export_customer_debt_use_case = Singleton(
+        ExportCustomerDebtUseCase,
+        repository=dashboard_analytics_repository,
+        workbook_exporter=customer_debt_workbook_exporter,
+    )
+
+    order_ledger_workbook_exporter = Singleton(
+        OpenpyxlOrderLedgerWorkbookExporter,
+    )
+
+    export_order_ledger_use_case = Singleton(
+        ExportOrderLedgerUseCase,
+        repository=dashboard_analytics_repository,
+        workbook_exporter=order_ledger_workbook_exporter,
     )
 
     # Use Cases

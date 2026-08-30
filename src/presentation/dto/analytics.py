@@ -84,16 +84,27 @@ class AnalyticsFilterOptionsResponse(BaseModel):
     products: list[str]
 
 
+class CustomerDebtWardSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    ward_name: str
+    debtor_customers: int
+    receivables: Decimal
+
+
 class CustomerOverviewMetricsResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     total_customers: int
     purchasing_customers: int
+    debtor_customers: int
+    non_debtor_customers: int
     total_revenue: Decimal
     invoice_count: int
     receivables: Decimal
     advances: Decimal
     net_balance: Decimal
+    debt_by_ward: list[CustomerDebtWardSummaryResponse]
 
 
 class CustomerOverviewItemResponse(BaseModel):
@@ -117,3 +128,49 @@ class CustomerOverviewResponse(BaseModel):
     limit: int
     next_cursor: str | None
     has_more: bool
+
+
+class OrderSummaryResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    invoice_id: str
+    invoice_number: str
+    issued_at: datetime
+    customer_name: str
+    customer_ward_name: str | None
+    customer_village_name: str | None
+    invoice_total_amount: Decimal
+    line_count: int
+
+
+class OrderPageResponse(BaseModel):
+    items: list[OrderSummaryResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class OrderLineResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    line_number: int
+    product_name: str
+    product_category_name: str | None
+    unit_name: str
+    unit_price: Decimal
+    quantity: Decimal
+    line_amount: Decimal
+
+
+class OrderDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    invoice_id: str
+    invoice_number: str
+    issued_at: datetime
+    customer_name: str
+    customer_address_detail: str | None
+    customer_ward_name: str | None
+    customer_village_name: str | None
+    invoice_total_amount: Decimal
+    lines: list[OrderLineResponse]
