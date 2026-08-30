@@ -11,6 +11,9 @@ from src.domain.entities.dashboard_analytics import (
     DashboardSummary,
     CustomerOverviewPage,
     CustomerOverviewCursor,
+    OrderDetail,
+    OrderFilters,
+    OrderPage,
     RankingDimension,
     RankingPage,
     TimeGrain,
@@ -82,11 +85,17 @@ class DashboardAnalyticsUseCase:
         )
 
     async def get_customer_overview(
-        self, filters: DashboardFilters, limit: int, cursor: str | None
+        self,
+        filters: DashboardFilters,
+        limit: int,
+        cursor: str | None,
+        offset: int = 0,
     ) -> CustomerOverviewPage:
+        if cursor and offset:
+            raise ValueError("Cursor and offset cannot be used together")
         decoded_cursor = self._decode_customer_cursor(cursor) if cursor else None
         metrics, items, total, has_more = await self._repository.get_customer_overview(
-            filters, limit, decoded_cursor
+            filters, limit, decoded_cursor, offset
         )
         next_cursor = None
         if has_more and items:
@@ -107,6 +116,20 @@ class DashboardAnalyticsUseCase:
             next_cursor=next_cursor,
             has_more=has_more,
         )
+
+    async def list_orders(
+        self, filters: OrderFilters, limit: int, offset: int
+    ) -> OrderPage:
+        items, total = await self._repository.list_orders(filters, limit, offset)
+        return OrderPage(
+            items=tuple(items),
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def get_order_detail(self, invoice_id: str) -> OrderDetail | None:
+        return await self._repository.get_order_detail(invoice_id)
 
     @staticmethod
     def _encode_customer_cursor(cursor: CustomerOverviewCursor) -> str:

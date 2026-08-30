@@ -13,6 +13,8 @@ from src.domain.entities.dashboard_analytics import (
     DashboardFilters,
     DashboardMetricSnapshot,
     CustomerOverviewCursor,
+    CustomerDebtExportFilters,
+    OrderFilters,
     RankingDimension,
 )
 from src.infrastructure.repositories.dashboard_analytics_repository import (
@@ -184,6 +186,47 @@ def test_customer_overview_revenue_subtracts_returns_in_selected_period():
     assert "customer_debt_transactions.occurred_at < '2025-04-01'" in sql
 
 
+@pytest.mark.asyncio
+async def test_customer_debt_export_query_uses_inclusive_dates_and_multi_filters():
+    captured = []
+
+    class Result:
+        @staticmethod
+        def all():
+            return []
+
+    class Session:
+        async def execute(self, statement):
+            captured.append(statement)
+            return Result()
+
+    class SessionContext:
+        async def __aenter__(self):
+            return Session()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    repository = DashboardAnalyticsRepository(session_factory=lambda: SessionContext())
+    await repository.get_customer_debt_export(
+        CustomerDebtExportFilters(
+            date_from=date(2025, 3, 1),
+            date_to=date(2025, 3, 31),
+            customer_ids=("11111111-1111-1111-1111-111111111111",),
+            ward_names=("Minh Khai", "Phú Diễn"),
+            positive_debt_only=True,
+        )
+    )
+
+    sql = _compile(captured[0])
+    assert "customer_debt_transactions.occurred_at >= '2025-03-01'" in sql
+    assert "customer_debt_transactions.occurred_at < '2025-04-01'" in sql
+    assert "customers.customer_id IN (" in sql
+    assert "customers.ward_name IN ('Minh Khai', 'Phú Diễn')" in sql
+    assert "coalesce(customer_debt_export_balance.current_debt, 0) > 0" in sql
+    assert "ORDER BY coalesce(customer_debt_export_balance.current_debt, 0) DESC" in sql
+
+
 def test_customer_overview_cursor_round_trip_preserves_decimal_and_unicode():
     cursor = CustomerOverviewCursor(
         current_debt=Decimal("1200.50"),
@@ -195,6 +238,55 @@ def test_customer_overview_cursor_round_trip_preserves_decimal_and_unicode():
     encoded = DashboardAnalyticsUseCase._encode_customer_cursor(cursor)
 
     assert DashboardAnalyticsUseCase._decode_customer_cursor(encoded) == cursor
+
+
+@pytest.mark.asyncio
+async def test_order_list_query_applies_filters_before_pagination():
+    captured = []
+
+    class Result:
+        @staticmethod
+        def scalar_one():
+            return 0
+
+        @staticmethod
+        def all():
+            return []
+
+    class Session:
+        async def execute(self, statement):
+            captured.append(statement)
+            return Result()
+
+    class SessionContext:
+        async def __aenter__(self):
+            return Session()
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return False
+
+    repository = DashboardAnalyticsRepository(session_factory=lambda: SessionContext())
+    await repository.list_orders(
+        OrderFilters(
+            date_from=date(2025, 3, 1),
+            date_to=date(2025, 4, 1),
+            invoice_number="HD-001",
+            customer_id="11111111-1111-1111-1111-111111111111",
+            ward_names=("Minh Khai",),
+            village_names=("Thôn 1",),
+        ),
+        20,
+        40,
+    )
+
+    sql = _compile(captured[1])
+    assert "sales_invoices.issued_at >= '2025-03-01'" in sql
+    assert "sales_invoices.issued_at < '2025-04-01'" in sql
+    assert "sales_invoices.invoice_number" in sql and "HD-001" in sql
+    assert "sales_invoices.customer_id =" in sql
+    assert "sales_invoices.customer_ward_name_snapshot IN ('Minh Khai')" in sql
+    assert "sales_invoices.customer_village_name_snapshot IN ('Thôn 1')" in sql
+    assert "LIMIT 20 OFFSET 40" in sql
 
 
 def test_customer_overview_rejects_invalid_cursor():

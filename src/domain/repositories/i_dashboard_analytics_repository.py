@@ -9,6 +9,13 @@ from src.domain.entities.dashboard_analytics import (
     CustomerOverviewItem,
     CustomerOverviewCursor,
     CustomerOverviewMetrics,
+    CustomerDebtExportFilters,
+    CustomerDebtExportItem,
+    OrderDetail,
+    OrderFilters,
+    OrderLedgerExportData,
+    OrderLedgerExportFilters,
+    OrderSummary,
     RankingDimension,
     RankingItem,
     TimeGrain,
@@ -55,5 +62,28 @@ class IDashboardAnalyticsRepository(ABC):
         filters: DashboardFilters,
         limit: int,
         cursor: CustomerOverviewCursor | None,
+        offset: int = 0,
     ) -> tuple[CustomerOverviewMetrics, list[CustomerOverviewItem], int, bool]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_customer_debt_export(
+        self, filters: CustomerDebtExportFilters
+    ) -> list[CustomerDebtExportItem]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def list_orders(
+        self, filters: OrderFilters, limit: int, offset: int
+    ) -> tuple[list[OrderSummary], int]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_order_detail(self, invoice_id: str) -> OrderDetail | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_order_ledger_export(
+        self, filters: OrderLedgerExportFilters
+    ) -> OrderLedgerExportData:
         raise NotImplementedError
