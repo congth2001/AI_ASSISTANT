@@ -30,13 +30,24 @@ class FakeSalesInvoiceRepository:
         self.rows = {}
 
     async def upsert_many(self, rows):
+        synced_numbers = []
         for row in rows:
             number = row["invoice_number"]
+            synced_numbers.append(number)
             invoice_id = self.rows.get(number, {}).get(
                 "invoice_id", f"invoice-{len(self.rows) + 1}"
             )
             self.rows[number] = {**row, "invoice_id": invoice_id}
-        return {number: row["invoice_id"] for number, row in self.rows.items()}
+        return {
+            number: self.rows[number]["invoice_id"] for number in synced_numbers
+        }
+
+    async def soft_delete_missing(self, invoice_numbers):
+        expected = set(invoice_numbers)
+        missing = set(self.rows) - expected
+        for number in missing:
+            del self.rows[number]
+        return len(missing)
 
     async def get_id_map_by_invoice_numbers(self, invoice_numbers):
         return {
@@ -161,6 +172,7 @@ async def test_sync_all_is_idempotent_and_assigns_line_numbers():
     assert first == {
         "customers": 1,
         "invoices": 2,
+        "invoices_deleted": 0,
         "lines": 3,
         "line_invoices": 2,
     }
@@ -178,6 +190,20 @@ async def test_sync_all_is_idempotent_and_assigns_line_numbers():
     assert [row["line_number"] for row in invoice_one_lines] == [1, 2]
     assert invoice_one_lines[0]["unit_name"] == "Bao"
     assert invoice_one_lines[0]["unit_price"] == Decimal("60000")
+
+
+@pytest.mark.asyncio
+async def test_sync_soft_deletes_invoice_missing_from_source_snapshot():
+    use_case, _, invoices, _ = build_use_case()
+    await use_case.sync_all(customer_snapshot(), line_snapshot())
+
+    reduced_customers = customer_snapshot().iloc[[0]].copy()
+    all_lines = line_snapshot()
+    reduced_lines = all_lines.loc[all_lines.iloc[:, 0] == "PX-001"].copy()
+    result = await use_case.sync_all(reduced_customers, reduced_lines)
+
+    assert result["invoices_deleted"] == 1
+    assert set(invoices.rows) == {"PX-001"}
 
 
 @pytest.mark.asyncio

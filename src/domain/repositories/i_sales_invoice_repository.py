@@ -24,6 +24,11 @@ class ISalesInvoiceRepository(ABC):
         pass
 
     @abstractmethod
+    async def soft_delete_missing(self, invoice_numbers: List[str]) -> int:
+        """Soft-delete active invoices absent from the authoritative snapshot."""
+        pass
+
+    @abstractmethod
     async def list(
         self,
         customer_id: Optional[str] = None,

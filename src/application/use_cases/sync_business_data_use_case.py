@@ -76,8 +76,12 @@ class SyncBusinessDataUseCase:
     ) -> Dict[str, Any]:
         invoice_result, invoice_ids = await self._upsert_invoices(customer_df)
         line_result = await self._upsert_lines(goods_df, invoice_ids)
+        invoices_deleted = await self._sales_invoice_repository.soft_delete_missing(
+            list(invoice_ids)
+        )
         result = {
             **invoice_result,
+            "invoices_deleted": invoices_deleted,
             "lines": line_result["lines"],
             "line_invoices": line_result["invoices"],
         }

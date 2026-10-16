@@ -58,6 +58,17 @@ class SalesReturnRepository(ISalesReturnRepository):
                 return_ids.update(dict((await session.execute(statement)).all()))
 
             target_return_ids = list(return_ids.values())
+            existing_lines: list[tuple[str, str, int]] = []
+            for return_id_batch in chunked(target_return_ids):
+                existing_lines.extend(
+                    (await session.execute(
+                        select(
+                            SalesReturnLine.return_id,
+                            SalesReturnLine.source_line_id,
+                            SalesReturnLine.line_number,
+                        ).where(SalesReturnLine.return_id.in_(return_id_batch))
+                    )).all()
+                )
             if target_return_ids:
                 await session.execute(
                     update(SalesReturnLine)
@@ -82,6 +93,7 @@ class SalesReturnRepository(ISalesReturnRepository):
                         "line_amount": to_decimal(row["line_amount"]),
                     }
                 )
+            self._assign_line_numbers(prepared_lines, existing_lines)
             for batch in chunked(prepared_lines):
                 insert_stmt = pg_insert(SalesReturnLine).values(batch)
                 statement = insert_stmt.on_conflict_do_update(
@@ -102,3 +114,25 @@ class SalesReturnRepository(ISalesReturnRepository):
 
             await session.commit()
         return {"returns": len(returns), "lines": len(lines)}
+
+    @staticmethod
+    def _assign_line_numbers(
+        lines: List[Dict[str, Any]], existing_lines: list[tuple[str, str, int]]
+    ) -> None:
+        """Keep source line positions stable across reordered daily snapshots."""
+        numbers_by_source = {
+            (return_id, source_line_id): number
+            for return_id, source_line_id, number in existing_lines
+        }
+        next_number: Dict[str, int] = {}
+        for return_id, _, number in existing_lines:
+            next_number[return_id] = max(next_number.get(return_id, 0), number)
+        for line in lines:
+            return_id = line["return_id"]
+            key = (return_id, line["source_line_id"])
+            number = numbers_by_source.get(key)
+            if number is None:
+                number = next_number.get(return_id, 0) + 1
+                next_number[return_id] = number
+                numbers_by_source[key] = number
+            line["line_number"] = number

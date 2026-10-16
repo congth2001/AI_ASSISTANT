@@ -2,13 +2,13 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import String, all_, bindparam, func, select, update
+from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 
 from src.domain.repositories.i_sales_invoice_repository import (
     ISalesInvoiceRepository,
 )
-from src.infrastructure.repositories.models import SalesInvoice
+from src.infrastructure.repositories.models import SalesInvoice, SalesInvoiceLine
 from src.infrastructure.repositories.repository_utils import (
     chunked,
     model_to_dict,
@@ -125,6 +125,48 @@ class SalesInvoiceRepository(ISalesInvoiceRepository):
                 invoice_ids.update(dict(result.all()))
             await session.commit()
         return invoice_ids
+
+    async def soft_delete_missing(self, invoice_numbers: List[str]) -> int:
+        """Reconcile active invoices against a complete source snapshot.
+
+        Lines are soft-deleted in the same transaction so line-oriented reads
+        cannot surface details belonging to an invoice removed at the source.
+        """
+        normalized_numbers = list(dict.fromkeys(invoice_numbers))
+        async with self.session_factory() as session:
+            # Bind the complete snapshot as one PostgreSQL array. Expanding a
+            # NOT IN list would exceed asyncpg's 32,767-argument limit for
+            # normal iShopman snapshots (currently ~34k invoices).
+            snapshot_numbers = bindparam(
+                "snapshot_invoice_numbers",
+                value=normalized_numbers,
+                type_=ARRAY(String()),
+            )
+            missing_from_snapshot = (
+                SalesInvoice.invoice_number != all_(snapshot_numbers)
+            )
+            stale_invoice_ids = select(SalesInvoice.invoice_id).where(
+                SalesInvoice.deleted_at.is_(None),
+                missing_from_snapshot,
+            )
+            await session.execute(
+                update(SalesInvoiceLine)
+                .where(
+                    SalesInvoiceLine.invoice_id.in_(stale_invoice_ids),
+                    SalesInvoiceLine.deleted_at.is_(None),
+                )
+                .values(deleted_at=func.now())
+            )
+            result = await session.execute(
+                update(SalesInvoice)
+                .where(
+                    SalesInvoice.deleted_at.is_(None),
+                    missing_from_snapshot,
+                )
+                .values(deleted_at=func.now())
+            )
+            await session.commit()
+            return result.rowcount
 
     async def list(
         self,
