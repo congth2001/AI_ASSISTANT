@@ -1,6 +1,8 @@
+import asyncio
+import logging
+import re
 import time
 import unicodedata
-import re
 from datetime import date, timedelta
 from uuid import UUID
 from src.common.domain.time import now_vietnam
@@ -15,6 +17,8 @@ from src.modules.sales.domain.repositories.i_sales_invoice_line_repository impor
 )
 from rapidfuzz import fuzz
 
+logger = logging.getLogger(__name__)
+
 
 class QueryAnalyzer:
     """
@@ -25,6 +29,7 @@ class QueryAnalyzer:
     """
 
     TTL_SECONDS = 60 * 60  # refresh entity lists every 1 hour
+    CUSTOMER_LOAD_LIMIT = 50000
     CUSTOMER_FUZZY_MIN_SCORE = 84
     CUSTOMER_FUZZY_MIN_MARGIN = 8
 
@@ -95,24 +100,41 @@ class QueryAnalyzer:
         self._customer_repo = customer_repo
         self._good_repo = good_repo
         self._loaded_at: float | None = None
+        self._reload_lock = asyncio.Lock()
         self._set_entity_lists(customer_names or [], category_names or [])
+
+    def _is_fresh(self) -> bool:
+        return (
+            self._loaded_at is not None
+            and time.monotonic() - self._loaded_at < self.TTL_SECONDS
+        )
 
     async def ensure_fresh(self) -> None:
         """Reload entity lists from DB if TTL has expired."""
         if self._customer_repo is None or self._good_repo is None:
             return
-        now = time.monotonic()
-        if self._loaded_at is not None and now - self._loaded_at < self.TTL_SECONDS:
+        if self._is_fresh():
             return
-        customers = await self._customer_repo.list(limit=50000)
-        # Giữ bản ghi trùng tên để extractor biết tên đó không định danh duy nhất.
-        # Dùng set ở đây sẽ che mất sự mơ hồ giữa hai customer_id khác nhau.
-        customer_names = [
-            c["customer_name"] for c in customers if c.get("customer_name")
-        ]
-        category_names = await self._good_repo.list_categories()
-        self._set_entity_lists(customer_names, category_names)
-        self._loaded_at = time.monotonic()
+        # One reload at a time: concurrent requests wait for it instead of each
+        # loading up to CUSTOMER_LOAD_LIMIT rows again.
+        async with self._reload_lock:
+            if self._is_fresh():
+                return
+            customers = await self._customer_repo.list(limit=self.CUSTOMER_LOAD_LIMIT)
+            if len(customers) >= self.CUSTOMER_LOAD_LIMIT:
+                logger.warning(
+                    "Customer list reached the load limit of %d; customers beyond it "
+                    "are ignored by name matching",
+                    self.CUSTOMER_LOAD_LIMIT,
+                )
+            # Giữ bản ghi trùng tên để extractor biết tên đó không định danh duy nhất.
+            # Dùng set ở đây sẽ che mất sự mơ hồ giữa hai customer_id khác nhau.
+            customer_names = [
+                c["customer_name"] for c in customers if c.get("customer_name")
+            ]
+            category_names = await self._good_repo.list_categories()
+            self._set_entity_lists(customer_names, category_names)
+            self._loaded_at = time.monotonic()
 
     def load_entities(
         self,

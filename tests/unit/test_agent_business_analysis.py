@@ -1,6 +1,8 @@
 """Regressions for overview analysis: dashboard scope, tool failures, and dates."""
 from datetime import date, datetime
 from decimal import Decimal
+
+from src.modules.assistant.domain.errors import SQLValidationError
 import json
 from unittest.mock import AsyncMock, patch
 from uuid import uuid4
@@ -102,7 +104,7 @@ def test_incomplete_json_is_not_treated_as_raw_sql():
 @pytest.mark.asyncio
 async def test_repaired_sql_is_reported_as_executed_source():
     executor = AsyncMock()
-    executor.execute_sql.side_effect = [RuntimeError("bad column"), ([(Decimal("12.34"),)], ["doanh_thu"])]
+    executor.execute_sql.side_effect = [SQLValidationError("column bad_column does not exist"), ([(Decimal("12.34"),)], ["doanh_thu"])]
     service = AsyncMock()
     service.generate.return_value = [SQLQueryPlan("kpi", "SELECT bad_column")]
     service.validate_all = SQLService(None).validate_all

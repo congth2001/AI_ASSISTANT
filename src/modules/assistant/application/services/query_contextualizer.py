@@ -1,5 +1,9 @@
+import logging
+
 from src.modules.conversations.domain.entities.message import Message
 from src.modules.assistant.domain.ports.i_llm_service import ILLMService
+
+logger = logging.getLogger(__name__)
 
 # Minimum turns needed before contextualization is worth an LLM call
 _MIN_HISTORY_MESSAGES = 2
@@ -37,6 +41,9 @@ class QueryContextualizer:
             resolved = await self._llm.rewrite_query(prompt)
             return (resolved + marker + report_context) if resolved else query
         except Exception:
+            logger.warning(
+                "Query contextualization failed; using the original query", exc_info=True
+            )
             return query
 
     def _format_history(self, messages: list[Message]) -> str:

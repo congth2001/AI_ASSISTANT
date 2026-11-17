@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Literal
 
@@ -9,6 +10,8 @@ from src.modules.assistant.domain.errors import (
 )
 
 Route = Literal["text_to_sql", "rag", "hybrid", "conversation"]
+
+logger = logging.getLogger(__name__)
 
 
 class IntentClassifier:
@@ -36,6 +39,10 @@ class IntentClassifier:
                 raise UnsupportedAgentRouteError(route=route)
             return route
         except Exception:
+            logger.warning(
+                "LLM route classification failed; falling back to rule-based routing",
+                exc_info=True,
+            )
             return self._classify_rule_based(normalized)
 
     # ─────────────────────────────

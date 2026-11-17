@@ -13,6 +13,27 @@ class SQLValidationError(ValidationError):
     code = "sql_validation_error"
 
 
+class SQLQueryRejectedError(SQLValidationError):
+    """Database rejected the query; only the sanitized primary message is kept."""
+    code = 'sql_query_rejected'
+    message_template = 'Lỗi SQL ({sqlstate}): {detail}'
+
+
+class SQLQueryTimeoutError(OperationTimeoutError):
+    code = 'sql_query_timeout'
+    message_template = 'Truy vấn dữ liệu vượt quá thời gian cho phép.'
+
+
+class SQLDatabaseConnectionLostError(ExternalServiceError):
+    code = 'sql_database_connection_lost'
+    message_template = 'Mất kết nối tới cơ sở dữ liệu.'
+
+
+class SQLDatabaseFailureError(ExternalServiceError):
+    code = 'sql_database_failure'
+    message_template = 'Cơ sở dữ liệu không thực hiện được truy vấn.'
+
+
 class LLMServiceRequiredError(ValidationError):
     code = 'llm_service_required'
     message_template = 'llm_service is required when include_response=True'
@@ -131,6 +152,11 @@ class BatchEmbeddingRequestError(ExternalServiceError):
 class VectorStoreWriteError(ExternalServiceError):
     code = 'vector_store_write'
     message_template = 'Vector store rejected a write to collection {collection} ({count} chunks)'
+
+
+class VectorStoreQueryError(ExternalServiceError):
+    code = 'vector_store_query'
+    message_template = 'Vector store {operation} failed on collection {collection}'
 
 
 class ConversationIdRequiredError(ValidationError):

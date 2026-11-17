@@ -6,8 +6,8 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
-from src.common.domain.time import now_vietnam
 
+from src.common.domain.time import now_vietnam
 from src.modules.assistant.application.services.schema_linker import LinkedSchema
 from src.modules.assistant.application.prompts.sql_prompts import SQLPrompt
 from src.modules.assistant.domain.entities.analyzed_query import AnalyzedQuery
@@ -58,8 +58,9 @@ _SELECT_STAR = re.compile(
     r"\bSELECT\s+(?:[a-z_][a-z0-9_]*\.)?\*",
     re.IGNORECASE,
 )
-_MAX_ROWS = 1000
+_MAX_ROWS = 1000  # keep in sync with PostgresSQLExecutor.MAX_ROWS
 _MAX_PLANS = 5
+MAX_SQL_PLANS = _MAX_PLANS
 
 # Generated SQL runs with the application's database role, so the validator is
 # the boundary that keeps it inside sales data (no users, tokens or chat logs).
@@ -84,6 +85,53 @@ RESTRICTED_SQL_TABLES = frozenset({
 })
 _ALLOWED_SCHEMA = "public"
 _ALLOWED_TABLE_FUNCTIONS = frozenset({"generate_series", "unnest"})
+# Every call `name(...)` must use a function from this allowlist. Functions that take
+# SQL text or a table name as a string (query_to_xml, table_to_xml, cursor_to_xml,
+# dblink, ...) or reach outside the query (pg_*, lo_*, set_config, current_setting)
+# are denied simply by not being listed; they cannot be reached with a quoted or
+# schema-qualified spelling either, because the name is compared after normalization.
+_ALLOWED_FUNCTIONS = frozenset({
+    # aggregates
+    "sum", "count", "avg", "min", "max", "stddev", "stddev_pop", "stddev_samp",
+    "variance", "var_pop", "var_samp", "string_agg", "array_agg", "bool_and",
+    "bool_or", "percentile_cont", "percentile_disc", "mode",
+    # window
+    "row_number", "rank", "dense_rank", "ntile", "lag", "lead", "first_value",
+    "last_value", "nth_value", "percent_rank", "cume_dist",
+    # conditional
+    "coalesce", "nullif", "greatest", "least", "cast",
+    # numeric
+    "abs", "round", "ceil", "ceiling", "floor", "trunc", "mod", "div", "power",
+    "sqrt", "sign", "exp", "ln", "log", "log10",
+    # date/time
+    "date_trunc", "date_part", "extract", "age", "make_date", "make_interval",
+    "to_char", "to_date", "now", "timezone",
+    # text
+    "lower", "upper", "length", "char_length", "trim", "ltrim", "rtrim", "btrim",
+    "substring", "substr", "concat", "concat_ws", "left", "right", "position",
+    "strpos", "split_part", "initcap", "lpad", "rpad", "overlay",
+    # row sources already used by generated queries
+    *_ALLOWED_TABLE_FUNCTIONS,
+})
+# Type names that take modifiers, e.g. x::numeric(12, 2); also valid as conversion calls.
+_TYPE_NAMES_WITH_MODIFIERS = frozenset({
+    "numeric", "decimal", "varchar", "char", "character", "timestamp",
+    "timestamptz", "time", "timetz", "interval", "date",
+})
+# Words that may be directly followed by "(" without being a function call.
+_KEYWORDS_BEFORE_PAREN = frozenset({
+    "select", "from", "where", "and", "or", "not", "in", "on", "as", "join",
+    "exists", "any", "all", "some", "case", "when", "then", "else", "end", "by",
+    "having", "union", "intersect", "except", "distinct", "values", "over",
+    "filter", "within", "group", "using", "limit", "offset", "fetch", "between",
+    "like", "ilike", "similar", "is", "lateral", "with", "recursive",
+    "materialized", "array", "partition", "order", "rows", "range", "groups",
+    "to", "escape", "only", "row",
+})
+# Session/role information is available without parentheses.
+_FORBIDDEN_BARE_IDENTIFIERS = frozenset({
+    "current_user", "session_user", "current_role", "current_catalog", "current_schema",
+})
 # FROM is also part of these expressions and is not a table reference there.
 _FROM_EXPRESSION_FUNCTIONS = frozenset({"extract", "substring", "trim", "overlay", "position"})
 _TOKEN = re.compile(
@@ -101,6 +149,9 @@ _CTE_NAME = re.compile(
     re.IGNORECASE,
 )
 _FROM_ITEM_PREFIXES = frozenset({"lateral", "only"})
+_LIMIT_SCAN = re.compile(
+    r"""'(?:[^']|'')*'|"(?:[^"]|"")*"|[()]|[A-Za-z_][A-Za-z0-9_$]*|\d+|\S"""
+)
 _ALIAS_STOP_WORDS = frozenset({
     "where", "group", "order", "limit", "offset", "having", "window", "union",
     "intersect", "except", "join", "inner", "left", "right", "full", "cross",
@@ -117,14 +168,28 @@ def _normalize_identifier(identifier: str) -> list[str]:
 
 
 def _tokenize(sql: str) -> list[tuple[str, str]]:
+    # E'..' strings treat backslash as an escape, so their end differs between this
+    # scanner and PostgreSQL; text after a backslash-quote could be hidden from every check.
+    if re.search(r"(?<![\w$])e\s*'", sql, re.IGNORECASE):
+        raise SQLKeywordForbiddenError(blocked="E'...'")
     tokens: list[tuple[str, str]] = []
+    position = 0
     for match in _TOKEN.finditer(sql):
+        # A quote that no string/identifier pattern consumed means the quoting is
+        # malformed or ambiguous, so the text around it cannot be trusted.
+        skipped = sql[position : match.start()]
+        if "'" in skipped or '"' in skipped:
+            raise SQLKeywordForbiddenError(blocked="quote")
+        position = match.end()
         kind = match.lastgroup
         if kind == "dollar":
             # Dollar quoting can hide arbitrary text from the checks below.
             raise SQLTableNotAllowedError(table=match.group())
         if kind != "string":
             tokens.append((kind, match.group()))
+    rest = sql[position:]
+    if "'" in rest or '"' in rest:
+        raise SQLKeywordForbiddenError(blocked="quote")
     return tokens
 
 
@@ -151,8 +216,17 @@ def _check_table_reference(identifier: str, cte_names: set[str]) -> None:
         raise SQLTableNotAllowedError(table=identifier)
 
 
-def _check_from_items(tokens: list[tuple[str, str]], index: int, cte_names: set[str]) -> None:
-    """Validate the comma-separated FROM/JOIN items that start at ``index``."""
+def _check_from_items(
+    tokens: list[tuple[str, str]],
+    index: int,
+    cte_names: set[str],
+    alias_lists: set[int],
+) -> None:
+    """Validate the comma-separated FROM/JOIN items that start at ``index``.
+
+    ``alias_lists`` collects the token index of every alias that carries a column
+    list (``AS d(ngay)``), which looks like a call but is not one.
+    """
     while index < len(tokens):
         kind, value = tokens[index]
         if kind == "ident" and value.lower() in _FROM_ITEM_PREFIXES:
@@ -182,6 +256,7 @@ def _check_from_items(tokens: list[tuple[str, str]], index: int, cte_names: set[
         ):
             index += 1
             if index < len(tokens) and tokens[index][1] == "(":
+                alias_lists.add(index - 1)
                 index = _matching_paren(tokens, index) + 1  # column alias list
         if index < len(tokens) and tokens[index][1] == ",":
             index += 1
@@ -189,11 +264,50 @@ def _check_from_items(tokens: list[tuple[str, str]], index: int, cte_names: set[
         return
 
 
+def _is_cte_definition(tokens: list[tuple[str, str]], index: int) -> bool:
+    """``name(col, ...) AS [NOT] [MATERIALIZED] (`` right after WITH/RECURSIVE/','."""
+    if index == 0 or tokens[index - 1][1].lower() not in {"with", "recursive", ","}:
+        return False
+    cursor = _matching_paren(tokens, index + 1) + 1
+    if cursor >= len(tokens) or tokens[cursor][1].lower() != "as":
+        return False
+    cursor += 1
+    while cursor < len(tokens) and tokens[cursor][1].lower() in {"not", "materialized"}:
+        cursor += 1
+    return cursor < len(tokens) and tokens[cursor][1] == "("
+
+
+def _check_function_calls(tokens: list[tuple[str, str]], alias_lists: set[int]) -> None:
+    """Reject any ``name(`` call whose name is not in the function allowlist."""
+    for index, (kind, value) in enumerate(tokens):
+        if kind != "ident":
+            continue
+        parts = _normalize_identifier(value)
+        name = parts[0] if len(parts) == 1 else ""
+        if name in _FORBIDDEN_BARE_IDENTIFIERS:
+            raise SQLKeywordForbiddenError(blocked=name.upper())
+        if index + 1 >= len(tokens) or tokens[index + 1][1] != "(":
+            continue
+        if (
+            value.lower() in _KEYWORDS_BEFORE_PAREN  # unquoted: IN (...), EXISTS (...)
+            or name in _ALLOWED_FUNCTIONS
+            or name in _TYPE_NAMES_WITH_MODIFIERS
+            or index in alias_lists
+            or _is_cte_definition(tokens, index)
+        ):
+            continue
+        # `AS name(` is a column alias list, never a call.
+        if index > 0 and tokens[index - 1][1].lower() == "as" and not value.startswith('"'):
+            continue
+        raise SQLKeywordForbiddenError(blocked=f"{value}()")
+
+
 def check_allowed_tables(sql: str) -> None:
-    """Reject any table reference outside ALLOWED_SQL_TABLES and the query's CTEs."""
+    """Reject table references outside ALLOWED_SQL_TABLES/CTEs and non-allowlisted calls."""
     tokens = _tokenize(sql)
     sql_without_strings = re.sub(r"'(?:[^']|'')*'", "''", sql)
     cte_names = {name.lower() for name in _CTE_NAME.findall(sql_without_strings)}
+    alias_lists: set[int] = set()
     paren_functions: list[str] = []
     previous = ""
     for index, (kind, value) in enumerate(tokens):
@@ -211,8 +325,42 @@ def check_allowed_tables(sql: str) -> None:
         elif kind == "ident" and lowered in {"from", "join"}:
             in_expression = paren_functions and paren_functions[-1] in _FROM_EXPRESSION_FUNCTIONS
             if not (lowered == "from" and (in_expression or previous == "distinct")):
-                _check_from_items(tokens, index + 1, cte_names)
+                _check_from_items(tokens, index + 1, cte_names, alias_lists)
         previous = lowered if kind == "ident" else value
+    _check_function_calls(tokens, alias_lists)
+
+
+def _apply_row_limit(sql: str) -> str:
+    """Bound the rows of the outermost query, whatever limits its subqueries carry."""
+    outer: list[tuple[str, int, int]] = []
+    depth = 0
+    for match in _LIMIT_SCAN.finditer(sql):
+        text = match.group()
+        if text == "(":
+            depth += 1
+        elif text == ")":
+            depth -= 1
+        elif depth == 0:
+            outer.append((text.upper(), match.start(), match.end()))
+    words = [text for text, _, _ in outer]
+    limits = [i for i, word in enumerate(words) if word == "LIMIT"]
+    if not limits and "FETCH" not in words:
+        return f"{sql}\nLIMIT {_MAX_ROWS}"
+    if len(limits) == 1 and "FETCH" not in words:
+        i = limits[0]
+        simple = (
+            i + 1 < len(words)
+            and words[i + 1].isdigit()
+            and (i + 2 == len(words) or words[i + 2] == "OFFSET")
+        )
+        if simple:
+            if int(words[i + 1]) > _MAX_ROWS:
+                _, start, end = outer[i + 1]
+                return sql[:start] + str(_MAX_ROWS) + sql[end:]
+            return sql
+    # LIMIT ALL/NULL/expressions, FETCH FIRST or a repeated LIMIT are not rewritten in
+    # place; cap the result of the whole statement instead.
+    return f"SELECT * FROM (\n{sql}\n) AS q\nLIMIT {_MAX_ROWS}"
 
 class SQLService:
     def __init__(self, llm_service: ILLMService):
@@ -290,15 +438,7 @@ class SQLService:
         if "????" in sql:
             raise SQLPlaceholderError()
 
-        limit_match = re.search(r"\bLIMIT\s+(\d+)\b", sql, re.IGNORECASE)
-        if limit_match and int(limit_match.group(1)) > _MAX_ROWS:
-            sql = (
-                sql[: limit_match.start(1)] + str(_MAX_ROWS) + sql[limit_match.end(1) :]
-            )
-        elif not limit_match:
-            sql = f"{sql}\nLIMIT {_MAX_ROWS}"
-
-        return sql
+        return _apply_row_limit(sql)
 
     @staticmethod
     def _build_generation_prompt(
