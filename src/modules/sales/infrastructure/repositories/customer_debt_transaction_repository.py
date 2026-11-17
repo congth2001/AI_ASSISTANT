@@ -9,6 +9,7 @@ from src.modules.sales.domain.repositories.i_customer_debt_transaction_repositor
 )
 from src.modules.sales.infrastructure.models import CustomerDebtTransaction
 from src.modules.sales.infrastructure.repositories.repository_utils import chunked, to_decimal
+from src.modules.sales.infrastructure.unit_of_work import repository_session
 
 
 class CustomerDebtTransactionRepository(ICustomerDebtTransactionRepository):
@@ -18,7 +19,7 @@ class CustomerDebtTransactionRepository(ICustomerDebtTransactionRepository):
     async def sync_snapshot(self, rows: List[Dict[str, Any]]) -> Dict[str, int]:
         source_keys = {(row["source_type"], row["source_id"]) for row in rows}
         inserted_or_updated = 0
-        async with self.session_factory() as session:
+        async with repository_session(self.session_factory) as session:
             existing = set(
                 (await session.execute(select(
                     CustomerDebtTransaction.source_type,
@@ -60,5 +61,16 @@ class CustomerDebtTransactionRepository(ICustomerDebtTransactionRepository):
                     )
                 )
                 inserted_or_updated += len(values)
-            await session.commit()
         return {"synced": inserted_or_updated, "deleted": len(stale)}
+
+    async def count_active(self) -> int:
+        async with repository_session(self.session_factory) as session:
+            return int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(CustomerDebtTransaction)
+                        .where(CustomerDebtTransaction.deleted_at.is_(None))
+                    )
+                ).scalar_one()
+            )

@@ -11,3 +11,8 @@ class ISalesReturnRepository(ABC):
     ) -> Dict[str, int]:
         """Reconcile a complete sales-return header and line snapshot."""
         pass
+
+    @abstractmethod
+    async def count_active(self) -> int:
+        """Number of rows not soft-deleted; used to guard against shrunken snapshots."""
+        pass

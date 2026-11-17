@@ -1,36 +1,50 @@
-import pandas as pd
+"""Synchronize the five Excel snapshots in data/documents/ into PostgreSQL."""
+import argparse
 import asyncio
 from pathlib import Path
 
 from config.config_manager import get_settings
 from config.container import container
-from src.modules.assistant.application.use_cases.chat_use_case import CHAT_RESPONSE_CACHE_PREFIX
+from etl_business.runtime import (
+    exclusive_etl_lock,
+    invalidate_chat_response_cache,
+    resolve_lock_path,
+)
+from etl_business.snapshot_columns import read_snapshot_directory
+
+DATA_DIR = Path(__file__).resolve().parent / "data" / "documents"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help=(
+            "Permit soft-deleting records when a snapshot is empty or much smaller "
+            "than the active data (refused by default)."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+async def run_sync(snapshots: dict, *, allow_shrink: bool = False) -> dict:
+    """Sync once, then drop cached chat answers (best effort)."""
+    use_case = container.sync_business_data_use_case()
+    try:
+        result = await use_case.sync_all(**snapshots, allow_shrink=allow_shrink)
+        await invalidate_chat_response_cache(container.cache_service)
+        return result
+    finally:
+        await container.postgres_client().close()
+
 
 if __name__ == "__main__":
+    args = parse_args()
     settings = get_settings()
     container.config.from_dict(settings.to_container_config())
 
-    data_dir = Path(__file__).resolve().parent / "data" / "documents"
-    df_invoice_customers = pd.read_excel(data_dir / "Khach_hang.xlsx")
-    df_invoice_goods = pd.read_excel(data_dir / "Hang_hoa.xlsx")
-    df_debt_transactions = pd.read_excel(data_dir / "Cong_no.xlsx")
-    df_sales_returns = pd.read_excel(data_dir / "Tra_hang.xlsx")
-    df_sales_return_lines = pd.read_excel(data_dir / "Chi_tiet_tra_hang.xlsx")
-
-    use_case = container.sync_business_data_use_case()
-
-    async def main():
-        try:
-            result = await use_case.sync_all(
-                df_invoice_customers,
-                df_invoice_goods,
-                df_debt_transactions,
-                df_sales_returns,
-                df_sales_return_lines,
-            )
-            print(result)
-            await container.cache_service().delete_prefix(CHAT_RESPONSE_CACHE_PREFIX)
-        finally:
-            await container.postgres_client().close()
-
-    asyncio.run(main())
+    # Same lock as run_business_etl.py: a manual sync must not overlap the cron job.
+    with exclusive_etl_lock(resolve_lock_path(settings.etl.lock_path)):
+        snapshots = read_snapshot_directory(DATA_DIR)
+        print(asyncio.run(run_sync(snapshots, allow_shrink=args.allow_shrink)))

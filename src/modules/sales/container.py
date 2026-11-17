@@ -16,6 +16,7 @@ from src.modules.sales.infrastructure.repositories.sales_invoice_line_repository
     SalesInvoiceLineRepository,
 )
 from src.modules.sales.infrastructure.repositories.sales_return_repository import SalesReturnRepository
+from src.modules.sales.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
 
 
 class SalesContainer(containers.DeclarativeContainer):
@@ -37,6 +38,8 @@ class SalesContainer(containers.DeclarativeContainer):
 
     sales_return_repo = Singleton(SalesReturnRepository, session_factory=session_factory)
 
+    unit_of_work = Singleton(SqlAlchemyUnitOfWork, session_factory=session_factory)
+
     sync_business_data_use_case = Singleton(
         SyncBusinessDataUseCase,
         customer_repository=customer_repo,
@@ -44,4 +47,5 @@ class SalesContainer(containers.DeclarativeContainer):
         sales_invoice_line_repository=sales_invoice_line_repo,
         customer_debt_transaction_repository=customer_debt_transaction_repo,
         sales_return_repository=sales_return_repo,
+        unit_of_work=unit_of_work,
     )

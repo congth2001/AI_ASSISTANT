@@ -7,6 +7,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from src.modules.sales.domain.repositories.i_customer_repository import ICustomerRepository
 from src.modules.sales.infrastructure.models import Customer, CustomerDebtTransaction, SalesInvoice, SalesReturn
 from src.modules.sales.infrastructure.repositories.repository_utils import chunked, model_to_dict
+from src.modules.sales.infrastructure.unit_of_work import repository_session
 
 
 class CustomerRepository(ICustomerRepository):
@@ -60,14 +61,19 @@ class CustomerRepository(ICustomerRepository):
             return {}
 
         customer_ids: Dict[str, str] = {}
-        async with self.session_factory() as session:
+        async with repository_session(self.session_factory) as session:
             for batch in chunked(rows):
                 insert_stmt = pg_insert(Customer).values(list(batch))
                 stmt = insert_stmt.on_conflict_do_update(
                     constraint="uq_customers_customer_identity_key",
                     set_={
                         "customer_name": insert_stmt.excluded.customer_name,
-                        "address_detail": insert_stmt.excluded.address_detail,
+                        # A source row without an address must not erase one
+                        # already learned from another snapshot/invoice.
+                        "address_detail": func.coalesce(
+                            insert_stmt.excluded.address_detail,
+                            Customer.address_detail,
+                        ),
                         "village_name": insert_stmt.excluded.village_name,
                         "ward_name": insert_stmt.excluded.ward_name,
                         "updated_at": func.now(),
@@ -84,11 +90,10 @@ class CustomerRepository(ICustomerRepository):
                         for identity_key, customer_id in result.all()
                     }
                 )
-            await session.commit()
         return customer_ids
 
     async def soft_delete_unreferenced(self) -> int:
-        async with self.session_factory() as session:
+        async with repository_session(self.session_factory) as session:
             active_invoice = exists().where(
                 SalesInvoice.customer_id == Customer.customer_id,
                 SalesInvoice.deleted_at.is_(None),
@@ -111,7 +116,6 @@ class CustomerRepository(ICustomerRepository):
                 )
                 .values(deleted_at=func.now(), updated_at=func.now())
             )
-            await session.commit()
             return result.rowcount
 
     async def list(

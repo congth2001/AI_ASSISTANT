@@ -7,17 +7,33 @@ from typing import Mapping
 import pandas as pd
 
 from .normalization import normalize_canonical_datasets
+from .snapshot_columns import sync_arguments
 
 
 @dataclass(frozen=True)
 class BusinessSnapshots:
-    """DataFrames in the exact contract expected by SyncBusinessDataUseCase."""
+    """The five snapshot DataFrames, with the Excel file headers as columns.
+
+    ``customers`` and ``goods`` keep their historical Vietnamese headers so the
+    written ``.xlsx`` files stay compatible; use ``sync_arguments()`` to obtain
+    the canonical-English frames ``SyncBusinessDataUseCase`` expects.
+    """
 
     customers: pd.DataFrame
     goods: pd.DataFrame
     debt_transactions: pd.DataFrame
     sales_returns: pd.DataFrame
     sales_return_lines: pd.DataFrame
+
+    def sync_arguments(self) -> dict[str, pd.DataFrame]:
+        """Keyword arguments for ``SyncBusinessDataUseCase.sync_all``."""
+        return sync_arguments(
+            self.customers,
+            self.goods,
+            self.debt_transactions,
+            self.sales_returns,
+            self.sales_return_lines,
+        )
 
     def write_excel(self, output_dir: str | Path) -> tuple[Path, Path, Path, Path, Path]:
         destination = Path(output_dir)
@@ -67,7 +83,7 @@ def build_business_snapshots(
     customer_ward_aliases: Mapping[str, str] | None = None,
     opening_balance_date: str = "2019-01-01",
 ) -> BusinessSnapshots:
-    """Join canonical MDB extracts into the application's two import snapshots.
+    """Join canonical MDB extracts into the application's five import snapshots.
 
     The extraction YAML owns source-to-canonical column mapping. This function
     deliberately accepts only canonical names so schema mistakes fail early.

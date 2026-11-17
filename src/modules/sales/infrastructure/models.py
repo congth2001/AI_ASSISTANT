@@ -78,6 +78,10 @@ class SalesInvoice(Base):
 
     invoice_id = Column(String, primary_key=True)
     invoice_number = Column(String, nullable=False)
+    # Deliberately timezone-naive: the source (iShopman) stores Vietnam local
+    # wall-clock time, and reports bucket/filter by that local date. Do not
+    # convert to timestamptz without a data migration that interprets values
+    # as Asia/Ho_Chi_Minh (see docs/data-model.md, "Múi giờ và kiểu thời gian").
     issued_at = Column(DateTime, nullable=False)
     customer_id = Column(
         postgresql.UUID(as_uuid=False),
@@ -125,7 +129,8 @@ class SalesInvoice(Base):
             "invoice_number",
             unique=True,
         ),
-        Index("ix_sales_invoices_issued_at", "issued_at"),
+        # Every read filters deleted_at IS NULL, so only the partial index is kept;
+        # the former full ix_sales_invoices_issued_at was dropped as redundant.
         Index(
             "ix_sales_invoices_active_issued_at",
             "issued_at",
@@ -186,7 +191,7 @@ class SalesInvoiceLine(Base):
             "line_number",
             name="uq_sales_invoice_lines_invoice_line",
         ),
-        Index("ix_sales_invoice_lines_invoice_id", "invoice_id"),
+        # invoice_id lookups use the (invoice_id, line_number) unique constraint above.
         Index("ix_sales_invoice_lines_product_name", "product_name"),
         Index(
             "ix_sales_invoice_lines_product_category_name",
@@ -225,6 +230,7 @@ class SalesReturn(Base):
     return_id = Column(String(36), primary_key=True)
     source_id = Column(String(100), nullable=False, unique=True)
     return_number = Column(String(100), nullable=False, unique=True)
+    # Naive Vietnam local time by design (same convention as sales_invoices.issued_at).
     returned_at = Column(DateTime, nullable=False)
     customer_id = Column(
         postgresql.UUID(as_uuid=False),
@@ -278,7 +284,7 @@ class SalesReturnLine(Base):
     __table_args__ = (
         UniqueConstraint("return_id", "source_line_id", name="uq_sales_return_lines_source"),
         UniqueConstraint("return_id", "line_number", name="uq_sales_return_lines_line_number"),
-        Index("ix_sales_return_lines_return_id", "return_id"),
+        # return_id lookups use uq_sales_return_lines_source / uq_sales_return_lines_line_number.
         Index("ix_sales_return_lines_product_name", "product_name"),
         Index("ix_sales_return_lines_category", "product_category_name"),
         CheckConstraint("line_number > 0", name="ck_sales_return_lines_line_number_positive"),
@@ -302,6 +308,7 @@ class CustomerDebtTransaction(Base):
     )
     source_type = Column(String(32), nullable=False)
     source_id = Column(String(100), nullable=False)
+    # Naive Vietnam local time by design (same convention as sales_invoices.issued_at).
     occurred_at = Column(DateTime, nullable=False)
     amount = Column(Numeric(18, 2), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
@@ -310,7 +317,9 @@ class CustomerDebtTransaction(Base):
 
     __table_args__ = (
         UniqueConstraint("source_type", "source_id", name="uq_debt_transactions_source"),
-        Index("ix_debt_transactions_customer_id", "customer_id"),
+        # Serves per-customer balances and ledger ranges; its customer_id prefix also
+        # covers the RESTRICT foreign key (replaces ix_debt_transactions_customer_id).
+        Index("ix_debt_transactions_customer_occurred", "customer_id", "occurred_at"),
         Index("ix_debt_transactions_occurred_at", "occurred_at"),
         CheckConstraint(
             "source_type IN ('opening', 'sale', 'receipt', 'sales_return')",

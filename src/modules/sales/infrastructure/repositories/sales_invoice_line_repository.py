@@ -14,6 +14,7 @@ from src.modules.sales.infrastructure.repositories.repository_utils import (
     model_to_dict,
     to_decimal,
 )
+from src.modules.sales.infrastructure.unit_of_work import repository_session
 
 
 class SalesInvoiceLineRepository(ISalesInvoiceLineRepository):
@@ -71,7 +72,7 @@ class SalesInvoiceLineRepository(ISalesInvoiceLineRepository):
         if not invoice_ids:
             return 0
 
-        async with self.session_factory() as session:
+        async with repository_session(self.session_factory) as session:
             for invoice_id_batch in chunked(invoice_ids):
                 await session.execute(
                     update(SalesInvoiceLine)
@@ -109,8 +110,6 @@ class SalesInvoiceLineRepository(ISalesInvoiceLineRepository):
                     },
                 )
                 await session.execute(stmt)
-
-            await session.commit()
         return len(rows)
 
     async def list(

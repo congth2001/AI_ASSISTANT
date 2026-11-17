@@ -14,6 +14,7 @@ from src.modules.sales.infrastructure.repositories.repository_utils import (
     model_to_dict,
     to_decimal,
 )
+from src.modules.sales.infrastructure.unit_of_work import repository_session
 
 
 class SalesInvoiceRepository(ISalesInvoiceRepository):
@@ -78,7 +79,7 @@ class SalesInvoiceRepository(ISalesInvoiceRepository):
             return {}
 
         invoice_ids: Dict[str, str] = {}
-        async with self.session_factory() as session:
+        async with repository_session(self.session_factory) as session:
             for batch in chunked(rows):
                 values = [
                     {
@@ -123,8 +124,19 @@ class SalesInvoiceRepository(ISalesInvoiceRepository):
                 )
                 result = await session.execute(stmt)
                 invoice_ids.update(dict(result.all()))
-            await session.commit()
         return invoice_ids
+
+    async def count_active(self) -> int:
+        async with repository_session(self.session_factory) as session:
+            return int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(SalesInvoice)
+                        .where(SalesInvoice.deleted_at.is_(None))
+                    )
+                ).scalar_one()
+            )
 
     async def soft_delete_missing(self, invoice_numbers: List[str]) -> int:
         """Reconcile active invoices against a complete source snapshot.
@@ -133,7 +145,7 @@ class SalesInvoiceRepository(ISalesInvoiceRepository):
         cannot surface details belonging to an invoice removed at the source.
         """
         normalized_numbers = list(dict.fromkeys(invoice_numbers))
-        async with self.session_factory() as session:
+        async with repository_session(self.session_factory) as session:
             # Bind the complete snapshot as one PostgreSQL array. Expanding a
             # NOT IN list would exceed asyncpg's 32,767-argument limit for
             # normal iShopman snapshots (currently ~34k invoices).
@@ -165,7 +177,6 @@ class SalesInvoiceRepository(ISalesInvoiceRepository):
                 )
                 .values(deleted_at=func.now())
             )
-            await session.commit()
             return result.rowcount
 
     async def list(

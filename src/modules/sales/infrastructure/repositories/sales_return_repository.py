@@ -1,12 +1,13 @@
 from typing import Any, Dict, List
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import String, all_, bindparam, func, select, update
+from sqlalchemy.dialects.postgresql import ARRAY, insert as pg_insert
 
 from src.modules.sales.domain.repositories.i_sales_return_repository import ISalesReturnRepository
 from src.modules.sales.infrastructure.models import SalesReturn, SalesReturnLine
 from src.modules.sales.infrastructure.repositories.repository_utils import chunked, to_decimal
+from src.modules.sales.infrastructure.unit_of_work import repository_session
 
 
 class SalesReturnRepository(ISalesReturnRepository):
@@ -18,15 +19,33 @@ class SalesReturnRepository(ISalesReturnRepository):
         returns: List[Dict[str, Any]],
         lines: List[Dict[str, Any]],
     ) -> Dict[str, int]:
-        source_ids = [row["source_id"] for row in returns]
-        async with self.session_factory() as session:
-            stale_predicates = [SalesReturn.deleted_at.is_(None)]
-            if source_ids:
-                stale_predicates.append(SalesReturn.source_id.not_in(source_ids))
+        source_ids = list(dict.fromkeys(row["source_id"] for row in returns))
+        async with repository_session(self.session_factory) as session:
+            # Bind the snapshot as one PostgreSQL array: NOT IN (...) would
+            # exceed asyncpg's 32,767-argument limit on large snapshots.
+            snapshot_source_ids = bindparam(
+                "snapshot_return_source_ids",
+                value=source_ids,
+                type_=ARRAY(String()),
+            )
+            missing_from_snapshot = SalesReturn.source_id != all_(snapshot_source_ids)
+            stale_return_ids = select(SalesReturn.return_id).where(
+                SalesReturn.deleted_at.is_(None),
+                missing_from_snapshot,
+            )
+            # Lines of removed returns must disappear in the same transaction.
+            await session.execute(
+                update(SalesReturnLine)
+                .where(
+                    SalesReturnLine.return_id.in_(stale_return_ids),
+                    SalesReturnLine.deleted_at.is_(None),
+                )
+                .values(deleted_at=func.now(), updated_at=func.now())
+            )
             await session.execute(
                 update(SalesReturn)
-                .where(*stale_predicates)
-                .values(deleted_at=func.now())
+                .where(SalesReturn.deleted_at.is_(None), missing_from_snapshot)
+                .values(deleted_at=func.now(), updated_at=func.now())
             )
 
             return_ids: Dict[str, str] = {}
@@ -69,14 +88,14 @@ class SalesReturnRepository(ISalesReturnRepository):
                         ).where(SalesReturnLine.return_id.in_(return_id_batch))
                     )).all()
                 )
-            if target_return_ids:
+            for return_id_batch in chunked(target_return_ids):
                 await session.execute(
                     update(SalesReturnLine)
                     .where(
-                        SalesReturnLine.return_id.in_(target_return_ids),
+                        SalesReturnLine.return_id.in_(return_id_batch),
                         SalesReturnLine.deleted_at.is_(None),
                     )
-                    .values(deleted_at=func.now())
+                    .values(deleted_at=func.now(), updated_at=func.now())
                 )
 
             prepared_lines = []
@@ -111,9 +130,19 @@ class SalesReturnRepository(ISalesReturnRepository):
                     },
                 )
                 await session.execute(statement)
-
-            await session.commit()
         return {"returns": len(returns), "lines": len(lines)}
+
+    async def count_active(self) -> int:
+        async with repository_session(self.session_factory) as session:
+            return int(
+                (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(SalesReturn)
+                        .where(SalesReturn.deleted_at.is_(None))
+                    )
+                ).scalar_one()
+            )
 
     @staticmethod
     def _assign_line_numbers(

@@ -24,6 +24,14 @@ iShopman.mdb (hoặc ZIP chứa MDB)
 
 ETL không cập nhật Milvus hay cache Redis.
 
+Đồng bộ PostgreSQL chạy trong một transaction và từ chối snapshot hóa đơn/công
+nợ/trả hàng rỗng hoặc giảm quá 30% so với dữ liệu đang hoạt động (tránh export
+lỗi xóa mềm toàn bộ dữ liệu). Chỉ khi chắc chắn mới thêm `--allow-shrink` cho
+`run_business_etl.py`, `sync_business_data.py` hoặc `shop_data_extractor.cli run`.
+`sync_business_data.py` dùng cùng file khóa `etl.lock_path`, nên không chạy chồng
+với job cron. Use case nhận tên cột canonical tiếng Anh; header tiếng Việt của
+file Excel được ánh xạ tại `snapshot_columns.py`. Lỗi xóa cache Redis chỉ được log.
+
 Lệnh `run_business_etl.py` là entrypoint production cho cron: nó khóa chống
 hai job chạy chồng, extract ZIP/MDB, áp dụng rule normalize nội bộ, ghi artifact audit,
 upsert idempotent và trả exit code khác 0 khi bất kỳ bước nào lỗi.

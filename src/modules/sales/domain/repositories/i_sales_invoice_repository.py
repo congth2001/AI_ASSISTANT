@@ -29,6 +29,11 @@ class ISalesInvoiceRepository(ABC):
         pass
 
     @abstractmethod
+    async def count_active(self) -> int:
+        """Number of rows not soft-deleted; used to guard against shrunken snapshots."""
+        pass
+
+    @abstractmethod
     async def list(
         self,
         customer_id: Optional[str] = None,
