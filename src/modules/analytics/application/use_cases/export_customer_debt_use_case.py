@@ -3,8 +3,8 @@
 import asyncio
 
 from src.modules.analytics.domain.models.customer_debt import CustomerDebtExportFilters
-from src.modules.analytics.domain.repositories.i_dashboard_analytics_repository import (
-    IDashboardAnalyticsRepository,
+from src.modules.analytics.domain.repositories.i_customer_debt_export_repository import (
+    ICustomerDebtExportRepository,
 )
 from src.modules.analytics.domain.ports.i_customer_debt_workbook_exporter import (
     ICustomerDebtWorkbookExporter,
@@ -14,7 +14,7 @@ from src.modules.analytics.domain.ports.i_customer_debt_workbook_exporter import
 class ExportCustomerDebtUseCase:
     def __init__(
         self,
-        repository: IDashboardAnalyticsRepository,
+        repository: ICustomerDebtExportRepository,
         workbook_exporter: ICustomerDebtWorkbookExporter,
     ):
         self._repository = repository

@@ -6,6 +6,7 @@ import json
 from dataclasses import replace
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
+from uuid import UUID
 
 from src.modules.analytics.domain.models.dashboard import (
     DashboardFilterOptions,
@@ -212,22 +213,47 @@ class DashboardAnalyticsUseCase:
 
     @staticmethod
     def _decode_customer_cursor(value: str) -> CustomerOverviewCursor:
+        """Decode and strictly validate an opaque cursor; any malformed input is a 422.
+
+        ``Decimal(...)`` raises ``decimal.InvalidOperation`` (an ``ArithmeticError``) and
+        a non-UUID key would crash the database driver later, so both are checked here.
+        """
         try:
             padded = value + "=" * (-len(value) % 4)
             payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise InvalidCustomerOverviewCursorError()
+            debt, revenue = payload["debt"], payload["revenue"]
+            label, key = payload["label"], payload["key"]
+            if not all(isinstance(item, str) for item in (debt, revenue, label, key)):
+                raise InvalidCustomerOverviewCursorError()
             cursor = CustomerOverviewCursor(
-                current_debt=Decimal(payload["debt"]),
-                revenue=Decimal(payload["revenue"]),
-                label=str(payload["label"]),
-                key=str(payload["key"]),
+                current_debt=Decimal(debt),
+                revenue=Decimal(revenue),
+                label=label,
+                key=str(UUID(key)),
             )
-            if (
-                not cursor.current_debt.is_finite()
-                or not cursor.revenue.is_finite()
-                or not cursor.label
-                or not cursor.key
-            ):
-                raise InvalidCursorValuesError()
-            return cursor
-        except (binascii.Error, KeyError, TypeError, ValueError) as exc:
+        except InvalidCustomerOverviewCursorError:
+            raise
+        except (binascii.Error, KeyError, TypeError, ValueError, ArithmeticError, RecursionError) as exc:
             raise InvalidCustomerOverviewCursorError() from exc
+        if (
+            not _is_reasonable_amount(cursor.current_debt)
+            or not _is_reasonable_amount(cursor.revenue)
+            or not cursor.label
+        ):
+            raise InvalidCursorValuesError()
+        return cursor
+
+
+# Money columns are numeric(18, 2); anything beyond this cannot come from our own cursor.
+_MAX_CURSOR_AMOUNT = Decimal(10) ** 18
+
+
+def _is_reasonable_amount(value: Decimal) -> bool:
+    # Also bounds the scale so the driver never receives an absurd numeric.
+    return (
+        value.is_finite()
+        and abs(value) < _MAX_CURSOR_AMOUNT
+        and int(value.as_tuple().exponent) >= -6
+    )

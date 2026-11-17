@@ -42,12 +42,27 @@ class OverviewDimensionsUnsupportedError(ValidationError):
 
 class CustomerDebtRowLimitError(ValidationError):
     code = 'customer_debt_row_limit'
-    message_template = "Sheet '{raw_name}' exceeds the Excel row limit"
+    message_template = "Sheet '{raw_name}' exceeds the export limit of {max_rows} rows; narrow the filters"
 
 
 class OrderLedgerRowLimitError(ValidationError):
     code = 'order_ledger_row_limit'
-    message_template = 'The order ledger exceeds the Excel row limit'
+    message_template = 'The order ledger exceeds the export limit of {max_rows} rows; narrow the date range'
+
+
+class ExportWorkbookRowLimitError(ValidationError):
+    code = 'export_workbook_row_limit'
+    message_template = 'The workbook exceeds the export limit of {max_rows} rows in total; use fewer sheets or narrower filters'
+
+
+class TooManyFilterValuesError(ValidationError):
+    code = 'too_many_filter_values'
+    message_template = "'{name}' accepts at most {max_values} values"
+
+
+class FilterValueTooLongError(ValidationError):
+    code = 'filter_value_too_long'
+    message_template = "Each '{name}' value must be at most {max_length} characters"
 
 
 class CustomerNotFoundError(NotFoundError):

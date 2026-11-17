@@ -3,8 +3,8 @@
 import asyncio
 
 from src.modules.analytics.domain.models.order_ledger import OrderLedgerExportFilters
-from src.modules.analytics.domain.repositories.i_dashboard_analytics_repository import (
-    IDashboardAnalyticsRepository,
+from src.modules.analytics.domain.repositories.i_order_ledger_repository import (
+    IOrderLedgerRepository,
 )
 from src.modules.analytics.domain.ports.i_order_ledger_workbook_exporter import (
     IOrderLedgerWorkbookExporter,
@@ -14,7 +14,7 @@ from src.modules.analytics.domain.ports.i_order_ledger_workbook_exporter import 
 class ExportOrderLedgerUseCase:
     def __init__(
         self,
-        repository: IDashboardAnalyticsRepository,
+        repository: IOrderLedgerRepository,
         workbook_exporter: IOrderLedgerWorkbookExporter,
     ) -> None:
         self._repository = repository

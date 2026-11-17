@@ -178,11 +178,11 @@ def test_customer_overview_debt_uses_full_signed_ledger_until_period_end():
 
 def test_customer_overview_revenue_subtracts_returns_in_selected_period():
     filters = DashboardFilters(date(2025, 3, 1), date(2025, 4, 1))
-    returns = DashboardAnalyticsRepository._customer_return_activity(filters)
+    activity = DashboardAnalyticsRepository._customer_period_activity(filters)
 
-    sql = _compile(select(returns))
+    sql = _compile(select(activity))
 
-    assert "sum(customer_debt_transactions.amount)" in sql
+    assert "sales_invoices.invoice_total_amount" in sql
     assert "customer_debt_transactions.source_type = 'sales_return'" in sql
     assert "customer_debt_transactions.occurred_at >= '2025-03-01'" in sql
     assert "customer_debt_transactions.occurred_at < '2025-04-01'" in sql
@@ -234,7 +234,7 @@ def test_customer_overview_cursor_round_trip_preserves_decimal_and_unicode():
         current_debt=Decimal("1200.50"),
         revenue=Decimal("7000.25"),
         label="Khách hàng Ánh",
-        key="customer-id",
+        key="11111111-1111-1111-1111-111111111111",
     )
 
     encoded = DashboardAnalyticsUseCase._encode_customer_cursor(cursor)

@@ -55,14 +55,33 @@ from src.modules.analytics.presentation.dto.analytics import (
 )
 from src.common.errors import (
     RequestValidationError,
+    ValidationError,
 )
 from src.modules.analytics.domain.errors import (
+    FilterValueTooLongError,
     OrderNotFoundError,
+    TooManyFilterValuesError,
 )
 
 router = APIRouter(prefix="/analytics")
 
 EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+MAX_FILTER_VALUES = 100
+MAX_FILTER_VALUE_LENGTH = 200
+
+
+def _bounded_values(values: list | None, name: str) -> tuple:
+    """Cap repeated query parameters: at most 100 values of at most 200 characters.
+
+    Raises a catalog validation error; callers convert it to a 422 while building filters.
+    """
+    items = tuple(values or ())
+    if len(items) > MAX_FILTER_VALUES:
+        raise TooManyFilterValuesError(name=name, max_values=MAX_FILTER_VALUES)
+    if any(isinstance(item, str) and len(item) > MAX_FILTER_VALUE_LENGTH for item in items):
+        raise FilterValueTooLongError(name=name, max_length=MAX_FILTER_VALUE_LENGTH)
+    return items
 
 
 def dashboard_filters(
@@ -83,12 +102,26 @@ def dashboard_filters(
             date_from=date_from,
             date_to=date_to,
             customer_id=str(customer_id) if customer_id else None,
-            ward_names=tuple(ward or ()),
-            village_names=tuple(village or ()),
-            category_names=tuple(category or ()),
-            product_names=tuple(product or ()),
+            ward_names=_bounded_values(ward, "ward"),
+            village_names=_bounded_values(village, "village"),
+            category_names=_bounded_values(category, "category"),
+            product_names=_bounded_values(product, "product"),
         )
     except ValueError as exc:
+        raise RequestValidationError(error=exc) from exc
+
+
+async def _execute_validated(call):
+    """Await a use case, mapping only catalog *validation* errors (bad cursor, row limit...) to 422.
+
+    Everything else (not found, infrastructure failures) keeps its own status through
+    the application error handlers instead of being disguised as a request error.
+    """
+    try:
+        return await call
+    except RequestValidationError:
+        raise
+    except ValidationError as exc:
         raise RequestValidationError(error=exc) from exc
 
 
@@ -167,8 +200,8 @@ async def list_orders(
                 else None
             ),
             customer_id=str(customer_id) if customer_id else None,
-            ward_names=tuple(ward or ()),
-            village_names=tuple(village or ()),
+            ward_names=_bounded_values(ward, "ward"),
+            village_names=_bounded_values(village, "village"),
             customer_geography=customer_geography,
         )
     except ValueError as exc:
@@ -206,12 +239,12 @@ async def export_order_ledger(
                 else None
             ),
             customer_id=str(customer_id),
-            ward_names=tuple(ward or ()),
-            village_names=tuple(village or ()),
+            ward_names=_bounded_values(ward, "ward"),
+            village_names=_bounded_values(village, "village"),
         )
-        content = await use_case.execute(filters)
     except ValueError as exc:
         raise RequestValidationError(error=exc) from exc
+    content = await _execute_validated(use_case.execute(filters))
     filename = f"chi-tiet-giao-dich-cong-no-{datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%Y%m%d-%H%M%S')}.xlsx"
     return Response(
         content=content,
@@ -250,10 +283,9 @@ async def get_customer_overview(
         Provide[Container.dashboard_analytics_use_case]
     ),
 ) -> CustomerOverviewResponse:
-    try:
-        page = await use_case.get_customer_overview(filters, limit, cursor, offset)
-    except ValueError as exc:
-        raise RequestValidationError(error=exc) from exc
+    page = await _execute_validated(
+        use_case.get_customer_overview(filters, limit, cursor, offset)
+    )
     return CustomerOverviewResponse(
         period=_period(filters),
         metrics=CustomerOverviewMetricsResponse.model_validate(page.metrics),
@@ -285,14 +317,14 @@ async def export_customer_debt(
         filters = CustomerDebtExportFilters(
             date_from=date_from,
             date_to=date_to,
-            customer_ids=tuple(str(value) for value in customer_id or ()),
-            ward_names=tuple(ward or ()),
+            customer_ids=tuple(str(value) for value in _bounded_values(customer_id, "customer_id")),
+            ward_names=_bounded_values(ward, "ward"),
             positive_debt_only=positive_debt_only,
             sheet_mode=sheet_mode,
         )
-        content = await use_case.execute(filters)
     except ValueError as exc:
         raise RequestValidationError(error=exc) from exc
+    content = await _execute_validated(use_case.execute(filters))
     filename = f"cong-no-khach-hang-{datetime.now(ZoneInfo('Asia/Ho_Chi_Minh')).strftime('%Y%m%d-%H%M%S')}.xlsx"
     return Response(
         content=content,
@@ -378,11 +410,16 @@ async def get_filter_options(
         Provide[Container.dashboard_analytics_use_case]
     ),
 ) -> AnalyticsFilterOptionsResponse:
+    try:
+        ward_names = _bounded_values(ward, "ward")
+        village_names = _bounded_values(village, "village")
+    except ValueError as exc:
+        raise RequestValidationError(error=exc) from exc
     options = await use_case.get_filter_options(
         search,
         limit,
-        ward_names=tuple(ward or ()),
-        village_names=tuple(village or ()),
+        ward_names=ward_names,
+        village_names=village_names,
     )
     return AnalyticsFilterOptionsResponse(
         customers=[
