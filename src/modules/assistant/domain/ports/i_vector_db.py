@@ -20,12 +20,14 @@ class IVectorDB(ABC):
         search_params : Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """Vector similarity search with optional metadata filter.
-        Returns list of {"id", "score", "content", "metadata"} dicts."""
+        Returns list of {"id", "score", "content", "metadata"} dicts ([] = no match).
+        Raises VectorStoreQueryError when the vector store fails."""
         pass
 
     @abstractmethod
     def query(self, filter: str, output_fields: Optional[List[str]] = None, limit: int = 10) -> List[Dict[str, Any]]:
-        """Query vectors based on metadata filters"""
+        """Query records by metadata filter. Returns [] when nothing matches;
+        raises VectorStoreQueryError when the vector store fails."""
         pass
 
     @abstractmethod
@@ -45,7 +47,8 @@ class IVectorDB(ABC):
         keyword_weight: float = 0.3,
     ) -> List[Dict[str, Any]]:
         """Hybrid search combining vector similarity and keyword matching via RRF.
-        Returns list of {"id", "score", "content", "metadata"} dicts."""
+        Returns list of {"id", "score", "content", "metadata"} dicts ([] = no match).
+        Raises VectorStoreQueryError when the vector store fails."""
         pass
 
     @abstractmethod
@@ -57,5 +60,17 @@ class IVectorDB(ABC):
         case_sensitive: bool = False,
     ) -> List[Dict[str, Any]]:
         """Keyword search by matching query terms against text field.
-        Returns list of {"id", "score", "content", "metadata"} dicts."""
+        Returns list of {"id", "score", "content", "metadata"} dicts ([] = no match).
+        Raises VectorStoreQueryError when the vector store fails."""
+        pass
+
+    @abstractmethod
+    def query_all(
+        self,
+        filter       : str,
+        output_fields: Optional[List[str]] = None,
+        batch_size   : int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Scan every record matching ``filter`` (iterator-based, order not guaranteed).
+        Raises VectorStoreQueryError when the vector store fails."""
         pass

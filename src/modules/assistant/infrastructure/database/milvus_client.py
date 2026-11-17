@@ -2,12 +2,40 @@ import logging
 from threading import Lock
 from typing import List, Optional, Dict, Any
 from pymilvus import MilvusClient as PyMilvusClient, DataType
+from src.modules.assistant.domain.errors import VectorStoreQueryError
 from src.modules.assistant.domain.ports.i_vector_db import IVectorDB
 
 logger = logging.getLogger(__name__)
 
 _OUTPUT_FIELDS = ["doc_id", "doc_type", "text", "year", "month", "customer_id", "co_no", "doanh_thu"]
 _RRF_K = 60  # RRF constant — higher = less penalty for lower ranks
+
+# keyword_search KHÔNG dùng index: kéo tối đa chừng này bản ghi (mỗi bản ghi tới 4KB `text`)
+# về Python để chấm điểm. Khi chạm trần, các bản ghi ngoài trần bị bỏ qua (thứ tự do Milvus quyết định)
+# nên điểm từ khóa chỉ là xấp xỉ; luôn có log cảnh báo. Collection lớn hơn cần full-text/BM25
+# (cần trường sparse trong schema + re-index, hiện chưa có).
+_KEYWORD_SCAN_LIMIT = 1000
+
+_CONTROL_ESCAPES = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
+
+
+def quote_filter_value(value: object) -> str:
+    """Biến giá trị thành literal chuỗi an toàn trong biểu thức filter Milvus ("...").
+
+    Escape backslash và dấu nháy kép; xuống dòng/tab được escape, ký tự điều khiển còn lại bị bỏ.
+    Luôn dùng hàm này thay vì nội suy f'..."{x}"...' để chuỗi do người dùng/LLM cung cấp
+    không phá cú pháp hay chèn thêm điều kiện.
+    """
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    out = []
+    for ch in text:
+        if ch in _CONTROL_ESCAPES:
+            out.append(_CONTROL_ESCAPES[ch])
+        elif ord(ch) < 32 or ord(ch) == 127:
+            continue
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 class MilvusClient(IVectorDB):
@@ -112,7 +140,7 @@ class MilvusClient(IVectorDB):
         try:
             self._client.delete(
                 collection_name = self.collection_name,
-                filter          = f'doc_id == "{id}"',
+                filter          = f"doc_id == {quote_filter_value(id)}",
             )
             logger.info(f"Deleted embedding with id: {id}")
             return True
@@ -124,7 +152,8 @@ class MilvusClient(IVectorDB):
     # Read operations
     # ─────────────────────────────
 
-    def query(self, filter: str, output_fields: List[str] = None, limit: int = 1) -> Optional[List[Dict]]:
+    def query(self, filter: str, output_fields: Optional[List[str]] = None, limit: int = 1) -> List[Dict[str, Any]]:
+        """Truy vấn theo filter. Trả list (rỗng nếu không có bản ghi); ném VectorStoreQueryError khi Milvus lỗi."""
         try:
             results = self._client.query(
                 collection_name = self.collection_name,
@@ -132,10 +161,45 @@ class MilvusClient(IVectorDB):
                 output_fields   = output_fields,
                 limit           = limit,
             )
-            return results if results else None
+            return list(results) if results else []
         except Exception as e:
-            logger.error(f"Error querying: {e}")
-            return None
+            logger.error("Error querying Milvus: %s", e)
+            raise VectorStoreQueryError(operation="query", collection=self.collection_name) from e
+
+    def query_all(
+        self,
+        filter       : str,
+        output_fields: Optional[List[str]] = None,
+        batch_size   : int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Quét TOÀN BỘ bản ghi khớp filter bằng query iterator (đầy đủ, không phụ thuộc thứ tự).
+
+        Thứ tự kết quả không được bảo đảm; caller tự sort. Ném VectorStoreQueryError khi Milvus lỗi.
+        """
+        rows: List[Dict[str, Any]] = []
+        iterator = None
+        try:
+            iterator = self._client.query_iterator(
+                collection_name = self.collection_name,
+                batch_size      = batch_size,
+                filter          = filter or "",
+                output_fields   = output_fields,
+            )
+            while True:
+                batch = iterator.next()
+                if not batch:
+                    break
+                rows.extend(batch)
+        except Exception as e:
+            logger.error("Error scanning Milvus with query iterator: %s", e)
+            raise VectorStoreQueryError(operation="query_all", collection=self.collection_name) from e
+        finally:
+            if iterator is not None:
+                try:
+                    iterator.close()
+                except Exception:
+                    logger.debug("Failed to close Milvus query iterator", exc_info=True)
+        return rows
 
     def search_similar(
         self,
@@ -158,8 +222,8 @@ class MilvusClient(IVectorDB):
             )
             return self._format_hits(results[0])
         except Exception as e:
-            logger.error(f"Error searching vectors: {e}")
-            return []
+            logger.error("Error searching vectors: %s", e)
+            raise VectorStoreQueryError(operation="search_similar", collection=self.collection_name) from e
 
     def keyword_search(
         self,
@@ -168,16 +232,31 @@ class MilvusClient(IVectorDB):
         filter        : str = "",
         case_sensitive: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Term-frequency keyword search. Pre-filters via Milvus filter expression."""
+        """Term-frequency keyword search. Pre-filters via Milvus filter expression.
+
+        Giới hạn: quét tối đa ``_KEYWORD_SCAN_LIMIT`` bản ghi khớp filter rồi chấm điểm trong Python
+        (không có index từ khóa); chạm trần thì log cảnh báo. Ném VectorStoreQueryError khi Milvus lỗi.
+        """
         try:
             entities = self._client.query(
                 collection_name = self.collection_name,
                 filter          = filter or "",
                 output_fields   = _OUTPUT_FIELDS,
-                limit           = 1000,
+                limit           = _KEYWORD_SCAN_LIMIT,
+            )
+        except Exception as e:
+            logger.error("Error in keyword search: %s", e)
+            raise VectorStoreQueryError(operation="keyword_search", collection=self.collection_name) from e
+
+        entities = entities or []
+        if len(entities) >= _KEYWORD_SCAN_LIMIT:
+            logger.warning(
+                "Keyword search reached scan cap (%d rows, filter=%r); results are approximate",
+                _KEYWORD_SCAN_LIMIT, filter,
             )
 
-            terms  = query_text.split() if case_sensitive else query_text.lower().split()
+        try:
+            terms = query_text.split() if case_sensitive else query_text.lower().split()
             scored = []
 
             for entity in entities:
@@ -219,8 +298,8 @@ class MilvusClient(IVectorDB):
             return scored[:top_k]
 
         except Exception as e:
-            logger.error(f"Error in keyword search: {e}")
-            return []
+            logger.error("Error scoring keyword search results: %s", e)
+            raise VectorStoreQueryError(operation="keyword_search", collection=self.collection_name) from e
 
     # ─────────────────────────────
     # Hybrid search (vector + keyword via RRF)
@@ -241,16 +320,13 @@ class MilvusClient(IVectorDB):
         Both searches use the same Milvus filter expression.
         ef controls HNSW recall quality for the vector branch.
         """
-        try:
-            sp = {"metric_type": "COSINE", "params": {"ef": ef}}
-            vector_results  = self.search_similar(query_vector, top_k * 2, filter=filter, search_params=sp)
-            keyword_results = self.keyword_search(query_text,   top_k * 2, filter=filter)
-            merged = self._rrf_merge(vector_results, keyword_results, top_k, vector_weight, keyword_weight)
-            logger.info(f"Hybrid search found {len(merged)} results (v={len(vector_results)}, k={len(keyword_results)})")
-            return merged
-        except Exception as e:
-            logger.error(f"Error in hybrid search: {e}")
-            return []
+        # Lỗi Milvus (VectorStoreQueryError) được để lan ra: rỗng nghĩa là "không có kết quả", không phải "lỗi".
+        sp = {"metric_type": "COSINE", "params": {"ef": ef}}
+        vector_results  = self.search_similar(query_vector, top_k * 2, filter=filter, search_params=sp)
+        keyword_results = self.keyword_search(query_text,   top_k * 2, filter=filter)
+        merged = self._rrf_merge(vector_results, keyword_results, top_k, vector_weight, keyword_weight)
+        logger.info(f"Hybrid search found {len(merged)} results (v={len(vector_results)}, k={len(keyword_results)})")
+        return merged
 
     # ─────────────────────────────
     # Internal helpers

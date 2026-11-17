@@ -8,6 +8,7 @@ from src.modules.assistant.domain.constants.query_intent import QueryIntent
 from src.modules.assistant.domain.constants.search_config import SearchConfig
 from src.modules.assistant.domain.entities.search_result import SearchResult
 from src.modules.assistant.domain.ports.i_vector_db import IVectorDB
+from src.modules.assistant.infrastructure.database.milvus_client import quote_filter_value
 
 
 class MilvusSearchRepository(ISearchRepository):
@@ -53,6 +54,8 @@ class MilvusSearchRepository(ISearchRepository):
         Builds a chain of Milvus filter expressions from strict → loose.
         If a strict filter yields no results, the next looser filter is tried.
 
+        Lưu ý: không có nhánh theo số phiếu (schema Milvus không có trường đó).
+
         Example for "Anh Tiệc X3, tháng 3/2025":
             [0] doc_type + customer + year + month  ← strictest
             [1] doc_type + customer + year
@@ -65,7 +68,7 @@ class MilvusSearchRepository(ISearchRepository):
         type_expr = ""
         if analyzed.doc_types:
             type_expr = "({})".format(
-                " || ".join(f'doc_type == "{dt.value}"' for dt in analyzed.doc_types)
+                " || ".join(f"doc_type == {quote_filter_value(dt.value)}" for dt in analyzed.doc_types)
             )
 
         customer_expr = ""
@@ -73,15 +76,14 @@ class MilvusSearchRepository(ISearchRepository):
             cid = analyzed.customer_name.strip().lower()
             cid = re.sub(r"[^\w\s]", "", cid)
             cid = re.sub(r"\s+", "_", cid).strip("_")
-            customer_expr = f'customer_id == "{cid}"'
+            customer_expr = f"customer_id == {quote_filter_value(cid)}"
 
         debt_expr  = "co_no == true" if analyzed.primary_intent == QueryIntent.DEBT else ""
-        year_expr  = f"year == {tf.year}"   if tf.year  else ""
-        month_expr = f"month == {tf.month}" if tf.month else ""
+        year_expr  = f"year == {int(tf.year)}"   if tf.year  else ""
+        month_expr = f"month == {int(tf.month)}" if tf.month else ""
 
-        # Invoice lookup: single hard filter, no fallback needed
-        if analyzed.invoice_id:
-            return [f'so_phieu == "{analyzed.invoice_id}"']
+        # Số phiếu (invoice_id) KHÔNG phải trường trong schema Milvus (xem milvus_client._OUTPUT_FIELDS):
+        # tra cứu theo số phiếu thuộc dữ liệu SQL, nên không lọc theo nó ở đây.
 
         def join(*parts: str) -> str:
             return " && ".join(p for p in parts if p)
@@ -127,6 +129,10 @@ class MilvusSearchRepository(ISearchRepository):
         Tries each filter in the chain in order.
         Stops at the first filter that returns >= min_results results.
         Each attempt runs hybrid search (vector + keyword via RRF).
+
+        Kết quả RỖNG hợp lệ → nới filter sang bước kế tiếp. Lỗi hạ tầng
+        (VectorStoreQueryError từ client) được để lan ra ngay, không thử các filter còn lại
+        (tránh lặp N filter × timeout khi Milvus đã hỏng).
         """
         for milvus_filter in filter_chain:
             raw = self.client.hybrid_search(
@@ -172,7 +178,7 @@ class MilvusSearchRepository(ISearchRepository):
 
         parts = []
         if doc_type:
-            parts.append(f'doc_type == "{doc_type}"')
+            parts.append(f"doc_type == {quote_filter_value(doc_type)}")
         if extra_filter:
             parts.append(extra_filter)
         milvus_filter = " && ".join(parts)

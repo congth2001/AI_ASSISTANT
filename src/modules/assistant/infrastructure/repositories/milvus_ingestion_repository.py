@@ -5,6 +5,7 @@ from src.modules.assistant.domain.repositories.i_ingestion_repository import IIn
 from src.modules.assistant.domain.entities.document_chunk import DocumentChunk
 from src.modules.assistant.domain.ports.i_embedding_service import IEmbeddingService
 from src.modules.assistant.domain.ports.i_vector_db import IVectorDB
+from src.modules.assistant.infrastructure.database.milvus_client import quote_filter_value
 
 _MAX_TEXT_LENGTH = 4096  # khớp độ dài trường `text` trong schema collection
 
@@ -34,25 +35,31 @@ class MilvusIngestionRepository(IIngestionRepository):
         cursor   : str | None,
         page_size: int,
     ) -> tuple[set[str], str | None]:
+        """Trang `doc_id` đã tồn tại, theo thứ tự tăng dần của `doc_id` (xác định).
+
+        Milvus `query(limit=N)` không bảo đảm thứ tự, nên lấy N bản ghi tùy ý rồi lấy max làm cursor sẽ
+        bỏ sót id. Vì vậy quét đầy đủ phần `doc_id > cursor` bằng iterator (chỉ cột `doc_id`), sort rồi
+        cắt `page_size`. `next_cursor` chỉ có khi còn trang sau. Ném VectorStoreQueryError khi Milvus lỗi.
+        """
         expr_parts: list[str] = []
         if doc_type != "all":
-            expr_parts.append(f'doc_type == "{doc_type}"')
+            expr_parts.append(f"doc_type == {quote_filter_value(doc_type)}")
         if cursor:
-            expr_parts.append(f'doc_id > "{cursor}"')
+            expr_parts.append(f"doc_id > {quote_filter_value(cursor)}")
 
         results = await asyncio.to_thread(
-            self.client.query,
-            filter          = " && ".join(expr_parts) if expr_parts else "",
-            output_fields   = ["doc_id"],
-            limit           = page_size,
+            self.client.query_all,
+            filter        = " && ".join(expr_parts),
+            output_fields = ["doc_id"],
         )
 
         if not results:
             return set(), None
 
-        doc_ids     = sorted(r["doc_id"] for r in results)
-        next_cursor = doc_ids[-1] if len(doc_ids) == page_size else None
-        return set(doc_ids), next_cursor
+        all_ids     = sorted({r["doc_id"] for r in results})
+        page        = all_ids[:page_size]
+        next_cursor = page[-1] if len(all_ids) > page_size else None
+        return set(page), next_cursor
 
     async def insert(self, chunks: list[DocumentChunk]) -> None:
         """Batch insert new documents"""
@@ -68,7 +75,7 @@ class MilvusIngestionRepository(IIngestionRepository):
 
     async def get_period_revenue(self, year: int, month: int) -> float:
         """Return total revenue for a specific period, used for calculating month-over-month growth in period summaries."""
-        filter_str = f'doc_type == "period_summary" && year == {year} && month == {month}'
+        filter_str = f'doc_type == "period_summary" && year == {int(year)} && month == {int(month)}'
         results = await asyncio.to_thread(
             self.client.query,
             filter          = filter_str,
@@ -81,7 +88,7 @@ class MilvusIngestionRepository(IIngestionRepository):
 
     async def get_by_doc_id(self, doc_id: str) -> dict:
         """Get document by ID for a given chunk (used for upsert logic)"""
-        filter_str = f'doc_id == "{doc_id}"'
+        filter_str = f"doc_id == {quote_filter_value(doc_id)}"
         results = await asyncio.to_thread(
             self.client.query,
             filter          = filter_str,
@@ -131,7 +138,7 @@ class MilvusIngestionRepository(IIngestionRepository):
             for c in batch:
                 existed_doc = await asyncio.to_thread(
                     self.client.query,
-                    filter        = f'doc_id == "{c.doc_id}"',
+                    filter        = f"doc_id == {quote_filter_value(c.doc_id)}",
                     output_fields = ["embedding"],
                     limit         = 1,
                 )

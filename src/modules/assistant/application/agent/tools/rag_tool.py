@@ -48,8 +48,19 @@ class RAGTool(BaseTool):
         current_query: str,
     ) -> Dict[str, Any]:
         search_result = self.search_use_case.execute_analyzed(analyzed)
-        return self.context_builder.build_context(
+        context = self.context_builder.build_context(
             search_result=search_result,
             messages=messages,
             current_query=current_query,
         )
+        error_code = getattr(search_result, "error_code", None)
+        if error_code:
+            # Retrieval failed (e.g. vector store down): do not let the answer read
+            # as "no matching documents".
+            context["has_data"] = False
+            context["retrieval_error"] = error_code
+            context["fallback_warning"] = (
+                "Không truy xuất được tài liệu do lỗi kho dữ liệu vector; "
+                "không thể kết luận là không có tài liệu liên quan."
+            )
+        return context

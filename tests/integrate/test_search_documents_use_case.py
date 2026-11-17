@@ -250,13 +250,15 @@ class TestMilvusSearchRepositoryFilterChain:
     def _make_repo(self) -> MilvusSearchRepository:
         return MilvusSearchRepository(client=MagicMock(), embedding_service=MagicMock())
 
-    def test_invoice_lookup_single_filter(self):
+    def test_invoice_id_is_not_a_milvus_filter(self):
+        # so_phieu không có trong schema Milvus: không được sinh filter theo trường đó
         repo = self._make_repo()
         analyzed = make_analyzed(invoice_id="XB24169-0125")
 
         chain = repo._build_filter_chain(analyzed)
 
-        assert chain == ['so_phieu == "XB24169-0125"']
+        assert chain == ['(doc_type == "transaction")', ""]
+        assert not any("so_phieu" in c for c in chain)
 
     def test_no_filter_only_fallback_when_no_constraints(self):
         repo = self._make_repo()
@@ -477,7 +479,7 @@ class TestMilvusSearchRepositoryHybridSearch:
         call_kwargs = client.hybrid_search.call_args_list[0][1]
         assert call_kwargs["ef"] == SearchConfig.DEFAULT_EF
 
-    def test_invoice_lookup_uses_single_strict_filter(self):
+    def test_invoice_lookup_does_not_filter_on_so_phieu(self):
         client = MagicMock()
         embedder = MagicMock()
         embedder.generate_embedding.return_value = DUMMY_VECTOR
@@ -488,7 +490,7 @@ class TestMilvusSearchRepositoryHybridSearch:
 
         assert client.hybrid_search.call_count == 1
         call_kwargs = client.hybrid_search.call_args_list[0][1]
-        assert call_kwargs["filter"] == 'so_phieu == "XB24169-0125"'
+        assert "so_phieu" not in call_kwargs["filter"]
 
     def test_embedding_called_with_original_query(self):
         client = MagicMock()
