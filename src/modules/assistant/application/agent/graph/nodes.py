@@ -6,6 +6,7 @@ from typing import Awaitable, Callable
 from src.modules.assistant.application.agent.graph.state import AgentState
 from src.modules.assistant.application.agent.tools.text_to_sql_tool import TextToSQLTool
 from src.modules.assistant.application.agent.tools.rag_tool import RAGTool
+from src.modules.assistant.application.agent.tools.tool_result import ToolResult
 from src.modules.assistant.application.services.intent_classifier import IntentClassifier
 from src.modules.assistant.application.services.query_analyzer import QueryAnalyzer
 from src.modules.assistant.application.services.query_contextualizer import QueryContextualizer
@@ -40,6 +41,70 @@ async def _run_node(
         metric = node_metric(name, started, False, type(exc).__name__)
         logger.exception("Agent node failed", extra={"trace_id": state.get("trace_id"), **metric})
         raise
+
+
+# ─────────────────────────────────────────────
+# Shared helpers
+# ─────────────────────────────────────────────
+
+def _conversation_history(state: AgentState) -> list[dict]:
+    """Recent turns oldest-first (the repository returns newest-first)."""
+    return [
+        {"role": message.role, "content": message.content}
+        for message in reversed(state["messages"][:SearchConfig.HISTORY_WINDOW])
+    ]
+
+
+def _sql_citations(sql_queries: list[str]) -> list[dict]:
+    return [
+        {"id": f"sql:{index + 1}", "type": "sql", "query": sql}
+        for index, sql in enumerate(sql_queries)
+    ]
+
+
+def _document_citations(documents: list[dict]) -> list[dict]:
+    return [
+        {
+            "id": f"doc:{doc.get('doc_id')}",
+            "type": "document",
+            "doc_id": doc.get("doc_id"),
+            "score": doc.get("score"),
+            "metadata": doc.get("metadata", {}),
+        }
+        for doc in documents
+    ]
+
+
+def _tool_call(name: str, result: ToolResult) -> dict:
+    return {
+        "tool": name,
+        "success": result.success,
+        "has_data": result.has_data,
+        "error_code": result.error_code,
+    }
+
+
+def _data_context(
+    state: AgentState,
+    *,
+    retrieved_text: str,
+    intent: str,
+    has_data: bool,
+    citations: list[dict],
+    **extra,
+) -> dict:
+    """Context dict consumed by the LLM for SQL/hybrid nodes."""
+    return {
+        "retrieved_text": retrieved_text,
+        "conversation_history": _conversation_history(state),
+        "current_query": state["query"],
+        "intent": intent,
+        "has_data": has_data,
+        "used_fallback": False,
+        "fallback_warning": None,
+        "sources": citations,
+        **extra,
+    }
 
 
 # ─────────────────────────────────────────────
@@ -91,8 +156,6 @@ def make_analyze_query_node(classifier: IntentClassifier, query_analyzer: QueryA
             route = await classifier.classify(state["query"])
             return {
                 "route": route,
-                "plan": [f"route:{route}", f"execute:{route}", "evaluate", "respond"],
-                "iteration": state.get("iteration", 0) + 1,
             }
         return await _run_node(state, "analyze_query", operation, timeout_seconds=15)
     return node
@@ -103,12 +166,7 @@ def make_prepare_conversation_node():
     async def node(state: AgentState) -> dict:
         async def operation():
             context = {
-                "conversation_history": [
-                    {"role": message.role, "content": message.content}
-                    for message in reversed(
-                        state["messages"][:SearchConfig.HISTORY_WINDOW]
-                    )
-                ],
+                "conversation_history": _conversation_history(state),
                 "current_query": state["query"],
                 "intent": "conversation",
                 "has_data": True,
@@ -122,10 +180,6 @@ def make_prepare_conversation_node():
                 "tool_name": None,
                 "tool_success": True,
                 "tool_error_code": None,
-                "attempted_routes": [
-                    *state.get("attempted_routes", []),
-                    "conversation",
-                ],
             }
 
         return await _run_node(
@@ -154,28 +208,24 @@ def make_execute_text_to_sql_node(
             analyzed = query_analyzer.analyze(resolved)
             result = await tool.run(analyzed=analyzed)
             sql_queries = result.metadata.get("sql_queries", [])
-            citations = [{"id": f"sql:{i + 1}", "type": "sql", "query": sql} for i, sql in enumerate(sql_queries)]
-            context = {
-            "retrieved_text": result.content,
-            "conversation_history": [
-                {"role": m.role, "content": m.content}
-                for m in reversed(state["messages"][:SearchConfig.HISTORY_WINDOW])
-            ],
-            "current_query": state["query"],
-            "intent": analyzed.primary_intent.value,
-            "has_data": result.has_data,
-            "used_fallback": False,
-            "fallback_warning": None,
-            "sources": citations,
-            }
-            tool_call = {"tool": "text_to_sql", "success": result.success, "has_data": result.has_data, "error_code": result.error_code}
+            citations = _sql_citations(sql_queries)
+            context = _data_context(
+                state,
+                retrieved_text=result.content,
+                intent=analyzed.primary_intent.value,
+                has_data=result.has_data,
+                citations=citations,
+            )
             return {
-            "tool_name": "text_to_sql", "tool_result": result.content,
-            "tool_success": result.success, "tool_error_code": result.error_code,
-            "context": context, "analyzed": analyzed,
-            "sql_query": sql_queries, "citations": citations,
-            "tool_calls": [*state.get("tool_calls", []), tool_call],
-            "attempted_routes": [*state.get("attempted_routes", []), "text_to_sql"],
+                "tool_name": "text_to_sql",
+                "tool_result": result.content,
+                "tool_success": result.success,
+                "tool_error_code": result.error_code,
+                "context": context,
+                "analyzed": analyzed,
+                "sql_query": sql_queries,
+                "citations": citations,
+                "tool_calls": [*state.get("tool_calls", []), _tool_call("text_to_sql", result)],
             }
         return await _run_node(state, "execute_text_to_sql", operation, timeout_seconds=45)
     return node
@@ -194,28 +244,25 @@ def make_execute_rag_node(
                 resolved = await contextualizer.resolve(state["query"], state["messages"])
                 analyzed = query_analyzer.analyze(resolved)
             result = await tool.run(
-            analyzed=analyzed,
-            messages=state["messages"],
-            current_query=state["query"],
-        )
+                analyzed=analyzed,
+                messages=state["messages"],
+                current_query=state["query"],
+            )
             context = result.metadata["context"]
-            document_citations = [
-                {"id": f"doc:{doc.get('doc_id')}", "type": "document", "doc_id": doc.get("doc_id"), "score": doc.get("score"), "metadata": doc.get("metadata", {})}
-                for doc in context.get("retrieved_documents", [])
+            citations = [
+                *state.get("citations", []),
+                *_document_citations(context.get("retrieved_documents", [])),
             ]
-            citations = [*state.get("citations", []), *document_citations]
             context["sources"] = citations
-            tool_call = {"tool": "rag", "success": result.success, "has_data": result.has_data, "error_code": result.error_code}
             return {
-            "tool_name": "rag",
-            "tool_result": result.content,
-            "tool_success": result.success,
-            "tool_error_code": result.error_code,
-            "context": context,
-            "analyzed": analyzed,
-            "citations": citations,
-            "tool_calls": [*state.get("tool_calls", []), tool_call],
-            "attempted_routes": [*state.get("attempted_routes", []), "rag"],
+                "tool_name": "rag",
+                "tool_result": result.content,
+                "tool_success": result.success,
+                "tool_error_code": result.error_code,
+                "context": context,
+                "analyzed": analyzed,
+                "citations": citations,
+                "tool_calls": [*state.get("tool_calls", []), _tool_call("rag", result)],
             }
         return await _run_node(state, "execute_rag", operation, timeout_seconds=30, retries=1)
     return node
@@ -241,39 +288,30 @@ def make_execute_hybrid_node(
                 ),
             )
             rag_context = rag_result.metadata["context"]
-            sql_text = sql_result.content
-            merged_text = "\n\n".join(filter(None, [sql_text, rag_result.content]))
+            rag_documents = rag_context.get("retrieved_documents", [])
+            merged_text = "\n\n".join(filter(None, [sql_result.content, rag_result.content]))
             sql_queries = sql_result.metadata.get("sql_queries", [])
-            citations = [{"id": f"sql:{i + 1}", "type": "sql", "query": sql} for i, sql in enumerate(sql_queries)]
-            citations.extend({"id": f"doc:{doc.get('doc_id')}", "type": "document", "doc_id": doc.get("doc_id"), "score": doc.get("score"), "metadata": doc.get("metadata", {})} for doc in rag_context.get("retrieved_documents", []))
-
-            context = {
-            "retrieved_text": merged_text,
-            "conversation_history": [
-                {"role": m.role, "content": m.content}
-                for m in reversed(state["messages"][:SearchConfig.HISTORY_WINDOW])
-            ],
-            "current_query": state["query"],
-            "intent": analyzed.primary_intent.value,
-            "has_data": sql_result.has_data or rag_result.has_data,
-            "used_fallback": False,
-            "fallback_warning": None,
-            "sources": citations,
-            "sql_context": {"queries": sql_queries, "result": sql_result.content},
-            "rag_context": {"documents": rag_context.get("retrieved_documents", []), "result": rag_result.content},
-            }
-            calls = [
-                {"tool": "text_to_sql", "success": sql_result.success, "has_data": sql_result.has_data, "error_code": sql_result.error_code},
-                {"tool": "rag", "success": rag_result.success, "has_data": rag_result.has_data, "error_code": rag_result.error_code},
-            ]
+            citations = [*_sql_citations(sql_queries), *_document_citations(rag_documents)]
+            context = _data_context(
+                state,
+                retrieved_text=merged_text,
+                intent=analyzed.primary_intent.value,
+                has_data=sql_result.has_data or rag_result.has_data,
+                citations=citations,
+                sql_context={"queries": sql_queries, "result": sql_result.content},
+                rag_context={"documents": rag_documents, "result": rag_result.content},
+            )
+            calls = [_tool_call("text_to_sql", sql_result), _tool_call("rag", rag_result)]
             return {
-            "tool_name": "hybrid", "tool_result": merged_text,
-            "tool_success": sql_result.success or rag_result.success,
-            "tool_error_code": sql_result.error_code or rag_result.error_code,
-            "context": context, "analyzed": analyzed,
-            "sql_query": sql_queries, "citations": citations,
-            "tool_calls": [*state.get("tool_calls", []), *calls],
-            "attempted_routes": [*state.get("attempted_routes", []), "hybrid"],
+                "tool_name": "hybrid",
+                "tool_result": merged_text,
+                "tool_success": sql_result.success or rag_result.success,
+                "tool_error_code": sql_result.error_code or rag_result.error_code,
+                "context": context,
+                "analyzed": analyzed,
+                "sql_query": sql_queries,
+                "citations": citations,
+                "tool_calls": [*state.get("tool_calls", []), *calls],
             }
         return await _run_node(state, "execute_hybrid", operation, timeout_seconds=50)
     return node
@@ -317,14 +355,6 @@ def make_evaluate_context_node():
                 ),
             }
         return await _run_node(state, "evaluate_context", operation, timeout_seconds=2)
-    return node
-
-
-def make_replan_node():
-    async def node(state: AgentState) -> dict:
-        async def operation():
-            return {"route": state.get("route") or "rag"}
-        return await _run_node(state, "replan", operation, timeout_seconds=2)
     return node
 
 

@@ -17,14 +17,8 @@ class AgentState(TypedDict):
     node_metrics: List[Dict[str, Any]]
     tool_calls: List[Dict[str, Any]]
     citations: List[Dict[str, Any]]
-    plan: List[str]
-    attempted_routes: List[str]
-    iteration: int
-    max_iterations: int
     needs_clarification: bool
     clarification_question: Optional[str]
     evaluation: Optional[Dict[str, Any]]
     response_attempts: int
-    awaiting_approval: bool
-    pending_action: Optional[Dict[str, Any]]
     response: Optional[str]             # Final LLM response text

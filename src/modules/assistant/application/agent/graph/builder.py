@@ -13,7 +13,6 @@ from src.modules.assistant.application.agent.graph.nodes import (
     make_assess_request_node,
     make_clarification_node,
     make_evaluate_context_node,
-    make_replan_node,
     make_evaluate_response_node,
 )
 from src.modules.assistant.application.agent.graph.edges import (
@@ -99,7 +98,6 @@ def _build_graph(
     graph.add_node("execute_rag",          make_execute_rag_node(rag_tool, query_analyzer, contextualizer))
     graph.add_node("execute_hybrid",       make_execute_hybrid_node(text_to_sql_tool, rag_tool, query_analyzer, contextualizer))
     graph.add_node("evaluate_context",      make_evaluate_context_node())
-    graph.add_node("replan",                make_replan_node())
     terminal = END
     if include_response:
         if llm_service is None:
@@ -134,17 +132,7 @@ def _build_graph(
     graph.add_conditional_edges(
         "evaluate_context",
         route_after_context_evaluation,
-        {"respond": terminal, "replan": "replan", "clarify": "request_clarification"},
-    )
-    graph.add_conditional_edges(
-        "replan",
-        route_after_analysis,
-        {
-            "text_to_sql": "execute_text_to_sql",
-            "rag": "execute_rag",
-            "hybrid": "execute_hybrid",
-            "conversation": "prepare_conversation",
-        },
+        {"respond": terminal, "clarify": "request_clarification"},
     )
     if include_response:
         graph.add_edge("generate_response", "evaluate_response")

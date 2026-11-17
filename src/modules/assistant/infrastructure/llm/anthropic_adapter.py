@@ -1,64 +1,89 @@
+import logging
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
 import anthropic
-from typing import AsyncGenerator, Optional, Dict, Any
+
+from src.modules.assistant.domain.errors import AnthropicRequestError
 from src.modules.assistant.domain.ports.i_llm_service import ILLMService
-from src.modules.assistant.domain.errors import (
-    AnthropicRequestError,
+from src.modules.assistant.infrastructure.llm.llm_common import (
+    DEFAULT_MAX_RETRIES,
+    DEFAULT_TIMEOUT_SECONDS,
+    TRUNCATION_NOTICE,
+    build_system_prompt,
+    parse_route,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicAdapter(ILLMService):
-    """Anthropic Claude implementation of LLM service"""
+    """Anthropic Claude implementation of LLM service.
 
-    def __init__(self, api_key: str, model: str = "claude-3-sonnet-20240229"):
+    Uses ``AsyncAnthropic`` throughout so calls never block the event loop.
+    Not wired into the container by default; keep behaviour aligned with
+    ``OpenAIAdapter`` (same prompts, error contract and route labels).
+    """
+
+    RESPONSE_MAX_TOKENS = 4096
+    ROUTE_MAX_TOKENS = 64
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "claude-sonnet-5-5",
+        client: anthropic.AsyncAnthropic | None = None,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+    ):
         self.api_key = api_key
         self.model = model
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self._async_client = anthropic.AsyncAnthropic(api_key=api_key)
+        self._client = client or anthropic.AsyncAnthropic(
+            api_key=api_key, timeout=timeout, max_retries=max_retries
+        )
+
+    @staticmethod
+    def _build_messages(prompt: str, context: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Conversation turns in the strictly alternating user/assistant form the API requires."""
+        turns = [
+            {"role": msg["role"], "content": msg["content"]}
+            for msg in (context or {}).get("conversation_history", [])
+            if msg.get("role") in ("user", "assistant") and msg.get("content")
+        ]
+        turns.append({"role": "user", "content": prompt})
+        merged: List[Dict[str, str]] = []
+        for turn in turns:
+            if merged and merged[-1]["role"] == turn["role"]:
+                merged[-1]["content"] += "\n\n" + turn["content"]
+            else:
+                merged.append(dict(turn))
+        if merged[0]["role"] != "user":
+            merged.insert(0, {"role": "user", "content": "(tiếp tục cuộc trò chuyện)"})
+        return merged
+
+    @staticmethod
+    def _text(response: Any) -> str:
+        return "".join(block.text for block in response.content if block.type == "text").strip()
 
     async def generate_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Generate response using Anthropic Claude"""
         try:
-            # Build system prompt
-            system_prompt = "You are a helpful business chatbot assistant. Provide accurate and helpful responses about business data and analytics."
-
-            # Add retrieved context if available
-            if context and 'retrieved_context' in context and context['retrieved_context']:
-                system_prompt += f"\n\nUse this retrieved context to provide accurate information:\n{context['retrieved_context']}"
-
-            # Build conversation history
-            conversation_parts = []
-
-            # Add conversation history if provided
-            if context and 'conversation_history' in context:
-                for msg in context['conversation_history']:
-                    role = msg['role']
-                    if role == 'assistant':
-                        role = 'assistant'
-                    elif role == 'user':
-                        role = 'user'
-                    conversation_parts.append(f"{role}: {msg['content']}")
-
-            # Add current user message
-            conversation_parts.append(f"user: {prompt}")
-
-            # Combine into full prompt
-            full_prompt = "\n\n".join(conversation_parts)
-
-            # Call Anthropic API
-            response = self.client.messages.create(
+            response = await self._client.messages.create(
                 model=self.model,
-                max_tokens=1000,
+                max_tokens=self.RESPONSE_MAX_TOKENS,
                 temperature=0.7,
-                system=system_prompt,
-                messages=[
-                    {"role": "user", "content": full_prompt}
-                ]
+                system=build_system_prompt(context),
+                messages=self._build_messages(prompt, context),
             )
-
-            return response.content[0].text.strip()
-
-        except Exception as e:
-            raise AnthropicRequestError()
+            text = self._text(response)
+            if response.stop_reason == "max_tokens" or not text:
+                logger.warning("LLM returned incomplete or empty output", extra={"model": self.model})
+                raise AnthropicRequestError()
+            return text
+        except AnthropicRequestError:
+            raise
+        except Exception as exc:
+            logger.exception("Anthropic generate_response failed", extra={"model": self.model})
+            raise AnthropicRequestError() from exc
 
     async def analyze_intent(self, message: str) -> str:
         """Analyze intent of user message"""
@@ -79,72 +104,71 @@ class AnthropicAdapter(ILLMService):
 
             Return only the category name, nothing else.
             """
-
-            response = self.client.messages.create(
+            response = await self._client.messages.create(
                 model=self.model,
                 max_tokens=50,
                 temperature=0.1,
                 system="You are an intent classification assistant. Return only the category name.",
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
+                messages=[{"role": "user", "content": prompt}],
             )
-
-            intent = response.content[0].text.strip().lower()
-            return intent
-
-        except Exception as e:
+            return self._text(response).lower()
+        except Exception:
+            logger.warning("Anthropic analyze_intent failed; using 'general'", exc_info=True)
             return "general"  # fallback
 
     async def stream_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> AsyncGenerator[str, None]:
-        """Stream response tokens using Anthropic Claude"""
-        system_prompt = "Bạn là một trợ lý chatbot chuyên về phân tích kinh doanh. Hãy trả lời các câu hỏi của người dùng một cách chính xác và hữu ích."
-        retrieved = context.get('retrieved_text') if context else None
-        if retrieved:
-            system_prompt = (
-                "Bạn là một trợ lý chatbot chuyên về phân tích kinh doanh. "
-                "Sử dụng thông tin ngữ cảnh được truy xuất dưới đây để cung cấp câu trả lời chính xác:\n\n"
-                f"{retrieved}"
-            )
-        messages = []
-        if context and 'conversation_history' in context:
-            for msg in context['conversation_history']:
-                messages.append({"role": msg['role'], "content": msg['content']})
-        messages.append({"role": "user", "content": prompt})
-        async with self._async_client.messages.stream(
-            model=self.model,
-            max_tokens=1000,
-            system=system_prompt,
-            messages=messages,
-        ) as stream:
-            async for text in stream.text_stream:
-                yield text
+        """Stream response tokens; append a notice if the output hit the token limit."""
+        emitted = False
+        try:
+            async with self._client.messages.stream(
+                model=self.model,
+                max_tokens=self.RESPONSE_MAX_TOKENS,
+                system=build_system_prompt(context),
+                messages=self._build_messages(prompt, context),
+            ) as stream:
+                async for text in stream.text_stream:
+                    emitted = True
+                    yield text
+                final = await stream.get_final_message()
+            if final.stop_reason == "max_tokens":
+                logger.warning("LLM stream truncated by token limit", extra={"model": self.model})
+                if not emitted:
+                    raise AnthropicRequestError()
+                yield TRUNCATION_NOTICE
+        except AnthropicRequestError:
+            raise
+        except Exception as exc:
+            logger.exception("Anthropic stream_response failed", extra={"model": self.model})
+            raise AnthropicRequestError() from exc
 
     async def classify_route(self, query: str) -> str:
-        """Classify query into routing label."""
+        """Classify query into a routing label.
+
+        Provider/infrastructure failures raise ``AnthropicRequestError`` (same
+        contract as ``OpenAIAdapter``); unusable labels map to a data route.
+        """
         try:
-            response = self.client.messages.create(
+            response = await self._client.messages.create(
                 model=self.model,
-                max_tokens=20,
+                max_tokens=self.ROUTE_MAX_TOKENS,
                 system='Classify into one of: "text_to_sql", "rag", "hybrid", "conversation". Return only valid JSON: {"route": "<label>"}',
                 messages=[{"role": "user", "content": query}],
             )
-            import json
-            data = json.loads(response.content[0].text)
-            route = data.get("route", "rag")
-            return route if route in ("text_to_sql", "rag", "hybrid", "conversation") else "conversation"
-        except Exception:
-            return "rag"
+        except Exception as exc:
+            logger.exception("Anthropic classify_route failed", extra={"model": self.model})
+            raise AnthropicRequestError() from exc
+        return parse_route(self._text(response))
 
     async def rewrite_query(self, prompt: str) -> str:
         """Rewrite an ambiguous query into a fully explicit one."""
         try:
-            response = self.client.messages.create(
+            response = await self._client.messages.create(
                 model=self.model,
                 max_tokens=200,
                 system="Viết lại câu hỏi thành câu hoàn chỉnh, tường minh dựa trên lịch sử hội thoại. Chỉ trả về đúng một câu.",
                 messages=[{"role": "user", "content": prompt}],
             )
-            return response.content[0].text.strip()
+            return self._text(response) or prompt
         except Exception:
+            logger.warning("Anthropic rewrite_query failed; using the original query", exc_info=True)
             return prompt

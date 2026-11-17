@@ -1,4 +1,8 @@
+import asyncio
 import json
+import logging
+from contextlib import aclosing
+from typing import AsyncIterator
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from dependency_injector.wiring import inject, Provide
@@ -26,6 +30,13 @@ from src.common.errors import (
 )
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+    "Connection": "keep-alive",
+}
 
 
 def parse_conversation_id(value: str) -> UUID:
@@ -35,13 +46,37 @@ def parse_conversation_id(value: str) -> UUID:
         raise InvalidConversationIdError() from exc
 
 
+def _sse_error() -> str:
+    message = StreamingResponseFailedError().message
+    return "data: " + json.dumps({"type": "error", "message": message}, ensure_ascii=False) + "\n\n"
+
+
+async def _guarded_events(events: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Forward SSE chunks, guaranteeing a terminal `error` event on unexpected failure.
+
+    The use cases already convert their own failures into `error` events; this
+    is the last line of defence. Client disconnects (`CancelledError`) are not
+    swallowed: they propagate so the use case can persist the partial answer.
+    """
+    try:
+        async with aclosing(events):
+            async for chunk in events:
+                yield chunk
+    except asyncio.CancelledError:
+        logger.info("Chat stream cancelled by client")
+        raise
+    except Exception:
+        logger.exception("Chat stream failed")
+        yield _sse_error()
+
+
 @router.post("/chat", response_model=ChatResponse)
 @inject
 async def chat_endpoint(
     request: ChatRequest,
     current_user: dict = Depends(get_current_user),
     chat_use_case: ChatUseCase = Depends(Provide[Container.chat_use_case]),
-    conversation_use_case: ConversationUseCase = Depends(Provide[Container.use_case_conversation]),
+    conversation_use_case: ConversationUseCase = Depends(Provide[Container.conversation_use_case]),
 ) -> ChatResponse:
     """Send a message and receive a full response."""
     try:
@@ -77,7 +112,7 @@ async def chat_stream_endpoint(
     request: ChatRequest,
     current_user: dict = Depends(get_current_user),
     chat_use_case: ChatUseCase = Depends(Provide[Container.chat_use_case]),
-    conversation_use_case: ConversationUseCase = Depends(Provide[Container.use_case_conversation]),
+    conversation_use_case: ConversationUseCase = Depends(Provide[Container.conversation_use_case]),
 ) -> StreamingResponse:
     """SSE streaming chat endpoint.
 
@@ -89,12 +124,19 @@ async def chat_stream_endpoint(
         data: {"type": "error",   "message": "..."}
     """
     if current_user["role"] == "guest":
-        await chat_use_case.authorize_guest_query(request.message)
-
+        # Authorize before opening the stream so a refusal is a real HTTP error
+        # (403/502/...) mapped from the domain error, not an SSE event.
+        try:
+            await chat_use_case.authorize_guest_query(request.message)
+        except ApplicationError:
+            raise
+        except Exception as exc:
+            logger.exception("Guest query authorization failed")
+            raise ChatFailedError() from exc
         return StreamingResponse(
-            chat_use_case.execute_guest_stream(request.message),
+            _guarded_events(chat_use_case.execute_guest_stream(request.message)),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+            headers=SSE_HEADERS,
         )
 
     if not request.conversation_id:
@@ -103,27 +145,13 @@ async def chat_stream_endpoint(
     await ensure_conversation_write_access(
         conversation_id, current_user, conversation_use_case
     )
-
-    async def event_generator():
-        try:
-            async for chunk in chat_use_case.execute_stream(
-                conversation_id=conversation_id,
-                user_message=request.message,
-                user_id=current_user["id"],
-            ):
-                yield chunk
-        except Exception:
-            error = StreamingResponseFailedError()
-            yield f"data: {json.dumps({'type': 'error', 'message': error.message})}\n\n"
-
+    events = chat_use_case.execute_stream(
+        conversation_id=conversation_id,
+        user_message=request.message,
+        user_id=current_user["id"],
+    )
     return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-            "Connection": "keep-alive",
-        },
+        _guarded_events(events), media_type="text/event-stream", headers=SSE_HEADERS
     )
 
 
@@ -136,7 +164,7 @@ async def search_documents(
 ) -> SearchDocumentResponse:
     """Search for relevant business documents based on a query."""
     try:
-        result = search_use_case.execute(query=request.query)
+        result = await search_use_case.execute_async(query=request.query)
         return SearchDocumentResponse(
             query=request.query,
             results=[

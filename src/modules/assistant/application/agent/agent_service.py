@@ -1,5 +1,6 @@
 from typing import AsyncGenerator, Dict, Any, List
 import asyncio
+import logging
 from uuid import uuid4
 
 from src.modules.assistant.application.agent.graph.builder import build_agent_graph, build_context_graph
@@ -10,7 +11,19 @@ from src.modules.assistant.application.services.intent_classifier import IntentC
 from src.modules.assistant.application.services.query_analyzer import QueryAnalyzer
 from src.modules.assistant.application.services.query_contextualizer import QueryContextualizer
 from src.modules.conversations.domain.entities.message import Message
+from src.modules.assistant.domain.errors import AgentOperationTimeout
 from src.modules.assistant.domain.ports.i_llm_service import ILLMService
+
+logger = logging.getLogger(__name__)
+
+# Upper bounds for a whole graph run. Individual nodes carry their own timeouts
+# (see graph/nodes.py); these caps stop a chain of slow nodes and retries from
+# holding a request open indefinitely.
+CONTEXT_GRAPH_TIMEOUT_SECONDS = 120
+FULL_GRAPH_TIMEOUT_SECONDS = 240
+STREAM_RESPONSE_TIMEOUT_SECONDS = 60
+# Guests only get short small-talk answers; keep their token spend low.
+GUEST_COMPLETION_TOKENS = 1536
 
 
 class AgentService:
@@ -67,24 +80,56 @@ class AgentService:
             "node_metrics": [],
             "tool_calls": [],
             "citations": [],
-            "plan": [],
-            "attempted_routes": [],
-            "iteration": 0,
-            "max_iterations": 3,
             "needs_clarification": False,
             "clarification_question": None,
             "evaluation": None,
             "response_attempts": 0,
-            "awaiting_approval": False,
-            "pending_action": None,
             "response": None,
         }
+
+    async def _run_graph(
+        self,
+        graph: Any,
+        prefix: str,
+        query: str,
+        messages: List[Message],
+        conversation_id: str | None,
+        timeout_seconds: float,
+    ) -> AgentState:
+        """Run one turn on a thread that is unique to this turn.
+
+        History comes from PostgreSQL, not from the checkpointer, so a shared
+        per-conversation thread only accumulated checkpoints in RAM. A fresh
+        thread per turn is deleted from the checkpointer once the turn ends.
+        """
+        thread_id = f"{prefix}:{conversation_id or 'anon'}:{uuid4().hex}"
+        config = {"configurable": {"thread_id": thread_id}}
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                return await graph.ainvoke(self._make_initial_state(query, messages), config=config)
+        except AgentOperationTimeout:
+            raise
+        except TimeoutError as exc:
+            raise AgentOperationTimeout(operation=f"{prefix}_graph") from exc
+        finally:
+            await self._discard_thread(graph, thread_id)
+
+    @staticmethod
+    async def _discard_thread(graph: Any, thread_id: str) -> None:
+        checkpointer = getattr(graph, "checkpointer", None)
+        if not checkpointer:
+            return
+        try:
+            await checkpointer.adelete_thread(thread_id)
+        except Exception:
+            logger.warning("Could not delete agent checkpoint", extra={"thread_id": thread_id}, exc_info=True)
 
     async def invoke(
         self, query: str, messages: List[Message], thread_id: str | None = None
     ) -> AgentState:
-        config = {"configurable": {"thread_id": f"full:{thread_id or uuid4()}"}}
-        return await self._graph.ainvoke(self._make_initial_state(query, messages), config=config)
+        return await self._run_graph(
+            self._graph, "full", query, messages, thread_id, FULL_GRAPH_TIMEOUT_SECONDS
+        )
 
     async def invoke_for_context(
         self, query: str, messages: List[Message], thread_id: str | None = None
@@ -92,16 +137,20 @@ class AgentService:
         """Run routing + tool execution only; skips generate_response.
         Returns the final AgentState with context populated, ready for LLM streaming.
         """
-        config = {"configurable": {"thread_id": f"context:{thread_id or uuid4()}"}}
-        return await self._context_graph.ainvoke(
-            self._make_initial_state(query, messages), config=config
+        return await self._run_graph(
+            self._context_graph, "context", query, messages, thread_id, CONTEXT_GRAPH_TIMEOUT_SECONDS
         )
 
     async def stream_response(self, query: str, context: Dict[str, Any]) -> AsyncGenerator[str, None]:
         """Delegate token streaming to the underlying LLM service."""
-        async with asyncio.timeout(60):
-            async for token in self._llm_service.stream_response(query, context):
-                yield token
+        try:
+            async with asyncio.timeout(STREAM_RESPONSE_TIMEOUT_SECONDS):
+                async for token in self._llm_service.stream_response(query, context):
+                    yield token
+        except AgentOperationTimeout:
+            raise
+        except TimeoutError as exc:
+            raise AgentOperationTimeout(operation="stream_response") from exc
 
     async def classify_route(self, query: str) -> str:
         """Classify a query without executing SQL, RAG, or any data tool."""
@@ -118,6 +167,7 @@ class AgentService:
             "fallback_warning": None,
             "sources": [],
             "response_mode": "conversation",
+            "max_completion_tokens": GUEST_COMPLETION_TOKENS,
         }
         async for token in self.stream_response(query, context):
             yield token

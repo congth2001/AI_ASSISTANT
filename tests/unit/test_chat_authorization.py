@@ -71,9 +71,10 @@ class OwnershipUseCase:
     async def get_conversation(self, _conversation_id, user_id, turn_limit=1):
         if user_id == "staff-owner":
             return {"id": "conversation-1", "user_id": "staff-owner"}
-        if user_id is None:
-            return {"id": "conversation-1", "user_id": "staff-owner"}
         return None
+
+    async def get_conversation_as_admin(self, _conversation_id, turn_limit=1):
+        return {"id": "conversation-1", "user_id": "staff-owner"}
 
 
 @pytest.mark.asyncio

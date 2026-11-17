@@ -1,27 +1,65 @@
+import asyncio
 import hashlib
 import json
 import logging
-from typing import Any, AsyncGenerator, Dict, Optional
+from contextlib import aclosing
+from dataclasses import dataclass, field
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from uuid import UUID
 
+from src.common.cache_keys import CHAT_RESPONSE_CACHE_PREFIX  # re-exported for ETL/CLI imports
+from src.common.domain.time import now_vietnam
 from src.modules.assistant.application.agent.agent_service import AgentService
 from src.modules.assistant.domain.constants.search_config import SearchConfig
-from src.modules.conversations.domain.entities.message import Message
-from src.modules.conversations.domain.entities.conversation import Conversation
-from src.modules.assistant.domain.ports.i_cache_service import ICacheService
-from src.modules.conversations.domain.repositories.i_conversation_repository import IConversationRepository
-from src.common.domain.time import now_vietnam
-from src.modules.conversations.domain.errors import (
-    ConversationNotFoundError,
-)
 from src.modules.assistant.domain.errors import (
     GuestBusinessDataForbiddenError,
     StreamingResponseFailedError,
 )
+from src.modules.assistant.domain.ports.i_cache_service import ICacheService
+from src.modules.conversations.domain.entities.conversation import Conversation
+from src.modules.conversations.domain.entities.message import Message
+from src.modules.conversations.domain.errors import ConversationNotFoundError
+from src.modules.conversations.domain.repositories.i_conversation_repository import IConversationRepository
+
+__all__ = ["ChatUseCase", "CHAT_RESPONSE_CACHE_PREFIX"]
 
 _CACHE_TTL = 3600  # 1 hour
-CHAT_RESPONSE_CACHE_PREFIX = "chat:response:"
+_FALLBACK_RESPONSE = "Xin lỗi, tôi không có đủ thông tin để trả lời câu hỏi này."
+_CLARIFICATION_FALLBACK = "Bạn có thể nói rõ yêu cầu không?"
+# Tools whose answers come from the sales tables. The ETL refreshes those tables
+# and the cache key is scoped to one conversation plus its history, so a stored
+# answer is almost never reused and could silently show stale numbers when it is.
+_NON_CACHEABLE_TOOLS = frozenset({"text_to_sql", "hybrid"})
+# Keys of the pre-cleanup agent state that API clients may still read from
+# message metadata. The agent no longer produces them; they stay as constants.
+_LEGACY_METADATA = {
+    "plan": [],
+    "iteration": 0,
+    "awaiting_approval": False,
+    "pending_action": None,
+}
 logger = logging.getLogger(__name__)
+
+
+def _sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+@dataclass
+class _StreamTurn:
+    """Mutable bookkeeping for one streamed exchange.
+
+    Lets the cancellation handler persist whatever was already shown to the
+    user (the user message plus the partial answer).
+    """
+
+    conversation_id: UUID
+    user_message: str
+    user_id: Optional[str]
+    loaded: bool = False
+    is_first_message: bool = False
+    persisted: bool = False
+    chunks: List[str] = field(default_factory=list)
 
 
 class ChatUseCase:
@@ -43,7 +81,12 @@ class ChatUseCase:
         self.agent_service = agent_service
         self.conversation_repo = conversation_repo
         self.cache_service = cache_service
+        # Strong references so fire-and-forget persistence is not garbage collected.
+        self._background_tasks: set[asyncio.Task] = set()
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Guest (stateless)
+    # ─────────────────────────────────────────────────────────────────────
     async def authorize_guest_query(self, user_message: str) -> None:
         route = await self.agent_service.classify_route(user_message)
         if route != "conversation":
@@ -61,35 +104,35 @@ class ChatUseCase:
         }
 
     async def execute_guest_stream(self, user_message: str) -> AsyncGenerator[str, None]:
-        """Stream a single guest answer without reading or writing conversation data."""
-        def sse(data: dict) -> str:
-            return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+        """Stream a single guest answer without reading or writing conversation data.
 
-        yield sse({"type": "status", "step": "generating", "message": "Đang tạo câu trả lời..."})
-        async for token in self.agent_service.stream_stateless_conversation(user_message):
-            yield sse({"type": "token", "content": token})
-        yield sse({
-            "type": "done",
-            "conversation_id": None,
-            "intent": "conversation",
-            "timestamp": now_vietnam().isoformat(),
-            "metadata": {"stateless": True, "data_access": False},
-        })
+        Always ends with ``done`` or ``error``. Nothing is persisted, so a client
+        disconnect (``CancelledError``/``GeneratorExit``) simply propagates.
+        """
+        try:
+            yield _sse({"type": "status", "step": "generating", "message": "Đang tạo câu trả lời..."})
+            async for token in self.agent_service.stream_stateless_conversation(user_message):
+                yield _sse({"type": "token", "content": token})
+            yield _sse({
+                "type": "done",
+                "conversation_id": None,
+                "intent": "conversation",
+                "timestamp": now_vietnam().isoformat(),
+                "metadata": {"stateless": True, "data_access": False},
+            })
+        except Exception:
+            logger.exception("Guest streaming failed")
+            yield _sse({"type": "error", "message": StreamingResponseFailedError().message})
 
+    # ─────────────────────────────────────────────────────────────────────
+    # Authenticated chat
+    # ─────────────────────────────────────────────────────────────────────
     async def execute(
         self, conversation_id: UUID, user_message: str, user_id: Optional[str]
     ) -> Dict[str, Any]:
-        # ── 1. Load or create conversation ───────────────────────────────
-        conversation_data = await self.conversation_repo.get_conversation(
-            conversation_id, SearchConfig.HISTORY_WINDOW, user_id
-        )
-        if not conversation_data:
-            raise ConversationNotFoundError()
+        conversation = await self._load_conversation(conversation_id, user_id)
+        is_first_message = not conversation.messages
 
-        conversation = self._dict_to_conversation(conversation_data)
-        is_first_message = len(conversation.messages) == 0
-
-        # ── 2. Cache lookup ───────────────────────────────────────────────
         cache_key = self._make_cache_key(user_message, conversation)
         cached_payload = await self._get_cached(cache_key)
         if cached_payload:
@@ -97,48 +140,17 @@ class ChatUseCase:
                 cached_payload, conversation_id, user_message, is_first_message, user_id
             )
 
-        # ── 3. Run agent graph ────────────────────────────────────────────
         final_state = await self.agent_service.invoke(
             user_message, conversation.messages, thread_id=str(conversation_id)
         )
-
-        response_content = final_state.get("response") or "Xin lỗi, tôi không có đủ thông tin để trả lời câu hỏi này."
+        response_content = final_state.get("response") or _FALLBACK_RESPONSE
         context = final_state.get("context") or {}
-        analyzed = final_state.get("analyzed")
-        sql_query = final_state.get("sql_query", None)
-        intent = context.get("intent", analyzed.primary_intent.value if analyzed else "unknown")
-        metadata = {
-            "has_data": context.get("has_data", True),
-            "used_fallback": context.get("used_fallback", False),
-            "fallback_warning": context.get("fallback_warning"),
-            "tool_used": final_state.get("tool_name"),
-            "tool_success": final_state.get("tool_success"),
-            "tool_error_code": final_state.get("tool_error_code"),
-            "sql_query": sql_query,
-            "trace_id": final_state.get("trace_id"),
-            "node_metrics": final_state.get("node_metrics", []),
-            "tool_calls": final_state.get("tool_calls", []),
-            "citations": final_state.get("citations", []),
-            "plan": final_state.get("plan", []),
-            "evaluation": final_state.get("evaluation"),
-            "iteration": final_state.get("iteration", 0),
-            "needs_clarification": final_state.get("needs_clarification", False),
-            "awaiting_approval": final_state.get("awaiting_approval", False),
-            "pending_action": final_state.get("pending_action"),
-        }
+        intent = self._resolve_intent(final_state, context)
+        metadata = self._build_metadata(final_state, context)
 
-        # ── 4. Persist messages ───────────────────────────────────────────
-        _, assistant_msg = await self._persist_messages(
-            conversation_id, user_message, response_content, metadata=metadata
+        assistant_msg = await self._persist_exchange(
+            conversation_id, user_message, response_content, metadata, user_id, is_first_message
         )
-
-        # ── 5. Update title on first exchange ────────────────────────────
-        if is_first_message:
-            await self.conversation_repo.update_conversation(
-                conversation_id, {"title": self._generate_title(user_message)}, user_id
-            )
-
-        # ── 6. Store in cache for future identical queries ────────────────
         await self._cache_response(cache_key, response_content, intent, metadata)
 
         return {
@@ -160,132 +172,207 @@ class ChatUseCase:
             {"type": "done",    "conversation_id": str, "intent": str,
                                 "timestamp": str, "metadata": dict}
             {"type": "error",   "message": str}
+
+        The stream always ends with ``done`` or ``error`` unless the client goes
+        away. On disconnect/stop (``CancelledError``/``GeneratorExit``) the user
+        message and the partial answer are saved with ``{"interrupted": true}``
+        before the cancellation is re-raised.
         """
-        def sse(data: dict) -> str:
-            return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
-
+        turn = _StreamTurn(conversation_id, user_message, user_id)
         try:
-            # ── 1. Load or create conversation ───────────────────────────
-            conversation_data = await self.conversation_repo.get_conversation(
-                conversation_id, SearchConfig.HISTORY_WINDOW, user_id
-            )
-            if not conversation_data:
-                raise ConversationNotFoundError()
-            conversation = self._dict_to_conversation(conversation_data)
-            is_first_message = len(conversation.messages) == 0
+            conversation = await self._load_conversation(conversation_id, user_id)
+            turn.loaded = True
+            turn.is_first_message = not conversation.messages
 
-            # ── 2. Cache lookup ──────────────────────────────────────────
             cache_key = self._make_cache_key(user_message, conversation)
             cached_payload = await self._get_cached(cache_key)
-
-            if cached_payload:
-                yield sse({"type": "status", "step": "cache", "message": "Tìm thấy câu trả lời trong cache..."})
-                # Simulate streaming by yielding word-by-word
-                words = cached_payload["response"].split(" ")
-                for i, word in enumerate(words):
-                    suffix = " " if i < len(words) - 1 else ""
-                    yield sse({"type": "token", "content": word + suffix})
-                _, assistant_msg = await self._persist_messages(
-                    conversation_id, user_message, cached_payload["response"], metadata=cached_payload["metadata"]
-                )
-                if is_first_message:
-                    await self.conversation_repo.update_conversation(
-                        conversation_id, {"title": self._generate_title(user_message)}, user_id
-                    )
-                yield sse({
-                    "type": "done",
-                    "conversation_id": str(conversation_id),
-                    "intent": cached_payload["intent"],
-                    "timestamp": assistant_msg.timestamp.isoformat(),
-                    "metadata": {**cached_payload["metadata"], "cache_hit": True},
-                })
-                return
-
-            # ── 3. Run context-only agent graph ──────────────────────────
-            yield sse({"type": "status", "step": "routing", "message": "Đang phân tích câu hỏi..."})
-            final_state = await self.agent_service.invoke_for_context(
-                user_message, conversation.messages, thread_id=str(conversation_id)
+            events = (
+                self._stream_cached(turn, cached_payload)
+                if cached_payload
+                else self._stream_fresh(turn, conversation, cache_key)
             )
-
-            context = final_state.get("context") or {}
-            analyzed = final_state.get("analyzed")
-            sql_query = final_state.get("sql_query", None)
-            intent = context.get("intent", analyzed.primary_intent.value if analyzed else "unknown")
-            metadata = {
-                "has_data": context.get("has_data", True),
-                "used_fallback": context.get("used_fallback", False),
-                "fallback_warning": context.get("fallback_warning"),
-                "tool_used": final_state.get("tool_name"),
-                "tool_success": final_state.get("tool_success"),
-                "tool_error_code": final_state.get("tool_error_code"),
-                "sql_query": sql_query,
-                "trace_id": final_state.get("trace_id"),
-                "node_metrics": final_state.get("node_metrics", []),
-                "tool_calls": final_state.get("tool_calls", []),
-                "citations": final_state.get("citations", []),
-                "plan": final_state.get("plan", []),
-                "evaluation": final_state.get("evaluation"),
-                "iteration": final_state.get("iteration", 0),
-                "needs_clarification": final_state.get("needs_clarification", False),
-                "awaiting_approval": final_state.get("awaiting_approval", False),
-                "pending_action": final_state.get("pending_action"),
-            }
-
-            # ── 4. Stream LLM response tokens ────────────────────────────
-            response_chunks: list[str] = []
-            if context.get("response_mode") == "tool_error":
-                message = final_state["response"]
-                response_chunks.append(message)
-                yield sse({"type": "token", "content": message})
-            elif final_state.get("needs_clarification"):
-                clarification = final_state.get("response") or final_state.get("clarification_question") or "Bạn có thể nói rõ yêu cầu không?"
-                response_chunks.append(clarification)
-                yield sse({"type": "status", "step": "clarification", "message": "Cần bổ sung thông tin..."})
-                yield sse({"type": "token", "content": clarification})
-            else:
-                yield sse({"type": "status", "step": "generating", "message": "Đang tạo câu trả lời..."})
-                async for token in self.agent_service.stream_response(user_message, context):
-                    response_chunks.append(token)
-                    yield sse({"type": "token", "content": token})
-
-            response_content = "".join(response_chunks) or "Xin lỗi, tôi không có đủ thông tin để trả lời câu hỏi này."
-            source_ids = [source.get("id") for source in metadata["citations"] if source.get("id")]
-            metadata["response_evaluation"] = {
-                "citation_verified": (
-                    not source_ids
-                    or any(f"[{source_id}]" in response_content for source_id in source_ids)
-                ),
-                "mode": "streaming_post_check",
-            }
-
-            # ── 5. Persist messages ──────────────────────────────────────
-            _, assistant_msg = await self._persist_messages(
-                conversation_id, user_message, response_content, metadata=metadata
-            )
-            if is_first_message:
-                await self.conversation_repo.update_conversation(
-                    conversation_id, {"title": self._generate_title(user_message)}, user_id
-                )
-
-            # ── 6. Cache for future identical queries ────────────────────
-            await self._cache_response(cache_key, response_content, intent, metadata)
-
-            yield sse({
-                "type": "done",
-                "conversation_id": str(conversation_id),
-                "intent": intent,
-                "timestamp": assistant_msg.timestamp.isoformat(),
-                "metadata": metadata,
-            })
-
+            async with aclosing(events):
+                async for event in events:
+                    yield event
+        except (asyncio.CancelledError, GeneratorExit):
+            await self._persist_interrupted(turn)
+            raise
         except Exception:
+            # Covers failures after tokens were already streamed (e.g. persisting
+            # the exchange): the client still gets a terminal `error` event.
             logger.exception("Streaming agent execution failed", extra={"conversation_id": str(conversation_id)})
             # Never expose database/provider/internal exception details to clients.
-            yield sse({
-                "type": "error",
-                "message": StreamingResponseFailedError().message,
-            })
+            yield _sse({"type": "error", "message": StreamingResponseFailedError().message})
 
+    async def _stream_cached(self, turn: _StreamTurn, payload: Dict[str, Any]) -> AsyncGenerator[str, None]:
+        yield _sse({"type": "status", "step": "cache", "message": "Tìm thấy câu trả lời trong cache..."})
+        words = payload["response"].split(" ")  # simulate streaming word by word
+        for index, word in enumerate(words):
+            token = word + (" " if index < len(words) - 1 else "")
+            turn.chunks.append(token)
+            yield _sse({"type": "token", "content": token})
+        assistant_msg = await self._persist_exchange(
+            turn.conversation_id, turn.user_message, payload["response"],
+            payload["metadata"], turn.user_id, turn.is_first_message,
+        )
+        turn.persisted = True
+        yield _sse({
+            "type": "done",
+            "conversation_id": str(turn.conversation_id),
+            "intent": payload["intent"],
+            "timestamp": assistant_msg.timestamp.isoformat(),
+            "metadata": {**payload["metadata"], "cache_hit": True},
+        })
+
+    async def _stream_fresh(
+        self, turn: _StreamTurn, conversation: Conversation, cache_key: str
+    ) -> AsyncGenerator[str, None]:
+        yield _sse({"type": "status", "step": "routing", "message": "Đang phân tích câu hỏi..."})
+        final_state = await self.agent_service.invoke_for_context(
+            turn.user_message, conversation.messages, thread_id=str(turn.conversation_id)
+        )
+        context = final_state.get("context") or {}
+        intent = self._resolve_intent(final_state, context)
+        metadata = self._build_metadata(final_state, context)
+
+        async for event in self._stream_answer(turn, final_state, context):
+            yield event
+
+        response_content = "".join(turn.chunks) or _FALLBACK_RESPONSE
+        metadata["response_evaluation"] = {
+            "citation_verified": self._citation_verified(metadata["citations"], response_content),
+            "mode": "streaming_post_check",
+        }
+        assistant_msg = await self._persist_exchange(
+            turn.conversation_id, turn.user_message, response_content,
+            metadata, turn.user_id, turn.is_first_message,
+        )
+        turn.persisted = True
+        await self._cache_response(cache_key, response_content, intent, metadata)
+        yield _sse({
+            "type": "done",
+            "conversation_id": str(turn.conversation_id),
+            "intent": intent,
+            "timestamp": assistant_msg.timestamp.isoformat(),
+            "metadata": metadata,
+        })
+
+    async def _stream_answer(
+        self, turn: _StreamTurn, final_state: Dict[str, Any], context: Dict[str, Any]
+    ) -> AsyncGenerator[str, None]:
+        """Emit the answer: a prepared message (tool error/clarification) or LLM tokens."""
+        if context.get("response_mode") == "tool_error":
+            message = final_state["response"]
+            turn.chunks.append(message)
+            yield _sse({"type": "token", "content": message})
+        elif final_state.get("needs_clarification"):
+            clarification = (
+                final_state.get("response")
+                or final_state.get("clarification_question")
+                or _CLARIFICATION_FALLBACK
+            )
+            turn.chunks.append(clarification)
+            yield _sse({"type": "status", "step": "clarification", "message": "Cần bổ sung thông tin..."})
+            yield _sse({"type": "token", "content": clarification})
+        else:
+            yield _sse({"type": "status", "step": "generating", "message": "Đang tạo câu trả lời..."})
+            async for token in self.agent_service.stream_response(turn.user_message, context):
+                turn.chunks.append(token)
+                yield _sse({"type": "token", "content": token})
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Persistence
+    # ─────────────────────────────────────────────────────────────────────
+    async def _load_conversation(self, conversation_id: UUID, user_id: Optional[str]) -> Conversation:
+        data = await self.conversation_repo.get_conversation(
+            conversation_id, SearchConfig.HISTORY_WINDOW, user_id
+        )
+        if not data:
+            raise ConversationNotFoundError()
+        return self._dict_to_conversation(data)
+
+    async def _persist_exchange(
+        self,
+        conversation_id: UUID,
+        user_message: str,
+        response_content: str,
+        assistant_metadata: Optional[Dict[str, Any]],
+        user_id: Optional[str],
+        is_first_message: bool,
+    ) -> Message:
+        """Save the user + assistant messages in one transaction, then set the title.
+
+        Metadata describes the assistant answer only; the user message has none.
+        """
+        user_msg = Message(conversation_id=conversation_id, content=user_message, role="user")
+        assistant_msg = Message(
+            conversation_id=conversation_id,
+            content=response_content,
+            role="assistant",
+            metadata=assistant_metadata,
+        )
+        await self.conversation_repo.add_messages(
+            conversation_id, [self._message_to_dict(user_msg), self._message_to_dict(assistant_msg)]
+        )
+        await self._set_title_if_first(conversation_id, user_message, user_id, is_first_message)
+        return assistant_msg
+
+    async def _set_title_if_first(
+        self, conversation_id: UUID, user_message: str, user_id: Optional[str], is_first_message: bool
+    ) -> None:
+        if is_first_message:
+            await self.conversation_repo.update_conversation(
+                conversation_id, {"title": self._generate_title(user_message)}, user_id
+            )
+
+    async def _persist_interrupted(self, turn: _StreamTurn) -> None:
+        """Save what the user already saw after a disconnect/stop.
+
+        The caller is being cancelled, and with anyio a cancelled scope cancels
+        every further ``await``. The write therefore runs as its own task
+        behind ``shield`` so it can finish even if this coroutine is cancelled
+        again; failures are logged by the task itself.
+        """
+        if not turn.loaded or turn.persisted:
+            return
+        turn.persisted = True
+        partial = "".join(turn.chunks)
+        task = asyncio.ensure_future(self._save_interrupted(turn, partial))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+        try:
+            await asyncio.shield(task)
+        except BaseException:
+            # Cancelled again while waiting; persistence continues in `task`.
+            pass
+
+    async def _save_interrupted(self, turn: _StreamTurn, partial: str) -> None:
+        try:
+            if partial:
+                await self._persist_exchange(
+                    turn.conversation_id, turn.user_message, partial,
+                    {"interrupted": True}, turn.user_id, turn.is_first_message,
+                )
+            else:
+                await self.conversation_repo.add_messages(
+                    turn.conversation_id,
+                    [self._message_to_dict(Message(
+                        conversation_id=turn.conversation_id, content=turn.user_message,
+                        role="user", metadata={"interrupted": True},
+                    ))],
+                )
+                await self._set_title_if_first(
+                    turn.conversation_id, turn.user_message, turn.user_id, turn.is_first_message
+                )
+        except Exception:
+            logger.exception(
+                "Could not persist interrupted chat exchange",
+                extra={"conversation_id": str(turn.conversation_id)},
+            )
+
+    # ─────────────────────────────────────────────────────────────────────
+    # Cache
+    # ─────────────────────────────────────────────────────────────────────
     async def _respond_from_cache(
         self,
         payload: Dict[str, Any],
@@ -294,13 +381,10 @@ class ChatUseCase:
         is_first_message: bool,
         user_id: Optional[str],
     ) -> Dict[str, Any]:
-        _, assistant_msg = await self._persist_messages(
-            conversation_id, user_message, payload["response"], metadata=payload["metadata"]
+        assistant_msg = await self._persist_exchange(
+            conversation_id, user_message, payload["response"],
+            payload["metadata"], user_id, is_first_message,
         )
-        if is_first_message:
-            await self.conversation_repo.update_conversation(
-                conversation_id, {"title": self._generate_title(user_message)}, user_id
-            )
         return {
             "conversation_id": str(conversation_id),
             "response": payload["response"],
@@ -309,37 +393,43 @@ class ChatUseCase:
             "metadata": {**payload["metadata"], "cache_hit": True},
         }
 
-    async def _persist_messages(
-        self, conversation_id: UUID, user_message: str, response_content: str, metadata: Optional[Dict[str, Any]] = None
-    ):
-        user_msg = Message(conversation_id=conversation_id, content=user_message, role="user", metadata=metadata or {})
-        assistant_msg = Message(conversation_id=conversation_id, content=response_content, role="assistant", metadata=metadata or {})
-        await self.conversation_repo.add_message(conversation_id, self._message_to_dict(user_msg))
-        await self.conversation_repo.add_message(conversation_id, self._message_to_dict(assistant_msg))
-        return user_msg, assistant_msg
-
     @staticmethod
     def _is_cacheable(metadata: Dict[str, Any]) -> bool:
-        """Never cache clarification requests or failed tool runs (e.g. SQL errors)."""
+        """Cache only stable answers.
+
+        Never cache clarification requests, failed tool runs (e.g. SQL errors) or
+        answers built from the sales tables (`text_to_sql`, `hybrid`): their
+        numbers change with every ETL run, and the key is tied to one
+        conversation and its history, so those entries are rarely hit anyway.
+        """
         return not (
             metadata.get("needs_clarification")
             or metadata.get("tool_success") is False
             or metadata.get("tool_error_code")
+            or metadata.get("tool_used") in _NON_CACHEABLE_TOOLS
         )
 
     async def _cache_response(
         self, key: str, response: str, intent: str, metadata: Dict[str, Any]
     ) -> None:
+        """Best-effort write: a cache outage must not fail an answer already given."""
         if not self._is_cacheable(metadata):
             return
-        await self.cache_service.set(
-            key,
-            json.dumps({"response": response, "intent": intent, "metadata": metadata}),
-            ttl=_CACHE_TTL,
-        )
+        try:
+            await self.cache_service.set(
+                key,
+                json.dumps({"response": response, "intent": intent, "metadata": metadata}),
+                ttl=_CACHE_TTL,
+            )
+        except Exception:
+            logger.warning("Could not store chat response in cache", exc_info=True)
 
     async def _get_cached(self, key: str) -> Optional[Dict[str, Any]]:
-        raw = await self.cache_service.get(key)
+        try:
+            raw = await self.cache_service.get(key)
+        except Exception:
+            logger.warning("Could not read chat response cache", exc_info=True)
+            return None
         if not raw:
             return None
         try:
@@ -369,7 +459,7 @@ class ChatUseCase:
         return f"{CHAT_RESPONSE_CACHE_PREFIX}{digest}"
 
     # ─────────────────────────────────────────────────────────────────────
-    # Private helpers
+    # Helpers
     # ─────────────────────────────────────────────────────────────────────
     async def create_conversation(
         self,
@@ -382,6 +472,36 @@ class ChatUseCase:
             "user_id": user_id,
             "metadata": extra_metadata,
         })
+
+    @staticmethod
+    def _resolve_intent(final_state: Dict[str, Any], context: Dict[str, Any]) -> str:
+        analyzed = final_state.get("analyzed")
+        return context.get("intent", analyzed.primary_intent.value if analyzed else "unknown")
+
+    @staticmethod
+    def _build_metadata(final_state: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+        """Assistant-message metadata shared by the streaming and non-streaming paths."""
+        return {
+            "has_data": context.get("has_data", True),
+            "used_fallback": context.get("used_fallback", False),
+            "fallback_warning": context.get("fallback_warning"),
+            "tool_used": final_state.get("tool_name"),
+            "tool_success": final_state.get("tool_success"),
+            "tool_error_code": final_state.get("tool_error_code"),
+            "sql_query": final_state.get("sql_query"),
+            "trace_id": final_state.get("trace_id"),
+            "node_metrics": final_state.get("node_metrics", []),
+            "tool_calls": final_state.get("tool_calls", []),
+            "citations": final_state.get("citations", []),
+            "evaluation": final_state.get("evaluation"),
+            "needs_clarification": final_state.get("needs_clarification", False),
+            **_LEGACY_METADATA,
+        }
+
+    @staticmethod
+    def _citation_verified(citations: List[Dict[str, Any]], response: str) -> bool:
+        source_ids = [source.get("id") for source in citations if source.get("id")]
+        return not source_ids or any(f"[{source_id}]" in response for source_id in source_ids)
 
     def _dict_to_conversation(self, data: Dict[str, Any]) -> Conversation:
         messages = [
@@ -406,12 +526,13 @@ class ChatUseCase:
         )
 
     def _message_to_dict(self, message: Message) -> Dict[str, Any]:
+        # No "timestamp": the repository assigns strictly increasing timestamps so
+        # messages saved in one transaction keep their order.
         return {
             "id": str(message.id) if message.id else None,
             "conversation_id": str(message.conversation_id),
             "content": message.content,
             "role": message.role,
-            "timestamp": message.timestamp,
             "metadata": message.metadata,
         }
 

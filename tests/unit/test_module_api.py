@@ -19,6 +19,9 @@ class Conversations:
             return {"id": str(conversation_id), "user_id": "owner", "title": "Test", "messages": []}
         return None
 
+    async def get_conversation_as_admin(self, conversation_id, turn_limit=None):
+        return await self.get_conversation(conversation_id, None, turn_limit)
+
     async def rename_conversation(self, *_args):
         return True
 
@@ -43,7 +46,7 @@ def client_for(role, user_id):
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"id": user_id, "role": role}
     with (
-        container.use_case_conversation.override(providers.Object(Conversations())),
+        container.conversation_use_case.override(providers.Object(Conversations())),
         container.chat_use_case.override(providers.Object(Chat())),
         TestClient(app) as client,
     ):
