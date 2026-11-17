@@ -67,5 +67,6 @@ với `w_v = 0.7`, `w_k = 0.3`, rank bắt đầu từ 1. RRF dựa trên thứ 
 ## Hạn chế
 
 - Keyword search quét tối đa 1.000 entity trong Python mỗi lần gọi, không phải BM25 hay full-text index; chậm và kém chính xác khi collection lớn.
-- Lỗi Milvus trong `hybrid_search` / `keyword_search` được log và trả danh sách rỗng, nên nhìn từ agent giống "không có tài liệu".
+- Lỗi Milvus trong `hybrid_search` / `keyword_search` / `search_similar` ném `VectorStoreQueryError` và chuỗi filter dừng ngay (không lặp qua các filter còn lại); `SearchDocumentsUseCase` trả `results=[]` kèm `error_code="vector_store_query"`. Kết quả rỗng hợp lệ vẫn nới filter như cũ. Bộ lọc theo số phiếu (`so_phieu`) không còn: trường này không có trong schema Milvus, số phiếu tra bằng SQL.
+- `keyword_search` vẫn quét tối đa 1000 bản ghi rồi chấm điểm bằng Python và ghi cảnh báo khi chạm trần; BM25 của Milvus cần thêm trường sparse vào schema và index lại nên chưa dùng.
 - `POST /search-documents` (staff/admin) trả `doc_id`, `doc_type`, `text`, `score`, `metadata` và cờ `used_fallback`, tiện kiểm tra chất lượng truy xuất.

@@ -115,7 +115,7 @@ Mỗi module sở hữu models.py trong infrastructure:
 
 Tất cả kế thừa src.common.infrastructure.database.base.Base. src/bootstrap/orm.py import mọi model vào một metadata registry; migrations/env.py import registry này. Khi thêm ORM model, thêm import vào registry để Alembic nhận đủ metadata và foreign key.
 
-Alembic là nguồn sự thật cho schema; head hiện tại là d1e5b7a93c28. Mọi thay đổi bảng/cột/index/constraint phải có revision mới. Không gọi create_all khi khởi động.
+Alembic là nguồn sự thật cho schema; head hiện tại là e7b3c5a19f42. Mọi thay đổi bảng/cột/index/constraint phải có revision mới. Không gọi create_all khi khởi động.
 
 Tiền giữ Decimal/numeric; công nợ dùng signed ledger customer_debt_transactions.
 

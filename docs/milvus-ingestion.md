@@ -18,7 +18,7 @@ Tài liệu này tách rõ **Hiện trạng** (đã kiểm chứng trong code ng
 
 ## Chưa có đường gọi
 
-Không có CLI, job, use case hay endpoint nào gọi `MilvusIngestionRepository`; chỉ có wiring DI. `sync_business_data.py` (ETL) chỉ ghi PostgreSQL. Không có code nào dựng `DocumentChunk` từ dữ liệu bán hàng; không có chunking nào trong repo ngoài định nghĩa entity. Vì vậy collection `business_data` chỉ có dữ liệu nếu ai đó nạp thủ công. Kết nối Milvus là lazy nên backend vẫn chạy khi collection trống hoặc Milvus tắt; khi đó nhánh RAG chỉ trả về rỗng (xem "Hạn chế" trong HYBRID_SEARCH.md).
+Không có CLI, job, use case hay endpoint nào gọi `MilvusIngestionRepository`; chỉ có wiring DI. `sync_business_data.py` (ETL) chỉ ghi PostgreSQL. Không có code nào dựng `DocumentChunk` từ dữ liệu bán hàng; không có chunking nào trong repo ngoài định nghĩa entity. Vì vậy collection `business_data` chỉ có dữ liệu nếu ai đó nạp thủ công. Kết nối Milvus là lazy nên backend vẫn chạy khi collection trống hoặc Milvus tắt; khi Milvus tắt, tìm kiếm ném `VectorStoreQueryError`; `SearchDocumentsUseCase` chuyển thành kết quả rỗng có `error_code`, và `RAGTool` đánh dấu `retrieval_error` để câu trả lời không bị hiểu là "không có tài liệu" (xem HYBRID_SEARCH.md).
 
 ## API của `MilvusIngestionRepository`
 
@@ -29,7 +29,7 @@ Hàm `async`, gọi client đồng bộ qua `asyncio.to_thread`.
 | `insert(chunks)` | Chia lô 10; mỗi lô gọi `embedder.generate_embeddings(texts)` rồi `client.upsert`. Thực chất là upsert theo khóa chính `doc_id`, nên chạy lại cùng `doc_id` ghi đè bản cũ |
 | `update(chunks)` | Chia lô 10; với mỗi chunk truy vấn embedding cũ theo `doc_id` và upsert cả lô với embedding cũ; chunk không có embedding cũ được embed lại |
 | `page_existing_ids(doc_type, cursor, page_size)` | Lọc `doc_type == "..."` (bỏ nếu `all`) và `doc_id > "<cursor>"`; trả `(set doc_id, next_cursor)` |
-| `get_by_doc_id(doc_id)` | Trả `doc_id`, `doanh_thu`, `co_no` hoặc `None` |
+| `get_by_doc_id(doc_id)` | Trả `doc_id`, `doanh_thu`, `co_no` hoặc `None`; ném `VectorStoreQueryError` khi Milvus lỗi |
 | `get_period_revenue(year, month)` | Lấy `doanh_thu` của `period_summary` theo năm/tháng (phục vụ tính tăng trưởng) |
 
 Mapping dòng ghi: `doc_id`, `doc_type`, `text`, `embedding`, và từ `metadata`: `year` (mặc định 0), `month` (0), `customer_id` (`""`), `co_no` (`False`), `doanh_thu` (`float`, mặc định 0.0). Khóa metadata khác bị bỏ qua vì collection không có dynamic field.
@@ -37,7 +37,7 @@ Mapping dòng ghi: `doc_id`, `doc_type`, `text`, `embedding`, và từ `metadata
 ### Điểm cần biết khi dùng (quan sát từ code)
 
 - `MilvusClient.upsert` bắt mọi exception, log lỗi và trả `False`. Repository nay kiểm tra giá trị này và ném `VectorStoreWriteError` (`assistant/domain/errors.py`), nên lô ghi thất bại không còn bị nuốt.
-- `MilvusClient.query` vẫn nuốt lỗi và trả `None`; `page_existing_ids` khi đó trả `(set(), None)` giống "không có gì". `update` coi `None` là "không có embedding cũ" và embed lại, nên kết quả vẫn đúng.
+- `MilvusClient.query` trả `[]` khi rỗng và ném `VectorStoreQueryError` khi Milvus lỗi. `page_existing_ids` quét đầy đủ bằng `query_all` (iterator), sắp xếp rồi cắt `page_size`, nên không còn bỏ sót id. Job nạp dữ liệu sau này phải bắt `VectorStoreQueryError`. Giá trị trong filter được escape bằng `quote_filter_value()`.
 - `page_existing_ids`: truy vấn không có `order_by`, nhưng cursor giả định kết quả sắp theo `doc_id` tăng dần (code chỉ sắp xếp trong từng trang sau khi lấy); phân trang có thể bỏ sót id. Không nên dựa vào nó để đối chiếu đầy đủ (chưa sửa).
 - `text` được cắt còn 4096 ký tự (khớp schema) trước khi ghi; muốn giữ đủ nội dung dài thì phải chia chunk trước khi gọi repository.
 - `generate_embeddings` chạy qua `asyncio.to_thread` nên không chặn event loop.
@@ -71,7 +71,6 @@ Chưa có công cụ chính thức. Nếu cần nạp thử, làm theo hướng 
 Các mục dưới đây là gợi ý, không phải hành vi hiện có.
 
 - Thêm CLI (`ingest_documents.py` cạnh `sync_business_data.py`) và một use case ở `assistant/application/use_cases/` dựng `DocumentChunk` từ PostgreSQL (hóa đơn, khách, tổng hợp kỳ), gọi sau ETL; ETL hiện không kích hoạt nạp Milvus.
-- Làm cho `MilvusClient.query` ném lỗi thay vì trả `None` để phân biệt "rỗng" với "lỗi"; sửa `page_existing_ids` có thứ tự xác định hoặc dùng iterator của Milvus.
 - Chia `text` dài thành nhiều chunk thay vì cắt.
 - Đọc `vector_db.metric_type` khi tạo index và search, hoặc xóa trường config này.
 - Sau khi nạp Milvus, gọi `delete_prefix` của cache chat để câu trả lời RAG cũ không còn được phục vụ.

@@ -43,7 +43,7 @@ Luồng không streaming dùng graph đầy đủ, có bước kiểm tra câu t
 | Metadata có thể ghi SQL gốc sau khi thực tế đã chạy SQL sửa | Ghi SQL cuối cùng đã sửa; giữ số Decimal khi tìm cực trị |
 | Khởi tạo agent đã kết nối Milvus, khiến SQL cũng phụ thuộc vector DB hoạt động | Chỉ kết nối Milvus khi thực hiện thao tác vector đầu tiên |
 
-Kế hoạch phân tích nhiều chỉ số hiện vẫn được LLM sinh SQL theo prompt, chưa phải bộ công cụ analytics cố định. `replan` trong graph chỉ trả lại route, chưa phân rã nhiệm vụ hoặc tự tìm thêm dữ liệu. Dashboard đã có truy vấn deterministic trong module analytics nhưng agent chưa gọi trực tiếp các truy vấn đó. Vì vậy kiểm thử giả lập chưa chứng minh chất lượng SQL do mô hình sinh ra.
+Kế hoạch phân tích nhiều chỉ số hiện vẫn được LLM sinh SQL theo prompt, chưa phải bộ công cụ analytics cố định. Graph hiện không có bước replan (đã xóa node không có đường vào), chưa phân rã nhiệm vụ hoặc tự tìm thêm dữ liệu. Dashboard đã có truy vấn deterministic trong module analytics nhưng agent chưa gọi trực tiếp các truy vấn đó. Vì vậy kiểm thử giả lập chưa chứng minh chất lượng SQL do mô hình sinh ra.
 
 ## Bằng chứng và giới hạn xác minh
 

@@ -137,7 +137,7 @@ Chỉ có ba nhóm bảng độc lập: xác thực (`users`, `refresh_tokens`),
 | Cột | Kiểu | Ghi chú |
 | --- | --- | --- |
 | `id` | `varchar` PK | |
-| `conversation_id` | FK -> `conversations.id` not null | Không khai báo `ondelete` và không có index riêng trong ORM. |
+| `conversation_id` | FK -> `conversations.id` not null | Không khai báo `ondelete`. Index tổng hợp `ix_messages_conversation_id_created_at` (`conversation_id`, `created_at`) từ migration `e7b3c5a19f42`. |
 | `content` | `text` not null | |
 | `role` | `varchar` not null | `user` hoặc `assistant` (chỉ theo comment, không có check constraint). |
 | `metadata` | `json` null | Chứa citation, kiểm tra citation, v.v. (`extra_metadata`). |
@@ -180,7 +180,7 @@ Grain: một hóa đơn bán.
 | `created_at` | `timestamptz` | Mặc định `datetime.now(timezone.utc)` ở phía ORM; trước migration `d1e5b7a93c28` là `timestamp` không timezone (giá trị UTC). |
 | `deleted_at` | `timestamptz` null | |
 
-Index khác: `ix_sales_invoices_issued_at`, index một phần `ix_sales_invoices_active_issued_at` (`issued_at` khi `deleted_at IS NULL`). Hóa đơn không có `updated_at`.
+Index khác: index một phần `ix_sales_invoices_active_issued_at` (`issued_at` khi `deleted_at IS NULL`); index đầy đủ `ix_sales_invoices_issued_at` đã bị bỏ ở migration `e7b3c5a19f42` vì mọi truy vấn đều lọc `deleted_at IS NULL`. Hóa đơn không có `updated_at`.
 
 ### `sales_invoice_lines`
 
@@ -200,7 +200,7 @@ Grain: một dòng hàng trong hóa đơn.
 | `created_at` | `timestamptz` | Giống `sales_invoices.created_at`. |
 | `deleted_at` | `timestamptz` null | |
 
-Index: `ix_sales_invoice_lines_invoice_id`, `..._product_name`, `..._product_category_name`.
+Index: `..._product_name`, `..._product_category_name`. Tra cứu theo `invoice_id` dùng tiền tố của unique `uq_sales_invoice_lines_invoice_line`; `ix_sales_invoice_lines_invoice_id` trùng tiền tố nên đã bị bỏ ở `e7b3c5a19f42`.
 
 ### `sales_returns`
 
@@ -223,7 +223,7 @@ Grain: một phiếu trả hàng của khách (lý do nguồn `NT`).
 | Cột | Kiểu | Ghi chú |
 | --- | --- | --- |
 | `return_line_id` | `varchar(36)` PK | |
-| `return_id` | `varchar(36)` FK -> `sales_returns` | `ON DELETE RESTRICT`, index. |
+| `return_id` | `varchar(36)` FK -> `sales_returns` | `ON DELETE RESTRICT`; dùng tiền tố của hai unique (`return_id`, `source_line_id`) và (`return_id`, `line_number`); `ix_sales_return_lines_return_id` đã bị bỏ ở `e7b3c5a19f42`. |
 | `source_line_id` | `varchar(100)` not null | Unique cùng `return_id` (`uq_sales_return_lines_source`). |
 | `line_number` | `integer` not null | Unique cùng `return_id`; check `> 0`. |
 | `product_name` (text), `product_category_name`, `unit_name` | | Index trên tên sản phẩm và danh mục. |
@@ -241,7 +241,7 @@ Sổ công nợ có dấu: số dương làm tăng phải thu, số âm làm gi�
 | Cột | Kiểu | Ghi chú |
 | --- | --- | --- |
 | `debt_transaction_id` | `varchar(36)` PK | UUID sinh khi insert. |
-| `customer_id` | `uuid` FK -> `customers` | `ON DELETE RESTRICT`, index `ix_debt_transactions_customer_id`. |
+| `customer_id` | `uuid` FK -> `customers` | `ON DELETE RESTRICT`; index tổng hợp `ix_debt_transactions_customer_occurred` (`customer_id`, `occurred_at`) thay `ix_debt_transactions_customer_id` ở `e7b3c5a19f42`. |
 | `source_type` | `varchar(32)` not null | Check `ck_debt_transactions_source_type`: `opening`, `sale`, `receipt`, `sales_return`. |
 | `source_id` | `varchar(100)` not null | Unique cùng `source_type` (`uq_debt_transactions_source`), là khóa upsert. |
 | `occurred_at` | `timestamp` (không timezone) not null | Index `ix_debt_transactions_occurred_at`. |
@@ -267,7 +267,7 @@ Số dư hiện tại của khách = tổng `amount` của các dòng `deleted_a
 | File | Đích |
 | --- | --- |
 | `Khach_hang.xlsx` | `sales_invoices` (cột `Ngày`, `Số phiếu`, `Khách hàng`, `Tổng tiền`, `Ghi nợ`) và `customers`. |
-| `Hang_hoa.xlsx` | `sales_invoice_lines`. |
+| `Hang_hoa.xlsx` | `sales_invoice_lines` (cột `Số phiếu`, `Tên hàng chuẩn hóa`, `Loại mặt hàng`, `ĐVT`, `Đơn giá`, `Số lượng`, `Thành tiền`). |
 | `Cong_no.xlsx` | `customer_debt_transactions` (cột `source_type`, `source_id`, `occurred_at`, `customer_name`, `amount`). |
 | `Tra_hang.xlsx`, `Chi_tiet_tra_hang.xlsx` | `sales_returns`, `sales_return_lines`. |
 
@@ -277,6 +277,11 @@ Số dư hiện tại của khách = tổng `amount` của các dòng `deleted_a
 - Khách được định danh bằng `customer_identity_key` (xem `build_customer_identity_key`); trùng (`source_type`, `source_id`) trong file công nợ làm ETL báo lỗi.
 - Việc đổi dấu nằm ở bước ETL (`backend/etl_business/pipeline.py`: `events["amount"] = -pd.to_numeric(...)` cho các sự kiện thu nợ/trả hàng), không nằm ở `SyncBusinessDataUseCase`. Use case đồng bộ đọc nguyên `amount` từ `Cong_no.xlsx` đã được chuẩn hóa, nên dấu âm của `receipt`/`sales_return` phải có sẵn trong snapshot.
 - ETL chỉ cập nhật PostgreSQL, không nạp Milvus.
+- Hợp đồng cột: `SyncBusinessDataUseCase` chỉ nhận tên cột canonical tiếng Anh (`issued_at`, `invoice_number`, `customer_name`, `address_detail`, `village_name`, `ward_name`, `invoice_total_amount`, `debt_delta_amount`; dòng hàng: `invoice_number`, `product_name`, `product_category_name`, `unit_name`, `unit_price`, `quantity`, `line_amount`). Header tiếng Việt của file Excel được ánh xạ ở biên đọc trong `backend/etl_business/snapshot_columns.py` (`read_snapshot_directory`, `BusinessSnapshots.sync_arguments()`), nên các file Excel hiện có vẫn đọc được. Debt/returns vốn đã dùng tên tiếng Anh; ba cột địa chỉ của phiếu trả (`address_detail`, `village_name`, `ward_name`) là tùy chọn, thiếu cột bắt buộc ném `MissingSnapshotColumnsError`.
+- Nguyên tử: mọi DataFrame được kiểm tra trước (cột, ngày, `Decimal` hữu hạn, khóa trùng, `source_type` hợp lệ); sau đó toàn bộ ghi chạy trong **một transaction** (`SqlAlchemyUnitOfWork`, `sales/infrastructure/unit_of_work.py`) — lỗi ở bất kỳ bước nào rollback tất cả. Số tiền được làm tròn `ROUND_HALF_UP` đến 2 chữ số (số lượng 3 chữ số) và bị từ chối nếu NaN/inf/vượt `NUMERIC(18, n)`.
+- Chống xóa mềm hàng loạt: mỗi snapshot là nguồn đầy đủ nên bản ghi vắng mặt bị soft delete, kể cả dòng hàng của hóa đơn/phiếu trả bị xóa. Vì vậy snapshot hóa đơn, công nợ hoặc phiếu trả **rỗng** khi DB còn bản ghi hoạt động (`EmptySnapshotError`), hoặc **giảm quá 30%** so với số bản ghi hoạt động (`SnapshotShrinkError`) sẽ bị từ chối trước khi ghi. Chỉ vượt qua bằng `--allow-shrink` (`sync_business_data.py`, `run_business_etl.py`, `shop_data_extractor.cli run`) hoặc `allow_shrink=True`.
+- Hồ sơ khách (tên/địa chỉ): hóa đơn quyết định (bản ghi mới nhất theo `issued_at`); khách chỉ xuất hiện ở công nợ/trả hàng lấy bản ghi mới nhất theo `occurred_at`, không phụ thuộc thứ tự bước. Upsert không xóa địa chỉ đã có khi nguồn không có địa chỉ (`COALESCE`).
+- `sync_business_data.py` dùng cùng file khóa (`etl.lock_path`) với `run_business_etl.py` nên không chạy chồng; lỗi Redis khi xóa cache chỉ được log, không làm đồng bộ thất bại.
 
 ## 6. Phân loại bảng cho Text-to-SQL
 
@@ -291,7 +296,7 @@ Ngoài bảng được phép, validator chỉ chấp nhận CTE do chính câu q
 
 ## 7. Chuỗi migration
 
-Chuỗi tuyến tính (cũ đến mới), head hiện tại là `d1e5b7a93c28`:
+Chuỗi tuyến tính (cũ đến mới), head hiện tại là `e7b3c5a19f42`:
 
 | # | Revision | Nội dung |
 | --- | --- | --- |
@@ -308,10 +313,15 @@ Chuỗi tuyến tính (cũ đến mới), head hiện tại là `d1e5b7a93c28`:
 | 11 | `f4a7b2c91d60` | Chuẩn hóa tên phường/xã của khách |
 | 12 | `a93d7c5e124b` | Suy ra phường/xã và thôn từ địa chỉ đầy đủ |
 | 13 | `c6d8e1f4a2b7` | Thêm `sales_returns`, `sales_return_lines` |
-| 14 | `d1e5b7a93c28` | `created_at`/`deleted_at` của `sales_invoices` và `sales_invoice_lines` chuyển sang `timestamptz` (head) |
+| 14 | `d1e5b7a93c28` | `created_at`/`deleted_at` của `sales_invoices` và `sales_invoice_lines` chuyển sang `timestamptz` |
+| 15 | `e7b3c5a19f42` | Thêm `ix_messages_conversation_id_created_at`, `ix_debt_transactions_customer_occurred`; bỏ các index thừa `ix_sales_invoices_issued_at`, `ix_sales_invoice_lines_invoice_id`, `ix_sales_return_lines_return_id`, `ix_debt_transactions_customer_id` (head) |
 
 Kiểm tra: `.\env\Scripts\python.exe -m alembic heads` (chạy từ `backend/`).
 
+Lưu ý về migration đã phát hành: `f4a7b2c91d60` và `a93d7c5e124b` có `downgrade()` là `pass` (chỉ chuẩn hóa/suy diễn dữ liệu, không thể khôi phục giá trị cũ). Không sửa các migration đã phát hành này; không `downgrade` xuyên qua chúng. Muốn quay lui về trước hai revision đó phải restore từ backup.
+
+`tests/integrate/test_migrations_match_models.py` (đặt `AI_MIGRATION_TEST_DSN` trỏ tới một database rỗng dùng một lần) chạy `alembic upgrade head`, so sánh với `Base.metadata` bằng `alembic.autogenerate.compare_metadata` và thử `downgrade -1` rồi `upgrade head`. Kiểm tra SQL trước khi chạy thật: `alembic upgrade d1e5b7a93c28:e7b3c5a19f42 --sql`.
+
 ## 8. Múi giờ và kiểu thời gian
 
-Các cột giao dịch nghiệp vụ (`issued_at`, `returned_at`, `occurred_at`) là `timestamp` không timezone, được hiểu là giờ Việt Nam (`Asia/Ho_Chi_Minh`) và lọc theo khoảng `[from, to)`. Cột hệ thống mới (`created_at`/`updated_at`/`deleted_at` của customers, sổ công nợ, trả hàng, người dùng, hội thoại) là `timestamptz`. `created_at`/`deleted_at` của `sales_invoices` và `sales_invoice_lines` cũng là `timestamptz` từ migration `d1e5b7a93c28` (giá trị cũ được hiểu là UTC).
+Các cột giao dịch nghiệp vụ (`issued_at`, `returned_at`, `occurred_at`) là `timestamp` không timezone, được hiểu là giờ Việt Nam (`Asia/Ho_Chi_Minh`) và lọc theo khoảng `[from, to)`. Đây là **ngoại lệ có chủ đích** so với quy ước `timestamptz`: nguồn iShopman lưu giờ địa phương (wall-clock) không kèm múi giờ, báo cáo nhóm/lọc theo ngày địa phương đó, nên chuyển sang `timestamptz` sẽ đòi hỏi migration dữ liệu giải thích giá trị là `Asia/Ho_Chi_Minh` và đổi mọi truy vấn `date_trunc`/so sánh ngày. Không tự đổi kiểu; mọi giá trị ghi vào các cột này phải là giờ Việt Nam naive (model có comment tương ứng). Cột hệ thống mới (`created_at`/`updated_at`/`deleted_at` của customers, sổ công nợ, trả hàng, người dùng, hội thoại) là `timestamptz`. `created_at`/`deleted_at` của `sales_invoices` và `sales_invoice_lines` cũng là `timestamptz` từ migration `d1e5b7a93c28` (giá trị cũ được hiểu là UTC).

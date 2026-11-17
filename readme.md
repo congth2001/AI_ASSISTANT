@@ -21,7 +21,7 @@ Các nhóm lỗi dùng chung nằm trong `src/common/errors/`: `not_found`, `not
 
 ## Chạy local
 
-Yêu cầu Python 3.11+, môi trường ảo đã cài requirements.txt và Docker cho hạ tầng. Chạy các lệnh từ backend/ vì config loader và Alembic dùng đường dẫn tương đối.
+Yêu cầu Python 3.11+, môi trường ảo đã cài requirements.txt và Docker cho hạ tầng. Công cụ phát triển/kiểm thử (pytest, black, isort, mypy, flake8, aiosqlite) nằm ở requirements-dev.txt (`pip install -r requirements-dev.txt`, đã gồm requirements.txt). Tên file này giữ chữ thường `readme.md` vì nhiều tài liệu/script đang tham chiếu. Chạy các lệnh từ backend/ vì config loader và Alembic dùng đường dẫn tương đối.
 
 ```powershell
 Copy-Item config\local.example config\local.yml
@@ -29,7 +29,7 @@ Copy-Item config\local.example config\local.yml
 docker compose --project-name ai_assistant -f deploy\docker-compose.yml up -d
 .\env\Scripts\python.exe -m alembic upgrade head
 .\env\Scripts\python.exe create_admin.py --email admin@example.com --name "Admin"
-.\env\Scripts\python.exe sync_business_data.py
+.\env\Scripts\python.exe sync_business_data.py   # thêm --allow-shrink chỉ khi cố ý xóa mềm dữ liệu vắng mặt trong snapshot rỗng/giảm >30%
 .\env\Scripts\python.exe main.py
 ```
 
@@ -48,11 +48,11 @@ Endpoint nghiệp vụ dùng prefix /api/v1:
 
 Swagger là contract API thực tế. Guest chỉ chat stateless, không truy cập business tools. Admin có thể đọc hội thoại của mọi người nhưng chỉ chat/rename/delete hội thoại do mình sở hữu. SSE giữ event data: <json> theo từng khối kết thúc bằng hai newline.
 
-Assistant phân loại conversation/text_to_sql/rag/hybrid; agent có assess, clarify và evaluate_context. Chỉ POST /chat có bước đánh giá câu trả lời và sinh lại khi thiếu citation; node replan chưa được định tuyến tới. Text-to-SQL kiểm tra SQL trước khi chạy trong transaction chỉ đọc, timeout 15 giây; validator chỉ cho phép đọc 6 bảng bán hàng (`ALLOWED_SQL_TABLES` trong `sql_service.py`) và từ chối mọi tên bảng không thuộc dữ liệu bán hàng ở bất kỳ vị trí nào (`RESTRICTED_SQL_TABLES`). Khi thêm bảng ORM mới, `tests/unit/test_sql_table_allowlist.py` buộc phân loại bảng vào một trong hai tập. RAG/hybrid search mô tả tại [docs/HYBRID_SEARCH.md](docs/HYBRID_SEARCH.md). OpenAI là adapter được DI cấu hình; Anthropic adapter có trong module assistant nhưng cần wiring riêng nếu đổi provider.
+Assistant phân loại conversation/text_to_sql/rag/hybrid; agent có assess, clarify và evaluate_context. Chỉ POST /chat có bước đánh giá câu trả lời và sinh lại khi thiếu citation; node replan đã bị xóa. Text-to-SQL kiểm tra SQL trước khi chạy trong transaction chỉ đọc, timeout 15 giây; validator chỉ cho phép đọc 6 bảng bán hàng (`ALLOWED_SQL_TABLES` trong `sql_service.py`) và từ chối mọi tên bảng không thuộc dữ liệu bán hàng ở bất kỳ vị trí nào (`RESTRICTED_SQL_TABLES`). Khi thêm bảng ORM mới, `tests/unit/test_sql_table_allowlist.py` buộc phân loại bảng vào một trong hai tập. RAG/hybrid search mô tả tại [docs/HYBRID_SEARCH.md](docs/HYBRID_SEARCH.md). OpenAI là adapter được DI cấu hình; Anthropic adapter (AsyncAnthropic) có trong module assistant nhưng cần wiring riêng nếu đổi provider.
 
 Luồng agent, các sửa lỗi ngữ cảnh dashboard và giới hạn xác minh phân tích kinh doanh được mô tả tại [docs/agent-business-analysis.md](docs/agent-business-analysis.md); topology graph tại [docs/agent-graph.md](docs/agent-graph.md).
 
-Analytics dùng Decimal/numeric cho tiền. Công nợ chuẩn lấy từ signed ledger customer_debt_transactions; không cộng debt_delta_amount của hóa đơn để thay số dư sổ. Schema do Alembic quản lý, head d1e5b7a93c28; startup không tạo bảng tự động.
+Analytics dùng Decimal/numeric cho tiền. Công nợ chuẩn lấy từ signed ledger customer_debt_transactions; không cộng debt_delta_amount của hóa đơn để thay số dư sổ. Schema do Alembic quản lý, head e7b3c5a19f42; startup không tạo bảng tự động.
 
 ## Kiểm tra
 
