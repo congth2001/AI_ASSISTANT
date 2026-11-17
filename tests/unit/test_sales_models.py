@@ -3,15 +3,8 @@ from decimal import Decimal
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import UUID
 
-from src.infrastructure.repositories.models import (
-    Customer,
-    SalesInvoice,
-    SalesInvoiceLine,
-    CustomerDebtTransaction,
-    SalesReturn,
-    SalesReturnLine,
-)
-from src.infrastructure.repositories.repository_utils import to_decimal
+from src.modules.sales.infrastructure.models import Customer, SalesInvoice, SalesInvoiceLine, CustomerDebtTransaction, SalesReturn, SalesReturnLine
+from src.modules.sales.infrastructure.repositories.repository_utils import to_decimal
 
 
 def test_sales_model_table_names_and_grain_columns():

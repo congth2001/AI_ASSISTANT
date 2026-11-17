@@ -4,12 +4,12 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from src.domain.entities.dashboard_analytics import (
+from src.modules.analytics.domain.models.customer_debt import (
     CustomerDebtExportFilters,
     CustomerDebtExportItem,
     CustomerDebtSheetMode,
 )
-from src.infrastructure.exporters.customer_debt_workbook_exporter import (
+from src.modules.analytics.infrastructure.exporters.customer_debt_workbook_exporter import (
     OpenpyxlCustomerDebtWorkbookExporter,
 )
 

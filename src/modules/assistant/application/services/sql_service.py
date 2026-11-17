@@ -1,0 +1,387 @@
+"""Generate and validate read-only PostgreSQL query plans."""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Any
+from src.common.domain.time import now_vietnam
+
+from src.modules.assistant.application.services.schema_linker import LinkedSchema
+from src.modules.assistant.application.prompts.sql_prompts import SQLPrompt
+from src.modules.assistant.domain.entities.analyzed_query import AnalyzedQuery
+from src.modules.assistant.domain.ports.i_llm_service import ILLMService
+from src.modules.assistant.domain.errors import (
+    EmptySQLQueryError,
+    MultipleSQLStatementsError,
+    SQLCommentsForbiddenError,
+    SQLKeywordForbiddenError,
+    SQLLegacyTableError,
+    SQLMetadataForbiddenError,
+    SQLPlaceholderError,
+    SQLPlanLimitError,
+    SQLReadOnlyRequiredError,
+    SQLRepairFailedError,
+    SQLSelectStarForbiddenError,
+    SQLTableNotAllowedError,
+    SQLValidationError,
+    SQLWriteOrLockForbiddenError,
+)
+
+
+@dataclass
+class SQLQueryPlan:
+    intent: str
+    sql: str
+
+
+_BLOCKED = re.compile(
+    r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|REPLACE|EXEC|CALL|"
+    r"COPY|GRANT|REVOKE|PRAGMA|ATTACH|VACUUM|ANALYZE)\b",
+    re.IGNORECASE,
+)
+_COMMENTS = re.compile(r"(--|/\*|\*/)")
+_SYSTEM_OBJECTS = re.compile(
+    r"\b(pg_catalog|information_schema|pg_[a-z0-9_]+)\b",
+    re.IGNORECASE,
+)
+_LOCKING = re.compile(
+    r"\b(FOR\s+(UPDATE|SHARE)|SELECT\s+.+?\s+INTO\s+)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_LEGACY_TABLES = re.compile(
+    r"\b(invoice_customers|invoice_goods)\b",
+    re.IGNORECASE,
+)
+_SELECT_STAR = re.compile(
+    r"\bSELECT\s+(?:[a-z_][a-z0-9_]*\.)?\*",
+    re.IGNORECASE,
+)
+_MAX_ROWS = 1000
+_MAX_PLANS = 5
+
+# Generated SQL runs with the application's database role, so the validator is
+# the boundary that keeps it inside sales data (no users, tokens or chat logs).
+ALLOWED_SQL_TABLES = frozenset({
+    "customers",
+    "sales_invoices",
+    "sales_invoice_lines",
+    "sales_returns",
+    "sales_return_lines",
+    "customer_debt_transactions",
+})
+# Non-sales tables of this database. Their names are rejected anywhere in the
+# query, so a CTE cannot shadow them (inside its own body the name still
+# resolves to the real table). Every ORM table must be in exactly one of the two
+# sets; tests enforce this when a model is added.
+RESTRICTED_SQL_TABLES = frozenset({
+    "users",
+    "refresh_tokens",
+    "conversations",
+    "messages",
+    "alembic_version",
+})
+_ALLOWED_SCHEMA = "public"
+_ALLOWED_TABLE_FUNCTIONS = frozenset({"generate_series", "unnest"})
+# FROM is also part of these expressions and is not a table reference there.
+_FROM_EXPRESSION_FUNCTIONS = frozenset({"extract", "substring", "trim", "overlay", "position"})
+_TOKEN = re.compile(
+    r"""
+    (?P<string>'(?:[^']|'')*')
+    | (?P<dollar>\$[a-z_0-9]*\$)
+    | (?P<ident>"(?:[^"]|"")+"(?:\s*\.\s*"(?:[^"]|"")+"|\s*\.\s*[a-z_][a-z0-9_$]*)*
+               |[a-z_][a-z0-9_$]*(?:\s*\.\s*(?:"(?:[^"]|"")+"|[a-z_][a-z0-9_$]*))*)
+    | (?P<punct>[(),])
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_CTE_NAME = re.compile(
+    r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([a-z_][a-z0-9_]*)\s*(?:\([^()]*\)\s*)?AS\s+(?:NOT\s+)?(?:MATERIALIZED\s+)?\(",
+    re.IGNORECASE,
+)
+_FROM_ITEM_PREFIXES = frozenset({"lateral", "only"})
+_ALIAS_STOP_WORDS = frozenset({
+    "where", "group", "order", "limit", "offset", "having", "window", "union",
+    "intersect", "except", "join", "inner", "left", "right", "full", "cross",
+    "natural", "on", "using", "fetch", "for", "lateral",
+})
+
+
+def _normalize_identifier(identifier: str) -> list[str]:
+    parts = re.split(r'\s*\.\s*(?=(?:[^"]*"[^"]*")*[^"]*$)', identifier.strip())
+    return [
+        part[1:-1].replace('""', '"').lower() if part.startswith('"') else part.lower()
+        for part in parts
+    ]
+
+
+def _tokenize(sql: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    for match in _TOKEN.finditer(sql):
+        kind = match.lastgroup
+        if kind == "dollar":
+            # Dollar quoting can hide arbitrary text from the checks below.
+            raise SQLTableNotAllowedError(table=match.group())
+        if kind != "string":
+            tokens.append((kind, match.group()))
+    return tokens
+
+
+def _matching_paren(tokens: list[tuple[str, str]], start: int) -> int:
+    depth = 0
+    for index in range(start, len(tokens)):
+        if tokens[index][1] == "(":
+            depth += 1
+        elif tokens[index][1] == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return len(tokens) - 1
+
+
+def _check_table_reference(identifier: str, cte_names: set[str]) -> None:
+    parts = _normalize_identifier(identifier)
+    if len(parts) == 2 and parts[0] == _ALLOWED_SCHEMA:
+        parts = parts[1:]
+    if len(parts) != 1:
+        raise SQLTableNotAllowedError(table=identifier)
+    name = parts[0]
+    if name not in ALLOWED_SQL_TABLES and name not in cte_names:
+        raise SQLTableNotAllowedError(table=identifier)
+
+
+def _check_from_items(tokens: list[tuple[str, str]], index: int, cte_names: set[str]) -> None:
+    """Validate the comma-separated FROM/JOIN items that start at ``index``."""
+    while index < len(tokens):
+        kind, value = tokens[index]
+        if kind == "ident" and value.lower() in _FROM_ITEM_PREFIXES:
+            index += 1
+            continue
+        if value == "(":
+            # Subquery: its own FROM clauses are visited by the outer scan.
+            index = _matching_paren(tokens, index) + 1
+        elif kind == "ident":
+            next_value = tokens[index + 1][1] if index + 1 < len(tokens) else ""
+            if next_value == "(":
+                if value.lower() not in _ALLOWED_TABLE_FUNCTIONS:
+                    raise SQLTableNotAllowedError(table=value)
+                index = _matching_paren(tokens, index + 1) + 1
+            else:
+                _check_table_reference(value, cte_names)
+                index += 1
+        else:
+            return
+        # Optional alias, written with or without AS.
+        if index < len(tokens) and tokens[index][1].lower() == "as":
+            index += 1
+        if (
+            index < len(tokens)
+            and tokens[index][0] == "ident"
+            and tokens[index][1].lower() not in _ALIAS_STOP_WORDS
+        ):
+            index += 1
+            if index < len(tokens) and tokens[index][1] == "(":
+                index = _matching_paren(tokens, index) + 1  # column alias list
+        if index < len(tokens) and tokens[index][1] == ",":
+            index += 1
+            continue
+        return
+
+
+def check_allowed_tables(sql: str) -> None:
+    """Reject any table reference outside ALLOWED_SQL_TABLES and the query's CTEs."""
+    tokens = _tokenize(sql)
+    sql_without_strings = re.sub(r"'(?:[^']|'')*'", "''", sql)
+    cte_names = {name.lower() for name in _CTE_NAME.findall(sql_without_strings)}
+    paren_functions: list[str] = []
+    previous = ""
+    for index, (kind, value) in enumerate(tokens):
+        lowered = value.lower()
+        if kind == "ident" and RESTRICTED_SQL_TABLES.intersection(_normalize_identifier(value)):
+            raise SQLTableNotAllowedError(table=value)
+        if value == "(":
+            paren_functions.append(previous)
+        elif value == ")":
+            if paren_functions:
+                paren_functions.pop()
+        elif kind == "ident" and lowered == "table":
+            # Bare "TABLE name" is shorthand for SELECT * FROM name.
+            raise SQLTableNotAllowedError(table=value)
+        elif kind == "ident" and lowered in {"from", "join"}:
+            in_expression = paren_functions and paren_functions[-1] in _FROM_EXPRESSION_FUNCTIONS
+            if not (lowered == "from" and (in_expression or previous == "distinct")):
+                _check_from_items(tokens, index + 1, cte_names)
+        previous = lowered if kind == "ident" else value
+
+class SQLService:
+    def __init__(self, llm_service: ILLMService):
+        self.llm_service = llm_service
+
+    async def generate(
+        self,
+        analyzed: AnalyzedQuery,
+        linked: LinkedSchema,
+    ) -> list[SQLQueryPlan]:
+        prompt = self._build_generation_prompt(analyzed, linked)
+        raw = await self.llm_service.generate_response(prompt)
+        return self._parse(raw)
+
+    async def generate_and_validate(
+        self,
+        analyzed: AnalyzedQuery,
+        linked: LinkedSchema,
+    ) -> list[SQLQueryPlan]:
+        return self.validate_all(await self.generate(analyzed, linked))
+
+    async def repair(
+        self,
+        plan: SQLQueryPlan,
+        error: str,
+        schema_context: str = "",
+    ) -> SQLQueryPlan:
+        raw = await self.llm_service.generate_response(
+            SQLPrompt.repair_prompt(
+                plan.sql,
+                error,
+                schema_context,
+            )
+        )
+        plans = self._parse(raw)
+        if not plans:
+            raise SQLRepairFailedError()
+
+        repaired = plans[0]
+        repaired.intent = plan.intent
+        repaired.sql = self.validate(repaired.sql)
+        return repaired
+
+    def validate_all(self, plans: list[SQLQueryPlan]) -> list[SQLQueryPlan]:
+        if len(plans) > _MAX_PLANS:
+            raise SQLPlanLimitError(max_plans=_MAX_PLANS)
+        for plan in plans:
+            plan.sql = self.validate(plan.sql)
+        return plans
+
+    def validate(self, sql: str) -> str:
+        sql = sql.strip().rstrip(";").strip()
+
+        if not sql:
+            raise EmptySQLQueryError()
+        if ";" in sql:
+            raise MultipleSQLStatementsError()
+        if _COMMENTS.search(sql):
+            raise SQLCommentsForbiddenError()
+        if not re.match(r"^(SELECT|WITH)\b", sql, re.IGNORECASE):
+            raise SQLReadOnlyRequiredError(query_prefix=sql[:30])
+        if _BLOCKED.search(sql):
+            blocked = _BLOCKED.search(sql).group(0).upper()
+            raise SQLKeywordForbiddenError(blocked=blocked)
+        if _SYSTEM_OBJECTS.search(sql):
+            raise SQLMetadataForbiddenError()
+        if _LOCKING.search(sql):
+            raise SQLWriteOrLockForbiddenError()
+        if _LEGACY_TABLES.search(sql):
+            legacy = _LEGACY_TABLES.search(sql).group(0)
+            raise SQLLegacyTableError(legacy=legacy)
+        check_allowed_tables(sql)
+        if _SELECT_STAR.search(sql):
+            raise SQLSelectStarForbiddenError()
+        if "????" in sql:
+            raise SQLPlaceholderError()
+
+        limit_match = re.search(r"\bLIMIT\s+(\d+)\b", sql, re.IGNORECASE)
+        if limit_match and int(limit_match.group(1)) > _MAX_ROWS:
+            sql = (
+                sql[: limit_match.start(1)] + str(_MAX_ROWS) + sql[limit_match.end(1) :]
+            )
+        elif not limit_match:
+            sql = f"{sql}\nLIMIT {_MAX_ROWS}"
+
+        return sql
+
+    @staticmethod
+    def _build_generation_prompt(
+        analyzed: AnalyzedQuery,
+        linked: LinkedSchema,
+    ) -> str:
+        filters = json.dumps(
+            linked.filter_hints,
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        sections = (
+            SQLPrompt.GENERATION_RULES.rstrip(),
+            f"LƯỢC ĐỒ CƠ SỞ DỮ LIỆU:\n{linked.schema_context.rstrip()}",
+            "NGỮ CẢNH ĐÃ PHÂN TÍCH:\n"
+            f"- ngày hiện tại tại Việt Nam: {now_vietnam().date().isoformat()}\n"
+            f"- bảng chính gợi ý: {linked.primary_table}\n"
+            f"- thực thể: {linked.entity_summary}\n"
+            f"- gợi ý bộ lọc: {filters}",
+            f"CÂU HỎI NGƯỜI DÙNG:\n{analyzed.original_query}",
+        )
+        return "\n\n".join(sections)
+
+    @staticmethod
+    def _parse(raw: str) -> list[SQLQueryPlan]:
+        """Parse the JSON contract, with a narrow SQL fallback for resilience."""
+        raw = raw.strip()
+        if not raw:
+            return []
+
+        items = SQLService._decode_json_payload(raw)
+        if items is not None:
+            if isinstance(items, dict):
+                items = [items]
+            if not isinstance(items, list):
+                return []
+
+            plans: list[SQLQueryPlan] = []
+            for index, item in enumerate(items):
+                if not isinstance(item, dict):
+                    continue
+                sql = item.get("sql")
+                if not isinstance(sql, str) or not sql.strip():
+                    continue
+                intent = item.get("intent") or f"query_{index}"
+                plans.append(
+                    SQLQueryPlan(
+                        intent=str(intent),
+                        sql=sql.strip().rstrip(";").strip(),
+                    )
+                )
+            return plans
+
+        # Malformed/truncated JSON is not a raw SQL response. Extracting SELECT
+        # out of its quoted string can execute an incomplete fragment of a plan.
+        if raw.startswith(("[", "{")) or re.match(r"```json\b", raw, re.IGNORECASE):
+            return []
+
+        fenced = re.search(
+            r"```(?:sql)?\s*(.*?)```",
+            raw,
+            re.IGNORECASE | re.DOTALL,
+        )
+        candidate = fenced.group(1).strip() if fenced else raw
+        start = re.search(r"\b(?:WITH|SELECT)\b", candidate, re.IGNORECASE)
+        if not start:
+            return []
+
+        sql = candidate[start.start() :].strip()
+        if ";" in sql:
+            sql = sql.split(";", 1)[0].strip()
+        return [SQLQueryPlan(intent="query", sql=sql)]
+
+    @staticmethod
+    def _decode_json_payload(raw: str) -> Any | None:
+        decoder = json.JSONDecoder()
+        starts = sorted(
+            position for token in ("[", "{") if (position := raw.find(token)) >= 0
+        )
+        for start in starts:
+            try:
+                payload, _ = decoder.raw_decode(raw[start:])
+                return payload
+            except json.JSONDecodeError:
+                continue
+        return None

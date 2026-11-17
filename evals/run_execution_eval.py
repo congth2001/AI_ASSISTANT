@@ -25,7 +25,7 @@ from evals.execution_eval import (  # noqa: E402
     summary_metrics,
     validate_case_set,
 )
-from src.application.services.sql_service import SQLService  # noqa: E402
+from src.modules.assistant.application.services.sql_service import SQLService  # noqa: E402
 
 DEFAULT_DATASET = BACKEND_DIR / "evals" / "datasets" / "business_sql_small.jsonl"
 DEFAULT_FIXTURE = BACKEND_DIR / "evals" / "fixtures" / "business_sql_small.sql"

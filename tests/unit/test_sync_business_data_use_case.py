@@ -3,7 +3,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from src.application.use_cases.sync_business_data_use_case import (
+from src.modules.sales.application.use_cases.sync_business_data_use_case import (
     SyncBusinessDataUseCase,
 )
 

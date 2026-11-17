@@ -3,7 +3,9 @@ from uuid import uuid4
 
 import pytest
 
-from src.application.use_cases.auth_use_case import AuthenticationError, AuthUseCase
+from src.modules.auth.application.use_cases.auth_use_case import AuthenticationError, AuthUseCase
+
+from src.modules.auth.infrastructure.security import BcryptPasswordHasher, JWTTokenService
 
 
 class FakeAuthRepository:
@@ -49,9 +51,12 @@ class FakeAuthRepository:
 def build_use_case():
     return AuthUseCase(
         auth_repository=FakeAuthRepository(),
-        jwt_secret="unit-test-secret-that-is-at-least-32-characters-long",
-        jwt_issuer="test-issuer",
-        jwt_audience="test-audience",
+        password_hasher=BcryptPasswordHasher(),
+        token_service=JWTTokenService(
+            secret="unit-test-secret-that-is-at-least-32-characters-long",
+            issuer="test-issuer",
+            audience="test-audience",
+        ),
         access_token_minutes=15,
         refresh_token_days=30,
     )

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.infrastructure.llm.openai_adapter import OpenAIAdapter
+from src.modules.assistant.infrastructure.llm.openai_adapter import OpenAIAdapter
 
 
 def make_response(content: str, usage=None):
@@ -44,7 +44,7 @@ async def test_generate_response_uses_async_client_and_strips_content():
     assert result == "Kết quả"
     kwargs = client.chat.completions.create.await_args.kwargs
     assert kwargs["model"] == "gpt-5-mini"
-    assert kwargs["max_completion_tokens"] == 1000
+    assert kwargs["max_completion_tokens"] == 8192
     assert "đầu ra kỹ thuật như SQL hoặc JSON" in kwargs["messages"][0]["content"]
     assert "Không hiển thị SQL" not in kwargs["messages"][0]["content"]
     assert kwargs["messages"][-1] == {"role": "user", "content": "Doanh thu?"}
@@ -71,6 +71,17 @@ async def test_generate_response_builds_grounded_context_and_history():
     assert "Luôn trả lời hoàn toàn bằng tiếng Việt" in messages[0]["content"]
     assert "Không hiển thị SQL" in messages[0]["content"]
     assert messages[1:3] == context["conversation_history"]
+    assert client.chat.completions.create.await_args.kwargs["max_completion_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content, finish_reason", [("", "stop"), ('[{"sql":"SELECT 1', "length")])
+async def test_generate_response_rejects_empty_or_truncated_output(content, finish_reason):
+    response = make_response(content)
+    response.choices[0].finish_reason = finish_reason
+    adapter = OpenAIAdapter(client=make_client(response))
+    with pytest.raises(Exception, match="OpenAI API error"):
+        await adapter.generate_response("SQL")
 
 
 @pytest.mark.asyncio

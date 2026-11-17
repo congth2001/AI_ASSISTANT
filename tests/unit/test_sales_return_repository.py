@@ -1,4 +1,4 @@
-from src.infrastructure.repositories.sales_return_repository import SalesReturnRepository
+from src.modules.sales.infrastructure.repositories.sales_return_repository import SalesReturnRepository
 
 
 def test_return_line_numbers_survive_reordering_and_reappearance():

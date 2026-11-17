@@ -1,191 +1,91 @@
-"""
-Configuration Manager
-Handles loading and validation of application configuration
-"""
-import yaml
+"""Select config files; delegate parsing, merging and validation to Pydantic Settings."""
+import os
 from pathlib import Path
-from typing import Dict, Any, Optional
-from pydantic import ValidationError
 
-from config.settings import Settings
+import yaml
+from pydantic import ValidationError
+from pydantic_settings import SettingsError, YamlConfigSettingsSource
+
+from config.settings import BACKEND_DIR, DatabaseConfiguration, DatabaseSettings, Settings
+from src.common.errors import ConfigurationError
 
 
 class ConfigManager:
-    """Configuration manager for loading settings from various sources"""
+    def __init__(self, config_path: str | Path | None = None, *, env_file: str | Path | None = BACKEND_DIR / ".env"):
+        self._requested_path = config_path
+        self.env_file = self._resolve(env_file) if env_file is not None else None
+        self._settings: Settings | None = None
+        self._database: DatabaseSettings | None = None
 
-    def __init__(self, config_path: Optional[str] = None):
-        """
-        Initialize config manager
+    @staticmethod
+    def _resolve(path: str | Path) -> Path:
+        path = Path(path).expanduser()
+        return path.resolve() if path.is_absolute() else (BACKEND_DIR / path).resolve()
 
-        Args:
-            config_path: Path to config file (YAML or .env)
-        """
-        self.config_path = config_path or self._get_default_config_path()
-        self._config_data: Optional[Dict[str, Any]] = None
+    @property
+    def config_path(self) -> Path | None:
+        selected = self._requested_path or os.getenv("AI_ASSISTANT_CONFIG_FILE")
+        if selected:
+            path = self._resolve(selected)
+            if not path.is_file():
+                raise FileNotFoundError(f"Configuration file not found: {path}")
+            if path.suffix.lower() not in {".yaml", ".yml"}:
+                raise ConfigurationError("AI_ASSISTANT_CONFIG_FILE/config_path must select a YAML file")
+            return path
+        # One documented development default, never a local/development/production search.
+        default = BACKEND_DIR / "config/local.yml"
+        return default if default.is_file() else None
 
-    def _get_default_config_path(self) -> str:
-        """Get default config path based on environment"""
-        # Check for .env file first
-        env_file = Path(".env")
-        if env_file.exists():
-            return str(env_file)
-
-        # Check for YAML config files
-        yaml_files = [
-            "config/local.yml",
-            "config/development.yml",
-            "config/production.yml"
-        ]
-
-        for yaml_file in yaml_files:
-            if Path(yaml_file).exists():
-                return yaml_file
-
-        # Default to local.yml
-        return "config/local.yml"
-
-    def load_config(self) -> Dict[str, Any]:
-        """
-        Load configuration from file
-
-        Returns:
-            Dict containing configuration data
-        """
-        if self._config_data is not None:
-            return self._config_data
-
-        config_path = Path(self.config_path)
-
-        if not config_path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {config_path}")
-
-        # Load based on file extension
-        if config_path.suffix.lower() in ['.yml', '.yaml']:
-            self._config_data = self._load_yaml_config(config_path)
-        elif config_path.suffix.lower() == '.env':
-            self._config_data = self._load_env_config(config_path)
-        else:
-            raise ValueError(f"Unsupported config file format: {config_path.suffix}")
-
-        return self._config_data
-
-    def _load_yaml_config(self, config_path: Path) -> Dict[str, Any]:
-        """Load configuration from YAML file"""
+    def _load(self, model):
+        path = self.config_path
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                config = yaml.safe_load(f) or {}
-            return config
-        except Exception as e:
-            raise RuntimeError(f"Failed to load YAML config from {config_path}: {e}")
-
-    def _load_env_config(self, config_path: Path) -> Dict[str, Any]:
-        """Load configuration from .env file"""
-        config = {}
-
-        try:
-            with open(config_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.strip()
-                    if not line or line.startswith('#'):
-                        continue
-
-                    if '=' in line:
-                        key, value = line.split('=', 1)
-                        key = key.strip()
-                        value = value.strip()
-
-                        # Remove quotes if present
-                        if (value.startswith('"') and value.endswith('"')) or \
-                           (value.startswith("'") and value.endswith("'")):
-                            value = value[1:-1]
-
-                        # Convert to nested dict using __ delimiter
-                        self._set_nested_config(config, key, value)
-
-            return config
-        except Exception as e:
-            raise RuntimeError(f"Failed to load .env config from {config_path}: {e}")
-
-    def _set_nested_config(self, config: Dict[str, Any], key: str, value: str):
-        """Set nested configuration value using __ delimiter"""
-        keys = key.split('__')
-        current = config
-
-        for k in keys[:-1]:
-            if k not in current:
-                current[k] = {}
-            current = current[k]
-
-        # Convert value to appropriate type
-        final_key = keys[-1]
-        current[final_key] = self._convert_value(value)
-
-    def _convert_value(self, value: str) -> Any:
-        """Convert string value to appropriate type"""
-        # Handle boolean values
-        if value.lower() in ['true', 'false']:
-            return value.lower() == 'true'
-
-        # Handle None/null values
-        if value.lower() in ['none', 'null', '']:
-            return None
-
-        # Handle numeric values
-        try:
-            # Try int first
-            if '.' not in value:
-                return int(value)
-            # Try float
-            return float(value)
-        except ValueError:
-            pass
-
-        # Return as string
-        return value
+            values = YamlConfigSettingsSource(model, yaml_file=path, yaml_file_encoding="utf-8")()
+            if not isinstance(values, dict):
+                raise ConfigurationError("YAML configuration must be a mapping")
+            if model is DatabaseConfiguration:
+                values = {key: value for key, value in values.items() if key == "database"}
+            return model(_env_file=self.env_file, **values)
+        except ValidationError as exc:
+            details = "; ".join(
+                f"{'.'.join(map(str, error['loc']))}: {error['msg']}"
+                for error in exc.errors(include_input=False, include_url=False)
+            )
+            raise ConfigurationError(f"Configuration validation failed: {details}") from None
+        except (yaml.YAMLError, SettingsError, ValueError, TypeError):
+            raise ConfigurationError("Cannot parse configuration; check YAML, JSON environment values and PostgreSQL URL") from None
 
     def get_settings(self) -> Settings:
-        """
-        Get validated Pydantic settings
+        if self._settings is None:
+            self._settings = self._load(Settings)
+            self._database = self._settings.database
+        return self._settings
 
-        Returns:
-            Settings instance
-        """
-        config_data = self.load_config()
+    def get_database_settings(self) -> DatabaseSettings:
+        if self._database is None:
+            self._database = self._load(DatabaseConfiguration).database
+        return self._database
 
-        try:
-            return Settings(**config_data)
-        except ValidationError as e:
-            raise RuntimeError(f"Configuration validation failed: {e}")
+    def load_config(self) -> dict:
+        """Compatibility entry point: validated data with SecretStr values still protected."""
+        return self.get_settings().model_dump()
 
-    def _flatten_config(self, config: Dict[str, Any], prefix: str = "") -> Dict[str, str]:
-        """Flatten nested config dict to key-value pairs"""
-        result = {}
-
-        for key, value in config.items():
-            full_key = f"{prefix}__{key}" if prefix else key
-
-            if isinstance(value, dict):
-                result.update(self._flatten_config(value, full_key))
-            else:
-                result[full_key] = value
-
-        return result
-
-    def reload_config(self):
-        """Reload configuration from file"""
-        self._config_data = None
-        self.load_config()
+    def reload_config(self) -> Settings:
+        """Invalidate both caches; existing DI singletons require an application restart."""
+        self._settings = None
+        self._database = None
+        return self.get_settings()
 
 
-# Global config manager instance
 config_manager = ConfigManager()
 
 
 def get_settings() -> Settings:
-    """Get application settings"""
     return config_manager.get_settings()
 
 
-def reload_config():
-    """Reload configuration"""
-    config_manager.reload_config()
+def get_database_settings() -> DatabaseSettings:
+    return config_manager.get_database_settings()
+
+
+def reload_config() -> Settings:
+    return config_manager.reload_config()

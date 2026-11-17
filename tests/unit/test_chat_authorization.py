@@ -1,9 +1,9 @@
 import pytest
-from fastapi import HTTPException
+from src.common.errors import PermissionDeniedError, ErrorType
 
-from src.application.use_cases.chat_use_case import ChatUseCase
-from src.presentation.api.v1.auth import require_role
-from src.presentation.api.v1.chat import (
+from src.modules.assistant.application.use_cases.chat_use_case import ChatUseCase
+from src.modules.auth.presentation.router import require_role
+from src.modules.conversations.presentation.access import (
     conversation_read_scope,
     ensure_conversation_write_access,
 )
@@ -78,13 +78,13 @@ class OwnershipUseCase:
 
 @pytest.mark.asyncio
 async def test_admin_can_view_but_cannot_write_staff_conversation():
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(PermissionDeniedError) as exc_info:
         await ensure_conversation_write_access(
             "conversation-1",
             {"id": "admin-1", "role": "admin"},
             OwnershipUseCase(),
         )
-    assert exc_info.value.status_code == 403
+    assert exc_info.value.error_type == ErrorType.NOT_PERMISSION
 
 
 @pytest.mark.asyncio
@@ -99,6 +99,6 @@ async def test_conversation_owner_retains_write_access():
 @pytest.mark.asyncio
 async def test_guest_is_rejected_by_staff_admin_role_dependency():
     dependency = require_role("staff", "admin")
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(PermissionDeniedError) as exc_info:
         await dependency({"id": "guest-1", "role": "guest"})
-    assert exc_info.value.status_code == 403
+    assert exc_info.value.error_type == ErrorType.NOT_PERMISSION

@@ -4,11 +4,11 @@ from uuid import uuid4
 
 import pytest
 
-from src.application.use_cases.conversation_use_case import ConversationUseCase
-from src.domain.entities.conversation import Conversation
-from src.domain.entities.message import Message
-from src.domain.time import as_vietnam_time, now_vietnam
-from src.infrastructure.repositories.conversation_repository import ConversationRepository
+from src.modules.conversations.application.use_cases.conversation_use_case import ConversationUseCase
+from src.modules.conversations.domain.entities.conversation import Conversation
+from src.modules.conversations.domain.entities.message import Message
+from src.common.domain.time import as_vietnam_time, now_vietnam
+from src.modules.conversations.infrastructure.repositories.conversation_repository import ConversationRepository
 
 
 def test_vietnam_clock_is_timezone_aware():

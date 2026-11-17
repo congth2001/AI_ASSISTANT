@@ -5,22 +5,24 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.dialects import postgresql
 
-from src.application.use_cases.dashboard_analytics_use_case import (
+from src.modules.analytics.application.use_cases.dashboard_analytics_use_case import (
     DashboardAnalyticsUseCase,
 )
-from src.domain.entities.dashboard_analytics import (
+from src.modules.analytics.domain.models.dashboard import (
     DashboardFilterOptions,
     DashboardFilters,
     DashboardMetricSnapshot,
-    CustomerOverviewCursor,
-    CustomerDebtExportFilters,
-    OrderFilters,
     RankingDimension,
 )
-from src.infrastructure.repositories.dashboard_analytics_repository import (
+from src.modules.analytics.domain.models.customer_debt import (
+    CustomerOverviewCursor,
+    CustomerDebtExportFilters,
+)
+from src.modules.analytics.domain.models.orders import OrderFilters
+from src.modules.analytics.infrastructure.repositories.dashboard_analytics_repository import (
     DashboardAnalyticsRepository,
 )
-from src.infrastructure.repositories.models import CustomerDebtTransaction, SalesInvoice
+from src.modules.sales.infrastructure.models import CustomerDebtTransaction, SalesInvoice
 
 
 class FakeDashboardRepository:
@@ -241,7 +243,8 @@ def test_customer_overview_cursor_round_trip_preserves_decimal_and_unicode():
 
 
 @pytest.mark.asyncio
-async def test_order_list_query_applies_filters_before_pagination():
+@pytest.mark.parametrize('customer_geography', [False, True])
+async def test_order_list_query_applies_filters_before_pagination(customer_geography):
     captured = []
 
     class Result:
@@ -274,6 +277,7 @@ async def test_order_list_query_applies_filters_before_pagination():
             customer_id="11111111-1111-1111-1111-111111111111",
             ward_names=("Minh Khai",),
             village_names=("Thôn 1",),
+            customer_geography=customer_geography,
         ),
         20,
         40,
@@ -284,8 +288,14 @@ async def test_order_list_query_applies_filters_before_pagination():
     assert "sales_invoices.issued_at < '2025-04-01'" in sql
     assert "sales_invoices.invoice_number" in sql and "HD-001" in sql
     assert "sales_invoices.customer_id =" in sql
-    assert "sales_invoices.customer_ward_name_snapshot IN ('Minh Khai')" in sql
-    assert "sales_invoices.customer_village_name_snapshot IN ('Thôn 1')" in sql
+    if customer_geography:
+        assert "customers.ward_name IN ('Minh Khai')" in sql
+        assert "customers.village_name IN ('Thôn 1')" in sql
+        assert "customers.deleted_at IS NULL" in sql
+        assert "JOIN customers" in sql
+    else:
+        assert "sales_invoices.customer_ward_name_snapshot IN ('Minh Khai')" in sql
+        assert "sales_invoices.customer_village_name_snapshot IN ('Thôn 1')" in sql
     assert "LIMIT 20 OFFSET 40" in sql
 
 

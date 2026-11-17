@@ -1,5 +1,5 @@
 # ============================================================================
-# OPTIONAL SETTINGS (with defaults)
+# APPLICATION SETTINGS (secrets are required via YAML, .env or process environment)
 # ============================================================================
 
 # LLM Configuration
@@ -29,7 +29,7 @@ database:
     host: localhost
     port: 5432
     username: congvq
-    password: congvq
+    password: "" # Set here or through DATABASE__PASSWORD; no built-in DB password.
     db_name: ai_assistant
     echo: false
 
@@ -52,7 +52,7 @@ api:
 
 # Authentication (generate a strong random secret for every environment)
 auth:
-    jwt_secret: "replace-with-at-least-32-random-characters"
+    jwt_secret: # Required: provide your own random secret here or AUTH__JWT_SECRET.
     jwt_issuer: business-chatbot
     jwt_audience: business-chatbot-web
     access_token_minutes: 15

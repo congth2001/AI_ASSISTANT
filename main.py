@@ -10,9 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config.config_manager import get_settings
 from config.container import container
-from src.presentation.api.v1.chat import router as chat_router
-from src.presentation.api.v1.auth import router as auth_router
-from src.presentation.api.v1.analytics import router as analytics_router
+from src.bootstrap.router import ROUTER_MODULES, router
+from src.common.presentation.error_handlers import register_error_handlers
 
 def init_config_connections():
     """Initialize connections to external services based on config"""
@@ -28,7 +27,7 @@ def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
     settings = get_settings()
 
-    container.config.from_dict(settings.model_dump())
+    container.config.from_dict(settings.to_container_config())
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -65,42 +64,9 @@ def create_app() -> FastAPI:
         expose_headers=["Content-Disposition"],
     )
 
-    # Wire dependencies
-    container.wire(
-        modules=[
-            "src.presentation.api.v1.chat",
-            "src.presentation.api.v1.auth",
-            "src.presentation.api.v1.analytics",
-        ]
-    )
-
-    # Include API routers
-    app.include_router(
-        chat_router,
-        prefix="/api/v1",
-        tags=["chat"]
-    )
-    app.include_router(auth_router, prefix="/api/v1", tags=["auth"])
-    app.include_router(
-        analytics_router,
-        prefix="/api/v1",
-        tags=["analytics"],
-    )
-
-
-    # Health check endpoint
-    @app.get("/health")
-    async def health_check():
-        return {"status": "healthy", "service": "business-chatbot"}
-
-    # Root endpoint
-    @app.get("/")
-    async def root():
-        return {
-            "message": "Business Chatbot API",
-            "version": "1.0.0",
-            "docs": "/docs"
-        }
+    register_error_handlers(app)
+    container.wire(modules=ROUTER_MODULES)
+    app.include_router(router)
 
     return app
 

@@ -7,23 +7,23 @@ import pytest
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT_DIR)
 
-from src.application.agent.graph.edges import (
+from src.modules.assistant.application.agent.graph.edges import (
     route_after_analysis,
     route_after_text_to_sql,
     route_after_request_assessment,
     route_after_context_evaluation,
     route_after_response_evaluation,
 )
-from src.application.agent.graph.nodes import (
+from src.modules.assistant.application.agent.graph.nodes import (
     make_evaluate_context_node,
     make_prepare_conversation_node,
 )
-from src.application.services.intent_classifier import IntentClassifier
-from src.application.services.sql_service import SQLService, SQLValidationError
-from src.application.use_cases.chat_use_case import ChatUseCase
-from src.domain.entities.conversation import Conversation
-from src.domain.entities.message import Message
-from src.application.agent.runtime import AgentOperationTimeout, run_with_policy
+from src.modules.assistant.application.services.intent_classifier import IntentClassifier
+from src.modules.assistant.application.services.sql_service import SQLService, SQLValidationError
+from src.modules.assistant.application.use_cases.chat_use_case import ChatUseCase
+from src.modules.conversations.domain.entities.conversation import Conversation
+from src.modules.conversations.domain.entities.message import Message
+from src.modules.assistant.application.agent.runtime import AgentOperationTimeout, run_with_policy
 
 
 class _LLM:
@@ -169,7 +169,7 @@ def test_sql_validator_rejects_unsafe_queries(sql):
 
 def test_sql_validator_caps_large_limit():
     sql = SQLService(llm_service=None).validate(
-        "SELECT invoice_id FROM invoices LIMIT 999999"
+        "SELECT i.invoice_id FROM sales_invoices i LIMIT 999999"
     )
     assert "LIMIT 1000" in sql
 

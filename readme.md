@@ -1,274 +1,80 @@
-# Business Chatbot — LLM-to-SQL & RAG Assistant
+# AI_ASSISTANT Backend
 
-AI assistant cho phân tích dữ liệu kinh doanh, xây dựng theo **Clean Architecture** với **Agent Graph** (LangGraph). Hệ thống tự động định tuyến câu hỏi sang pipeline phù hợp: truy vấn SQL có cấu trúc hoặc tìm kiếm vector (RAG).
+FastAPI backend cho chatbot phân tích dữ liệu bán hàng bằng tiếng Việt và dashboard kinh doanh. Code tổ chức theo **modular monolith**, giữ **Clean Architecture trong từng module**. PostgreSQL lưu dữ liệu nghiệp vụ/xác thực/hội thoại, Milvus tìm kiếm vector, Redis cache kết quả chat.
 
----
+## Module
 
-## Tính năng
+| Module | Trách nhiệm |
+| --- | --- |
+| src/modules/auth | Guest session, đăng nhập, JWT/refresh/logout, tạo staff/admin |
+| src/modules/conversations | Lưu hội thoại/tin nhắn, quyền đọc và ownership khi sửa |
+| src/modules/assistant | SSE chat, LangGraph, intent/entity, Text-to-SQL, RAG/hybrid, LLM/cache/vector adapters |
+| src/modules/analytics | Dashboard, bộ lọc, khách hàng/công nợ, đơn hàng và xuất Excel |
+| src/modules/sales | Repository khách hàng, hóa đơn/dòng hàng, trả hàng, sổ công nợ và đồng bộ dữ liệu |
+| src/common | PostgreSQL/session factory, ORM Base, thời gian Việt Nam và lỗi dùng chung |
 
-- **Agent Graph (LangGraph)**: Tự động phân tích intent → chọn tool → sinh response
-- **Text-to-SQL**: Chuyển câu hỏi tiếng Việt thành SQL, thực thi trên SQLite
-- **Hybrid RAG**: Kết hợp vector search (Milvus) + keyword search để tìm tài liệu liên quan
-- **Fuzzy Entity Matching**: Nhận dạng tên khách hàng, sản phẩm, danh mục với RapidFuzz
-- **Multi-Provider LLM**: OpenAI GPT và Anthropic Claude
-- **Conversation Memory**: Lưu lịch sử hội thoại trên PostgreSQL/SQLite
+Mỗi module có domain, application, infrastructure, presentation khi cần và container.py riêng. config/container.py chỉ ghép module và dependency dùng chung; src/bootstrap/router.py tập hợp router module, prefix/tag và endpoint public; main.py wire/mount router tổng. Chi tiết ranh giới dependency, bản đồ file, ORM và cách thêm module nằm trong [ARCHITECTURE.md](ARCHITECTURE.md).
 
----
+Các interface dịch vụ nằm trong domain/ports/, repository contract nằm trong domain/repositories/. Prompt LLM thuộc assistant/application/prompts/. Các kiểu dữ liệu analytics nằm trong analytics/domain/models/, chia thành dashboard, overview, customer_debt, orders và order_ledger.
 
-## Kiến trúc
+Các nhóm lỗi dùng chung nằm trong `src/common/errors/`: `not_found`, `not_permission`, `unauthorized`, `validation`, `conflict`, cấu hình, timeout và lỗi dịch vụ/nội bộ. Mỗi module gom mã lỗi và mẫu thông điệp riêng trong `domain/errors.py`; ánh xạ HTTP status nằm tại `src/common/presentation/error_handlers.py`, giữ response `{"detail": ...}` và contract SSE. Xem `src/common/errors/README.md`.
 
-### Sơ đồ layers
+## Chạy local
 
-```
-┌─────────────────────────────────────────────┐
-│              Presentation Layer              │
-│          FastAPI  ·  REST API v1             │
-└──────────────────────┬──────────────────────┘
-                       │
-┌──────────────────────▼──────────────────────┐
-│              Application Layer               │
-│    ChatUseCase  ·  SearchDocumentsUseCase    │
-│    AnalyticsUseCase  ·  IngestDataUseCase    │
-└──────────────────────┬──────────────────────┘
-                       │ delegates to
-┌──────────────────────▼──────────────────────┐
-│                 Agent Layer                  │
-│                                             │
-│  AgentService                               │
-│  ┌─────────────────────────────────────┐   │
-│  │           LangGraph Graph           │   │
-│  │  analyze_query                      │   │
-│  │      ├─[needs_analytics]──► text_to_sql ──[has_data]──► generate_response │
-│  │      │                    └─[empty]───► rag_tool ──►┐  │
-│  │      └─[rag]──────────────► rag_tool ───────────────►┤  │
-│  │                                              generate_response → END │
-│  └─────────────────────────────────────┘   │
-│                                             │
-│  Tools: TextToSQLTool · RAGTool             │
-└──────────────────────┬──────────────────────┘
-                       │ uses
-┌──────────────────────▼──────────────────────┐
-│               Domain Layer                   │
-│  Entities · Value Objects · Interfaces       │
-└──────────────────────┬──────────────────────┘
-                       │ implemented by
-┌──────────────────────▼──────────────────────┐
-│            Infrastructure Layer              │
-│  OpenAI · Milvus · SQLite · Redis · Pg       │
-└─────────────────────────────────────────────┘
+Yêu cầu Python 3.11+, môi trường ảo đã cài requirements.txt và Docker cho hạ tầng. Chạy các lệnh từ backend/ vì config loader và Alembic dùng đường dẫn tương đối.
+
+```powershell
+Copy-Item config\local.example config\local.yml
+# Điền API key, JWT secret và thông tin kết nối trong local.yml.
+docker compose --project-name ai_assistant -f deploy\docker-compose.yml up -d
+.\env\Scripts\python.exe -m alembic upgrade head
+.\env\Scripts\python.exe create_admin.py --email admin@example.com --name "Admin"
+.\env\Scripts\python.exe sync_business_data.py
+.\env\Scripts\python.exe main.py
 ```
 
-### Luồng xử lý câu hỏi
+create_admin.py hỏi mật khẩu qua prompt. Không ghi mật khẩu/API key/token vào command line hoặc commit config/local.yml, .env hay dữ liệu khách hàng. sync_business_data.py đọc năm snapshot trong data/documents/ (Khach_hang.xlsx, Hang_hoa.xlsx, Cong_no.xlsx, Tra_hang.xlsx, Chi_tiet_tra_hang.xlsx) và đồng bộ idempotent; run_business_etl.py chạy trọn chuỗi trích xuất MDB/ZIP → chuẩn hóa → snapshot → đồng bộ, xem [etl_business/README.md](etl_business/README.md). Giữ project name ai_assistant cho Docker Compose; bỏ tham số này sẽ tạo project deploy với volume PostgreSQL trống. local.example để trống LLM API key và JWT secret: điền vào local.yml hoặc đặt LLM__OPENAI_API_KEY, AUTH__JWT_SECRET.
 
-```
-User message
-    ↓
-[analyze_query]  — QueryAnalyzer: intent, entity, time extraction (rule-based + fuzzy)
-    ↓
-[route]  — needs_analytics?
-    ├── YES → [execute_text_to_sql]  — SchemaLinker → SQLGenerator (LLM) → SQLValidator → Execute
-    │              └── no data? → [execute_rag]
-    └── NO  → [execute_rag]          — Milvus search → ContextBuilder
-                    ↓
-          [generate_response]  — LLM (OpenAI/Claude) + context
-                    ↓
-              Response to user
-```
+Mặc định API tại http://localhost:8000, Swagger tại /docs, health tại /health. Có thể thêm origin frontend public qua biến PUBLIC_FRONTEND_ORIGINS (phân tách bằng dấu phẩy). Pydantic Settings áp dụng precedence: environment → backend/.env → YAML được chọn → defaults. Chọn YAML bằng AI_ASSISTANT_CONFIG_FILE hoặc argument ConfigManager; local mặc định là config/local.yml nếu có, không dò các file môi trường khác. LLM API key và JWT secret riêng là bắt buộc. App, CLI, ETL và Alembic dùng chung nguồn database; xem [config/README.md](config/README.md).
 
-### Cấu trúc thư mục
+## API và nghiệp vụ
 
-```
-src/
-├── application/                 # Application Layer
-│   ├── agent/                   # Agent sub-layer
-│   │   ├── agent_service.py     # Public interface cho ChatUseCase
-│   │   ├── graph/
-│   │   │   ├── state.py         # AgentState (TypedDict)
-│   │   │   ├── nodes.py         # Node factories: analyze, text_to_sql, rag, respond
-│   │   │   ├── edges.py         # Routing: route_after_analysis, route_after_text_to_sql
-│   │   │   └── builder.py       # build_agent_graph() → CompiledGraph
-│   │   └── tools/
-│   │       ├── base.py          # BaseTool ABC
-│   │       ├── text_to_sql.py   # Wrap AnalyticsUseCase (SQL pipeline)
-│   │       └── rag_tool.py      # Wrap SearchDocumentsUseCase + ContextBuilder
-│   ├── use_cases/
-│   │   ├── chat_use_case.py     # Conversation management + delegate to AgentService
-│   │   ├── analytics_use_case.py# SQL pipeline: schema link → generate → validate → execute
-│   │   ├── search_document_use_case.py
-│   │   └── ingest_data_use_case.py
-│   └── services/
-│       ├── query_analyzer.py    # 9-step rule-based query analysis
-│       ├── schema_linker.py     # Map entities → DB schema
-│       ├── sql_generator.py     # LLM → SQLQueryPlan[]
-│       ├── sql_validator.py     # Safety check (blocklist + EXPLAIN)
-│       ├── context_builder.py   # Build context dict for LLM
-│       ├── rag_orchestrator.py  # Vector/hybrid search orchestration
-│       └── serialization_factory.py
-│
-├── domain/                      # Domain Layer
-│   ├── entities/                # AnalyzedQuery, Message, Conversation, ...
-│   ├── value_objects/           # QueryIntent, DocType, AggregationType, ...
-│   └── interfaces/              # ILLMService, ISearchRepository, IVectorDB, ...
-│
-├── infrastructure/              # Infrastructure Layer
-│   ├── llm/                     # openai_adapter.py, anthropic_adapter.py
-│   ├── vector_db/               # milvus_adapter.py
-│   ├── repositories/            # milvus_search_repository.py, analytics_repository.py
-│   ├── persistence/             # SQLAlchemy models, conversation_repository.py
-│   ├── embedding/               # openai_embedding.py
-│   ├── cache/                   # redis_cache.py
-│   ├── serializers/             # transaction, customer, period_summary serializers
-│   └── utils/                   # logger, singleton
-│
-└── presentation/                # Presentation Layer
-    ├── api/v1/
-    │   ├── chat.py              # POST /api/v1/chat
-    │   ├── data.py              # POST /api/v1/data/ingest
-    │   └── reports.py           # GET  /api/v1/reports
-    └── dto/                     # Request/Response schemas
+Endpoint nghiệp vụ dùng prefix /api/v1:
+
+- /auth/*: guest, login, refresh, logout, me, staff.
+- /chat và /chat/stream: câu trả lời đầy đủ hoặc SSE; /search-documents cho staff/admin.
+- /conversations và /conversations/{id}: quản lý lịch sử cho staff/admin.
+- /analytics/*: summary, time-series, time-series-comparison, data-freshness, overview-insights, rankings, filter-options, customer-overview, orders và xuất workbook công nợ/nhật ký.
+
+Swagger là contract API thực tế. Guest chỉ chat stateless, không truy cập business tools. Admin có thể đọc hội thoại của mọi người nhưng chỉ chat/rename/delete hội thoại do mình sở hữu. SSE giữ event data: <json> theo từng khối kết thúc bằng hai newline.
+
+Assistant phân loại conversation/text_to_sql/rag/hybrid; agent có assess, clarify và evaluate_context. Chỉ POST /chat có bước đánh giá câu trả lời và sinh lại khi thiếu citation; node replan chưa được định tuyến tới. Text-to-SQL kiểm tra SQL trước khi chạy trong transaction chỉ đọc, timeout 15 giây; validator chỉ cho phép đọc 6 bảng bán hàng (`ALLOWED_SQL_TABLES` trong `sql_service.py`) và từ chối mọi tên bảng không thuộc dữ liệu bán hàng ở bất kỳ vị trí nào (`RESTRICTED_SQL_TABLES`). Khi thêm bảng ORM mới, `tests/unit/test_sql_table_allowlist.py` buộc phân loại bảng vào một trong hai tập. RAG/hybrid search mô tả tại [docs/HYBRID_SEARCH.md](docs/HYBRID_SEARCH.md). OpenAI là adapter được DI cấu hình; Anthropic adapter có trong module assistant nhưng cần wiring riêng nếu đổi provider.
+
+Luồng agent, các sửa lỗi ngữ cảnh dashboard và giới hạn xác minh phân tích kinh doanh được mô tả tại [docs/agent-business-analysis.md](docs/agent-business-analysis.md); topology graph tại [docs/agent-graph.md](docs/agent-graph.md).
+
+Analytics dùng Decimal/numeric cho tiền. Công nợ chuẩn lấy từ signed ledger customer_debt_transactions; không cộng debt_delta_amount của hóa đơn để thay số dư sổ. Schema do Alembic quản lý, head d1e5b7a93c28; startup không tạo bảng tự động.
+
+## Kiểm tra
+
+```powershell
+.\env\Scripts\python.exe -m pytest tests/unit tests/integrate etl_business/tests
+.\env\Scripts\python.exe -m alembic heads
 ```
 
----
+Bộ test gồm các kiểm tra ranh giới module, DI/metadata, xác thực/phân quyền, agent/SQL và analytics/workbook. Test hoặc benchmark có dịch vụ ngoài có thể cần config/hạ tầng tương ứng.
 
-## Cài đặt
+Benchmark SQL với PostgreSQL fixture, chạy từ backend/:
 
-### Yêu cầu
-
-- Python 3.11+
-- OpenAI API key
-- Milvus (Docker hoặc Milvus Lite)
-- PostgreSQL (production) hoặc SQLite (development)
-- Redis (optional, cho caching)
-
-### 1. Clone và cài dependencies
-
-```bash
-git clone <repository-url>
-cd business-chatbot
-pip install -r requirements.txt
+```powershell
+$env:AI_QC_BENCHMARK_DSN = "postgresql://postgres:postgres@localhost:5432/ai_assistant"
+.\env\Scripts\python.exe evals\run_execution_eval.py --use-reference
 ```
 
-### 2. Cấu hình môi trường
+Import Python nội bộ dùng src.modules.<module>.* hoặc src.common.*; không có shim cho các package layer toàn cục cũ. Provider của pipeline SQL trong assistant dùng tên text_to_sql_use_case và sql_executor; các alias CLI/router như auth_use_case, chat_use_case và dashboard_analytics_use_case vẫn được giữ tại config/container.py.
 
-Tạo file `.env`:
+## Tài liệu chuyên đề
 
-```bash
-# LLM
-OPENAI_API_KEY=your_openai_api_key_here
-LLM__MODEL=gpt-4o-mini
-
-# Vector DB (Milvus)
-VECTOR_DB__HOST=localhost
-VECTOR_DB__PORT=19530
-VECTOR_DB__COLLECTION_NAME=business_docs
-VECTOR_DB__VECTOR_DIMENSION=512
-
-# Database
-DATABASE__URL=sqlite+aiosqlite:///./business_chatbot.db
-
-# Cache (optional)
-CACHE__HOST=localhost
-CACHE__PORT=6379
-```
-
-### 3. Chạy với Docker (khuyến nghị)
-
-```bash
-cd deploy
-docker-compose up -d
-```
-
-### 4. Chạy local
-
-```bash
-# Ingest dữ liệu mẫu
-python scripts/ingest_data.py
-
-# Khởi động server
-python main.py
-```
-
----
-
-## API
-
-| Method | Endpoint | Mô tả |
-|--------|----------|-------|
-| `POST` | `/api/v1/chat` | Gửi tin nhắn, nhận phản hồi AI |
-| `GET`  | `/api/v1/chat/{conversation_id}` | Lấy lịch sử hội thoại |
-| `POST` | `/api/v1/data/ingest` | Ingest dữ liệu kinh doanh |
-| `GET`  | `/api/v1/reports` | Truy vấn báo cáo theo khoảng thời gian |
-| `GET`  | `/health` | Health check |
-| `GET`  | `/docs` | Swagger UI |
-
-### Ví dụ
-
-```bash
-# Chat
-curl -X POST "http://localhost:8000/api/v1/chat" \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Doanh thu tháng 3 của khách hàng Anh Hùng là bao nhiêu?", "conversation_id": "uuid-here"}'
-
-# Response
-{
-  "conversation_id": "...",
-  "response": "Doanh thu tháng 3/2024 của khách hàng Anh Hùng là 125,000,000 VND...",
-  "intent": "REVENUE",
-  "timestamp": "2024-03-15T10:30:00",
-  "metadata": {
-    "has_data": true,
-    "used_fallback": false,
-    "tool_used": "text_to_sql"
-  }
-}
-```
-
----
-
-## Dữ liệu ingestion
-
-Hệ thống ingest theo 3 lớp tài liệu từ file JSONL trong `data/ingestions/`:
-
-| File | Mô tả | Lớp |
-|------|-------|-----|
-| `transactions.jsonl` | Từng giao dịch (1 row = 1 doc) | Layer 1 |
-| `customers.jsonl` | Hồ sơ tổng hợp theo khách hàng | Layer 2 |
-| `period_summaries.jsonl` | Tổng hợp theo tháng/quý | Layer 3 |
-
-```bash
-python scripts/ingest_data.py
-```
-
----
-
-## Testing
-
-```bash
-# Tất cả tests
-pytest
-
-# Với coverage
-pytest --cov=src --cov-report=html
-
-# Chỉ unit tests
-pytest tests/unit/
-
-# Chỉ integration tests
-pytest tests/integrate/
-```
-
----
-
-## Dependency Injection
-
-Toàn bộ dependencies được quản lý trong `config/container.py` bằng `dependency-injector`:
-
-```
-Container
-├── Infrastructure: llm_service, milvus_client, embedding_service, conversation_repo, ...
-├── Application:    query_analyzer, schema_linker, sql_generator, sql_validator, context_builder
-├── Application/Agent:  text_to_sql_tool → analytics_use_case
-│                       rag_tool         → search_documents_use_case + context_builder
-│                       agent_service    → query_analyzer + tools + llm_service
-└── Use Cases:      chat_use_case    → agent_service + conversation_repo
-```
+- Tổng quan có ba nhóm insight tính xác định, độ mới dữ liệu từ timestamp bản ghi và chuỗi so sánh hai kỳ cùng số ngày: [Tổng quan và insight](../docs/overview-insights.md).
+- API analytics: [docs/analytics-api.md](docs/analytics-api.md). Mô hình dữ liệu: [docs/data-model.md](docs/data-model.md).
+- Agent graph: [docs/agent-graph.md](docs/agent-graph.md). Cache Redis: [docs/caching-redis.md](docs/caching-redis.md). Nạp dữ liệu Milvus: [docs/milvus-ingestion.md](docs/milvus-ingestion.md). Xác thực: [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md).
+- Vận hành: [../docs/runbook-van-hanh.md](../docs/runbook-van-hanh.md). Quy trình đóng góp: [../CONTRIBUTING.md](../CONTRIBUTING.md).

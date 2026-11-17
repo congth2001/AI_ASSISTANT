@@ -1,4 +1,4 @@
-from shop_data_extractor.access import detect_table
+from etl_business.shop_data_extractor.access import detect_table
 
 def test_exact_normalized():
     assert detect_table(["tblProduct", "Customers"], ["customers"]) == "Customers"

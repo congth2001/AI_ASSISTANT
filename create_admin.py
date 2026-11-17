@@ -21,7 +21,7 @@ async def main() -> None:
         raise SystemExit("Password must contain 8-72 characters")
 
     settings = get_settings()
-    container.config.from_dict(settings.model_dump())
+    container.config.from_dict(settings.to_container_config())
     try:
         user = await container.auth_use_case().bootstrap_admin(args.email, args.name, password)
         print(f"Created admin {user['email']} ({user['id']})")

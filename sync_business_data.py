@@ -4,10 +4,11 @@ from pathlib import Path
 
 from config.config_manager import get_settings
 from config.container import container
+from src.modules.assistant.application.use_cases.chat_use_case import CHAT_RESPONSE_CACHE_PREFIX
 
 if __name__ == "__main__":
     settings = get_settings()
-    container.config.from_dict(settings.model_dump())
+    container.config.from_dict(settings.to_container_config())
 
     data_dir = Path(__file__).resolve().parent / "data" / "documents"
     df_invoice_customers = pd.read_excel(data_dir / "Khach_hang.xlsx")
@@ -28,6 +29,7 @@ if __name__ == "__main__":
                 df_sales_return_lines,
             )
             print(result)
+            await container.cache_service().delete_prefix(CHAT_RESPONSE_CACHE_PREFIX)
         finally:
             await container.postgres_client().close()
 

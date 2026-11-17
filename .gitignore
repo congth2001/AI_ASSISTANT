@@ -33,3 +33,6 @@ data/ingestions/*
 data/etl/*
 !data/etl/.gitkeep
 backups/
+
+# Alembic environment is source code, not a local env file.
+!migrations/env.py

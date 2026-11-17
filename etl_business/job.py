@@ -7,6 +7,7 @@ from filelock import FileLock, Timeout
 
 from config.config_manager import ConfigManager
 from config.container import container
+from src.modules.assistant.application.use_cases.chat_use_case import CHAT_RESPONSE_CACHE_PREFIX
 from etl_business.normalization import (
     load_customer_ward_aliases,
     load_product_aliases,
@@ -58,7 +59,7 @@ async def run_business_etl(config: dict) -> dict[str, Any]:
             app_settings = ConfigManager(
                 runtime["project_config_path"]
             ).get_settings()
-            container.config.from_dict(app_settings.model_dump())
+            container.config.from_dict(app_settings.to_container_config())
             try:
                 sync_result = await container.sync_business_data_use_case().sync_all(
                     snapshots.customers,
@@ -67,6 +68,7 @@ async def run_business_etl(config: dict) -> dict[str, Any]:
                     snapshots.sales_returns,
                     snapshots.sales_return_lines,
                 )
+                await container.cache_service().delete_prefix(CHAT_RESPONSE_CACHE_PREFIX)
             finally:
                 await container.postgres_client().close()
 

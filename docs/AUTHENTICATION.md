@@ -1,11 +1,11 @@
-# Authentication
+# Xác thực
 
-The API uses `guest`, `staff`, and `admin` roles with short-lived HS256 access tokens and
-rotating, database-backed refresh tokens.
+API dùng ba vai trò `guest`, `staff` và `admin`, với access token HS256 có thời hạn ngắn và
+refresh token được lưu trong cơ sở dữ liệu, xoay vòng (rotate) sau mỗi lần dùng.
 
-## Setup
+## Thiết lập
 
-Configure a unique secret (at least 32 characters) in `config/local.yml`:
+Cấu hình một secret riêng (tối thiểu 32 ký tự) trong `config/local.yml`:
 
 ```yaml
 auth:
@@ -16,60 +16,67 @@ auth:
   refresh_token_days: 30
 ```
 
-Apply the schema migration before starting the API:
+Chạy migration schema trước khi khởi động API:
 
 ```powershell
 cd backend
 .\env\Scripts\python.exe -m alembic upgrade head
 ```
 
-Create the first administrator from the backend directory:
+Tạo quản trị viên đầu tiên từ thư mục backend:
 
 ```powershell
 .\env\Scripts\python.exe create_admin.py --email admin@example.com --name "Administrator"
 ```
 
-The migration intentionally sets legacy `conversations.user_id` values to `NULL`, because
-those values predate authenticated identities. They remain in the database but are not
-visible to authenticated users.
+Migration chủ ý đặt các giá trị `conversations.user_id` cũ về `NULL`, vì các giá trị đó có
+trước khi có danh tính được xác thực. Dữ liệu vẫn nằm trong cơ sở dữ liệu nhưng người dùng đã
+xác thực không nhìn thấy.
 
-## Endpoints
+## Endpoint
 
-- `POST /api/v1/auth/guest` — creates an anonymous guest session; no login required
+- `POST /api/v1/auth/guest` — tạo phiên khách ẩn danh; không cần đăng nhập
 - `POST /api/v1/auth/login`
 - `POST /api/v1/auth/refresh`
 - `POST /api/v1/auth/logout`
 - `GET /api/v1/auth/me`
-- `POST /api/v1/auth/staff` — admin only; creates a staff account
+- `POST /api/v1/auth/staff` — chỉ admin; tạo tài khoản staff
 
-All chat, conversation, and document-search endpoints require:
+Mọi endpoint, trừ `/auth/guest`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/health`
+và `/`, đều yêu cầu:
 
 ```http
 Authorization: Bearer <access_token>
 ```
 
-Refresh tokens are single-use. Refreshing consumes the old token and returns a new token
-pair; logging out revokes the current refresh token.
+Các endpoint hội thoại, tìm tài liệu (`/search-documents`) và toàn bộ `/analytics/*` yêu cầu
+thêm vai trò `staff` hoặc `admin`. `/chat` và `/chat/stream` chấp nhận guest thông qua luồng
+stateless được mô tả bên dưới.
 
-Guests are represented by database users without an email or password so their conversations
-remain isolated and can survive a browser refresh. Only staff and admins can log in. Public
-registration is intentionally unavailable.
+Refresh token chỉ dùng được một lần. Khi refresh, token cũ bị tiêu thụ và hệ thống trả về một
+cặp token mới; đăng xuất sẽ thu hồi refresh token hiện tại.
 
-## Chat authorization matrix
+Mỗi lần gọi `POST /auth/guest` tạo một người dùng có vai trò `guest` trong cơ sở dữ liệu, không
+có email và mật khẩu, để khách có thể giữ một cặp token. Khách không có hội thoại: mỗi tin nhắn
+của khách được trả lời độc lập và không có gì được lưu. Endpoint này không yêu cầu xác thực và
+không giới hạn tần suất (rate limit), nên mỗi lần gọi thêm một dòng vào `users`. Chỉ staff và
+admin mới đăng nhập được. Chủ ý không có đăng ký công khai.
 
-| Capability | Guest | Staff | Admin |
+## Ma trận phân quyền chat
+
+| Chức năng | Guest | Staff | Admin |
 |---|---:|---:|---:|
-| Stateless single-message chat | Yes | No | No |
-| Conversation-based chat | No | Yes, own only | Yes, own only |
-| Create conversations | No | Yes | Yes |
-| Read conversation history | No | Own only | All users |
-| Rename/delete conversations | No | Own only | Own only |
-| Query store business data through SQL/RAG | No | Yes | Yes |
-| Create staff accounts | No | No | Yes |
+| Chat một tin nhắn, stateless | Có | Không | Không |
+| Chat theo hội thoại | Không | Có, chỉ của mình | Có, chỉ của mình |
+| Tạo hội thoại | Không | Có | Có |
+| Đọc lịch sử hội thoại | Không | Chỉ của mình | Của mọi người dùng |
+| Đổi tên/xóa hội thoại | Không | Chỉ của mình | Chỉ của mình |
+| Truy vấn dữ liệu kinh doanh của cửa hàng qua SQL/RAG | Không | Có | Có |
+| Tạo tài khoản staff | Không | Không | Có |
 
-Guest requests run through a separate stateless response path with no repository, SQL, RAG,
-cache, or conversation-history access. Queries classified as requiring business tools return
-HTTP 403 before response streaming starts.
+Yêu cầu của guest chạy qua một luồng phản hồi stateless riêng, không truy cập repository, SQL,
+RAG, cache hay lịch sử hội thoại. Các truy vấn được phân loại là cần công cụ dữ liệu kinh doanh
+trả về HTTP 403 trước khi bắt đầu stream phản hồi.
 
-Admins have global read access for auditing, but a conversation owned by another account is
-strictly read-only. Continuing chat, renaming, or deleting it returns HTTP 403.
+Admin có quyền đọc toàn cục để kiểm tra, nhưng hội thoại thuộc tài khoản khác hoàn toàn chỉ đọc.
+Tiếp tục chat, đổi tên hoặc xóa hội thoại đó trả về HTTP 403.

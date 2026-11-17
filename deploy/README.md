@@ -1,121 +1,35 @@
-# Face Recognition Service - Docker Deployment
+# Hạ tầng local (Docker Compose)
 
-This directory contains Docker configuration files for deploying the Face Recognition Service.
+`docker-compose.yml` chỉ dựng các dịch vụ hạ tầng cho backend; FastAPI chạy trực tiếp trên máy bằng `python main.py`, không có service ứng dụng trong compose.
 
-## Files
+## Dịch vụ
 
-- `Dockerfile` - Main Docker image configuration
-- `docker-compose.yml` - Complete service stack with dependencies
-- `.dockerignore` - Files to exclude from Docker build context
+| Service | Image | Cổng host | Vai trò |
+| --- | --- | --- | --- |
+| `postgres` | postgres:16 | 5432 | Dữ liệu nghiệp vụ, xác thực, hội thoại. User/DB mặc định trong compose: `congvq` / `ai_assistant`, `TZ=Asia/Ho_Chi_Minh` |
+| `redis` | redis:6.0 | 6379 | Cache câu trả lời chat (TTL 1 giờ) |
+| `milvus-standalone` | milvusdb/milvus:v2.5.5 | 19530, 9091 (health) | Vector search cho RAG |
+| `etcd` | quay.io/coreos/etcd:v3.5.15 | — | Metadata của Milvus |
+| `minio` | minio/minio | 9000, 9001 (console) | Object storage của Milvus, tài khoản mặc định `minioadmin` |
+| `attu` | zilliz/attu | 8080 | Giao diện quản trị Milvus |
 
-## Services Included
+Volume: `postgres_data`, `redis_data`, `milvus_data`, `etcd_data`, `minio_data`. Volume `rabbitmq_data` được khai báo nhưng không service nào dùng.
 
-### Core Services
-- **face-recognition-service**: Main FastAPI application
-- **mongodb**: MongoDB database for storing face and person data
-- **milvus-standalone**: Vector database for face embeddings
+Thông tin kết nối trong `config/local.yml` (hoặc biến môi trường `DATABASE__*`, `CACHE__*`, `VECTOR_DB__*`) phải khớp với compose. Mật khẩu mặc định trong compose chỉ dành cho máy local; đổi trước khi mở cổng ra ngoài.
 
-### Supporting Services
-- **etcd**: Key-value store for Milvus
-- **minio**: Object storage for Milvus
+## Lệnh
 
-## Quick Start
+Luôn dùng project name `ai_assistant`. Nếu bỏ `--project-name`, Compose đặt tên project theo thư mục (`deploy`) và tạo volume PostgreSQL mới, trống.
 
-### 1. Build and Run All Services
-```bash
-cd deploy
-docker-compose up -d
+```powershell
+cd D:\AI_ASSISTANT\backend
+docker compose --project-name ai_assistant -f deploy\docker-compose.yml up -d
+docker compose --project-name ai_assistant -f deploy\docker-compose.yml ps
+docker compose --project-name ai_assistant -f deploy\docker-compose.yml down   # giữ volume
 ```
 
-### 2. Build Only the Face Recognition Service
-```bash
-cd deploy
-docker build -t face-recognition-service .
-```
+Không dùng `down -v` trừ khi chủ động xóa toàn bộ dữ liệu. Sau khi hạ tầng chạy: `alembic upgrade head`, `create_admin.py`, đồng bộ dữ liệu rồi `main.py` (xem [readme.md](../readme.md)). Khi backend báo WinError 1225/10061 dù container healthy, xem mục khôi phục trong [DEPLOY_LOCAL_BACKEND.md](../../DEPLOY_LOCAL_BACKEND.md).
 
-### 3. Run Individual Services
-```bash
-# Start only databases
-docker-compose up -d mongodb milvus-standalone
+## File khác trong thư mục
 
-# Start the face recognition service
-docker-compose up -d face-recognition-service
-```
-
-## Configuration
-
-### Environment Variables
-- `SERVICE_CONFIG`: Path to configuration file (default: config/local.yml)
-- `MILVUS_HOST`: Milvus server host (default: milvus-standalone)
-- `MILVUS_PORT`: Milvus server port (default: 19530)
-- `MONGODB_URL`: MongoDB connection URL (default: mongodb://mongodb:27017)
-- `MONGODB_DATABASE`: MongoDB database name (default: ai_assistant_db)
-
-### Volumes
-- `../config:/app/config` - Configuration files
-- `../models:/app/models` - Face recognition models
-- `../logs:/app/logs` - Application logs
-
-## Health Checks
-
-The face recognition service includes health check endpoints:
-- `GET /api/v1/face-recognition/health` - Service health status
-
-## Ports
-
-- **8000**: Face Recognition Service API
-- **27017**: MongoDB
-- **19530**: Milvus
-- **9000**: MinIO API
-- **9001**: MinIO Console
-
-## Development
-
-### Local Development with Docker
-```bash
-# Start only databases
-docker-compose up -d mongodb milvus-standalone
-
-# Run service locally
-python run_service.py
-```
-
-### Debug Mode
-```bash
-# Run with debug logging
-docker-compose up face-recognition-service
-```
-
-## Troubleshooting
-
-### Check Service Status
-```bash
-docker-compose ps
-```
-
-### View Logs
-```bash
-# All services
-docker-compose logs
-
-# Specific service
-docker-compose logs face-recognition-service
-```
-
-### Restart Services
-```bash
-# Restart all
-docker-compose restart
-
-# Restart specific service
-docker-compose restart face-recognition-service
-```
-
-### Clean Up
-```bash
-# Stop and remove containers
-docker-compose down
-
-# Stop and remove containers with volumes
-docker-compose down -v
-```
+`Dockerfile` và `.dockerignore` chưa được compose tham chiếu và chưa có quy trình build image backend. `COPY requirements.txt .` yêu cầu build context là `backend/`, không phải `deploy/`.
