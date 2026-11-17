@@ -3,12 +3,12 @@ from .base import ApplicationError, ErrorType
 from .configuration import ConfigurationError
 from .types import (
     ConflictError, ExternalServiceError, InternalError, NotFoundError,
-    OperationTimeoutError, PermissionDeniedError, RequestValidationError,
+    OperationTimeoutError, PermissionDeniedError, RateLimitedError, RequestValidationError,
     UnauthorizedError, ValidationError,
 )
 
 __all__ = [
     "ApplicationError", "ErrorType", "ConfigurationError", "ConflictError",
     "ExternalServiceError", "InternalError", "NotFoundError", "OperationTimeoutError",
-    "PermissionDeniedError", "RequestValidationError", "UnauthorizedError", "ValidationError",
+    "PermissionDeniedError", "RateLimitedError", "RequestValidationError", "UnauthorizedError", "ValidationError",
 ]

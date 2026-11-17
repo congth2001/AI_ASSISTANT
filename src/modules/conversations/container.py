@@ -15,7 +15,7 @@ class ConversationsContainer(containers.DeclarativeContainer):
         ConversationRepository, session_factory=session_factory
     )
 
-    use_case_conversation = Singleton(
+    conversation_use_case = Singleton(
         ConversationUseCase,
         conversation_repo=conversation_repo,
     )

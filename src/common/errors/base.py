@@ -9,6 +9,7 @@ class ErrorType(str, Enum):
     VALIDATION = "validation"
     INVALID_REQUEST = "invalid_request"
     CONFLICT = "conflict"
+    RATE_LIMITED = "rate_limited"
     CONFIGURATION = "configuration"
     TIMEOUT = "timeout"
     EXTERNAL_SERVICE = "external_service"

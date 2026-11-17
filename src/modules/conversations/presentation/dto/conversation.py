@@ -1,16 +1,39 @@
-from pydantic import BaseModel
+import json
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
+from src.modules.conversations.domain.errors import (
+    ConversationMetadataInvalidError,
+    ConversationMetadataTooLargeError,
+)
+
+MAX_TITLE_LENGTH = 200
+MAX_METADATA_BYTES = 8 * 1024
+
 
 class CreateConversationRequest(BaseModel):
-    title: Optional[str] = "New Conversation"
-    user_id: Optional[str] = None
+    # Unknown fields (e.g. a client-sent user_id) are ignored: the owner is always the caller.
+    model_config = ConfigDict(extra="ignore")
+
+    title: Optional[str] = Field(default="New Conversation", max_length=MAX_TITLE_LENGTH)
     metadata: Optional[Dict[str, Any]] = None
+
+    @field_validator("metadata")
+    @classmethod
+    def limit_metadata_size(cls, value: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if value is not None:
+            try:
+                size = len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+            except (TypeError, ValueError):
+                raise ConversationMetadataInvalidError() from None
+            if size > MAX_METADATA_BYTES:
+                raise ConversationMetadataTooLargeError(max_bytes=MAX_METADATA_BYTES)
+        return value
 
 
 class RenameConversationRequest(BaseModel):
-    title: str
+    title: str = Field(min_length=1, max_length=MAX_TITLE_LENGTH)
 
 
 class MessageResponse(BaseModel):

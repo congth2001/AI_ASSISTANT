@@ -1,5 +1,5 @@
 """HTTP composition: aggregate module routers and public service endpoints."""
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from src.modules.assistant.presentation import router as chat_routes
 from src.modules.auth.presentation import router as auth_routes
@@ -23,9 +23,10 @@ async def health_check():
 
 
 @router.get("/")
-async def root():
+async def root(request: Request):
     return {
         "message": "Business Chatbot API",
         "version": "1.0.0",
-        "docs": "/docs",
+        # Swagger can be disabled via api.docs_enabled.
+        "docs": request.app.docs_url,
     }

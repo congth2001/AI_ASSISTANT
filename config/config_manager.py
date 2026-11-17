@@ -65,10 +65,6 @@ class ConfigManager:
             self._database = self._load(DatabaseConfiguration).database
         return self._database
 
-    def load_config(self) -> dict:
-        """Compatibility entry point: validated data with SecretStr values still protected."""
-        return self.get_settings().model_dump()
-
     def reload_config(self) -> Settings:
         """Invalidate both caches; existing DI singletons require an application restart."""
         self._settings = None
@@ -85,7 +81,3 @@ def get_settings() -> Settings:
 
 def get_database_settings() -> DatabaseSettings:
     return config_manager.get_database_settings()
-
-
-def reload_config() -> Settings:
-    return config_manager.reload_config()

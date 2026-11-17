@@ -31,7 +31,8 @@ class Container(containers.DeclarativeContainer):
     auth_repository = auth.auth_repository
     auth_use_case = auth.auth_use_case
     conversation_repo = conversations.conversation_repo
-    use_case_conversation = conversations.use_case_conversation
+    conversation_use_case = conversations.conversation_use_case
+    use_case_conversation = conversation_use_case  # legacy alias (same provider)
     customer_repo = sales.customer_repo
     sales_invoice_repo = sales.sales_invoice_repo
     sales_invoice_line_repo = sales.sales_invoice_line_repo

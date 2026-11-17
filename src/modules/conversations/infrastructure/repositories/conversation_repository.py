@@ -1,13 +1,26 @@
-import asyncio
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, update
 
-from src.modules.conversations.domain.repositories.i_conversation_repository import IConversationRepository
 from src.common.domain.time import as_vietnam_time
-from src.modules.conversations.infrastructure.models import ConversationModel, MessageModel
+from src.common.infrastructure.database.orm_utils import model_to_dict
 from src.modules.auth.infrastructure.models import UserModel
+from src.modules.conversations.domain.entities.message import Message
+from src.modules.conversations.domain.errors import (
+    ConversationNotFoundError,
+    ConversationScopeRequiredError,
+)
+from src.modules.conversations.domain.repositories.i_conversation_repository import (
+    MAX_CONVERSATION_PAGE_SIZE,
+    IConversationRepository,
+)
+from src.modules.conversations.infrastructure.models import ConversationModel, MessageModel
+
+
+def _clamp_page(limit: int, offset: int) -> tuple[int, int]:
+    return max(1, min(int(limit), MAX_CONVERSATION_PAGE_SIZE)), max(0, int(offset))
 
 
 class ConversationRepository(IConversationRepository):
@@ -18,11 +31,7 @@ class ConversationRepository(IConversationRepository):
 
     @staticmethod
     def _to_dict(model) -> Dict[str, Any]:
-        data = {
-            key: value
-            for key, value in model.__dict__.items()
-            if not key.startswith("_")
-        }
+        data = model_to_dict(model)
         for field in ("created_at", "updated_at", "deleted_at"):
             if field in data:
                 data[field] = as_vietnam_time(data[field])
@@ -38,6 +47,13 @@ class ConversationRepository(IConversationRepository):
             "email": user.email,
             "role": user.role,
         }
+
+    @staticmethod
+    def _require_owner(user_id: Optional[str]) -> str:
+        """Owner scoped methods never fall back to 'all conversations' for a missing owner."""
+        if user_id is None:
+            raise ConversationScopeRequiredError()
+        return user_id
 
     async def create_conversation(self, conversation_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create a new conversation"""
@@ -57,49 +73,60 @@ class ConversationRepository(IConversationRepository):
                 "owner": self._owner_to_dict(owner),
             }
 
-    async def get_all_conversations(self, user_id: Optional[str]) -> List[Dict[str, Any]]:
-        """Get all conversations"""
+    async def _list(self, conditions: list, limit: int, offset: int) -> List[Dict[str, Any]]:
+        limit, offset = _clamp_page(limit, offset)
         async with self.session_factory() as session:
-            conditions = [ConversationModel.deleted_at.is_(None)]
-            if user_id is not None:
-                conditions.append(ConversationModel.user_id == user_id)
             result = await session.execute(
                 select(ConversationModel, UserModel)
                 .outerjoin(UserModel, UserModel.id == ConversationModel.user_id)
-                .where(*conditions)
+                .where(ConversationModel.deleted_at.is_(None), *conditions)
+                # id as tie breaker keeps pagination stable for equal timestamps.
+                .order_by(ConversationModel.updated_at.desc().nulls_last(), ConversationModel.id)
+                .limit(limit)
+                .offset(offset)
             )
             return [
-                {
-                    **self._to_dict(conversation),
-                    "owner": self._owner_to_dict(owner),
-                }
+                {**self._to_dict(conversation), "owner": self._owner_to_dict(owner)}
                 for conversation, owner in result.all()
             ]
 
-    async def get_conversation(
-        self, conversation_id: UUID, turn_limit: int = 10, user_id: Optional[str] = ""
-    ) -> Optional[Dict[str, Any]]:
-        """Get conversation by ID with specified number of most recent turns"""
-        conv_id_str = str(conversation_id)
+    async def list_conversations_for_owner(
+        self, owner_id: str, limit: int = MAX_CONVERSATION_PAGE_SIZE, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        owner_id = self._require_owner(owner_id)
+        return await self._list([ConversationModel.user_id == owner_id], limit, offset)
 
-        async def _fetch_conversation():
-            async with self.session_factory() as session:
-                conditions = [
-                    ConversationModel.id == conv_id_str,
-                    ConversationModel.deleted_at.is_(None),
-                ]
-                if user_id is not None:
-                    conditions.append(ConversationModel.user_id == user_id)
-                result = await session.execute(
+    async def list_conversations_as_admin(
+        self, limit: int = MAX_CONVERSATION_PAGE_SIZE, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        return await self._list([], limit, offset)
+
+    async def _get_with_messages(
+        self, conversation_id: UUID, turn_limit: int, owner_id: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Authorize first (single query), then load messages only for a visible conversation."""
+        conv_id_str = str(conversation_id)
+        conditions = [
+            ConversationModel.id == conv_id_str,
+            ConversationModel.deleted_at.is_(None),
+        ]
+        if owner_id is not None:
+            conditions.append(ConversationModel.user_id == owner_id)
+
+        async with self.session_factory() as session:
+            found = (
+                await session.execute(
                     select(ConversationModel, UserModel)
                     .outerjoin(UserModel, UserModel.id == ConversationModel.user_id)
                     .where(*conditions)
                 )
-                return result.one_or_none()
+            ).one_or_none()
+            if found is None:
+                return None
+            conv_row, owner_row = found
 
-        async def _fetch_messages():
-            async with self.session_factory() as session:
-                result = await session.execute(
+            msg_rows = (
+                await session.execute(
                     select(MessageModel)
                     .where(
                         MessageModel.conversation_id == conv_id_str,
@@ -109,15 +136,7 @@ class ConversationRepository(IConversationRepository):
                     .order_by(MessageModel.created_at.desc())
                     .limit(turn_limit * 2)
                 )
-                return result.scalars().all()
-
-        conversation_result, msg_rows = await asyncio.gather(
-            _fetch_conversation(), _fetch_messages()
-        )
-
-        if conversation_result is None:
-            return None
-        conv_row, owner_row = conversation_result
+            ).scalars().all()
 
         conv_data = self._to_dict(conv_row)
         conv_data["owner"] = self._owner_to_dict(owner_row)
@@ -128,19 +147,31 @@ class ConversationRepository(IConversationRepository):
             conv_data["messages"].append(message_data)
         return conv_data
 
+    async def get_conversation(
+        self, conversation_id: UUID, turn_limit: int = 10, user_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Get an owned conversation with the specified number of most recent turns."""
+        return await self._get_with_messages(conversation_id, turn_limit, self._require_owner(user_id))
+
+    async def get_conversation_as_admin(
+        self, conversation_id: UUID, turn_limit: int = 10
+    ) -> Optional[Dict[str, Any]]:
+        return await self._get_with_messages(conversation_id, turn_limit, None)
+
     async def update_conversation(
         self, conversation_id: UUID, updates: Dict[str, Any], user_id: Optional[str]
     ) -> bool:
-        """Update conversation"""
+        """Update an owned conversation"""
+        owner_id = self._require_owner(user_id)
         async with self.session_factory() as session:
-            conditions = [
-                ConversationModel.id == str(conversation_id),
-                ConversationModel.deleted_at.is_(None),
-            ]
-            if user_id is not None:
-                conditions.append(ConversationModel.user_id == user_id)
             result = await session.execute(
-                update(ConversationModel).where(*conditions).values(**updates)
+                update(ConversationModel)
+                .where(
+                    ConversationModel.id == str(conversation_id),
+                    ConversationModel.deleted_at.is_(None),
+                    ConversationModel.user_id == owner_id,
+                )
+                .values(**updates)
             )
             await session.commit()
             return result.rowcount > 0
@@ -156,23 +187,50 @@ class ConversationRepository(IConversationRepository):
                 extra_metadata=message_data.get('metadata'),
             )
             session.add(message)
+            await session.execute(
+                update(ConversationModel)
+                .where(ConversationModel.id == str(conversation_id))
+                .values(updated_at=datetime.now(timezone.utc))
+            )
             await session.commit()
             return True
 
-    async def get_conversation_messages(
-        self, conversation_id: UUID, user_id: Optional[str], limit: int = 50
-    ) -> List[Dict[str, Any]]:
-        """Get messages for a conversation"""
-        async with self.session_factory() as session:
-            conditions = [MessageModel.conversation_id == str(conversation_id)]
-            if user_id is not None:
-                conditions.append(ConversationModel.user_id == user_id)
-            result = await session.execute(
-                select(MessageModel)
-                .join(ConversationModel, ConversationModel.id == MessageModel.conversation_id)
-                .where(*conditions)
-                .order_by(MessageModel.created_at.asc())
-                .limit(limit)
+    async def add_messages(self, conversation_id: UUID, messages: List[Dict[str, Any]]) -> List[Message]:
+        """Persist messages atomically: either every message is stored or none is."""
+        if not messages:
+            return []
+        conv_id_str = str(conversation_id)
+        now = datetime.now(timezone.utc)
+        models: list[MessageModel] = []
+        for index, data in enumerate(messages):
+            models.append(MessageModel(
+                id=str(data.get('id') or uuid4()),
+                conversation_id=conv_id_str,
+                content=data['content'],
+                role=data['role'],
+                extra_metadata=data.get('metadata'),
+                # Strictly increasing timestamps keep the intended order inside one transaction.
+                created_at=data.get('timestamp') or now + timedelta(microseconds=index),
+            ))
+
+        async with self.session_factory() as session, session.begin():
+            touched = await session.execute(
+                update(ConversationModel)
+                .where(ConversationModel.id == conv_id_str, ConversationModel.deleted_at.is_(None))
+                .values(updated_at=now)
             )
-            rows = result.scalars().all()
-            return [self._to_dict(row) for row in rows]
+            if touched.rowcount == 0:
+                raise ConversationNotFoundError()
+            session.add_all(models)
+
+        return [
+            Message(
+                id=UUID(model.id),
+                conversation_id=conversation_id if isinstance(conversation_id, UUID) else UUID(conv_id_str),
+                content=model.content,
+                role=model.role,
+                timestamp=as_vietnam_time(model.created_at),
+                metadata=model.extra_metadata,
+            )
+            for model in models
+        ]

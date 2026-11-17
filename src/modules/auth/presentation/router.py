@@ -1,5 +1,5 @@
 from dependency_injector.wiring import Provide, inject
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from config.container import Container
@@ -10,6 +10,7 @@ from src.common.errors import (
     PermissionDeniedError,
     UnauthorizedError,
 )
+from src.common.presentation.rate_limit import enforce_rate_limit, rate_limit
 
 router = APIRouter(prefix="/auth")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -33,7 +34,12 @@ def require_role(*allowed_roles: str):
     return role_dependency
 
 
-@router.post("/guest", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/guest",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(rate_limit("guest_ip", default_limit=10))],
+)
 @inject
 async def guest_session(
     auth_use_case: AuthUseCase = Depends(Provide[Container.auth_use_case]),
@@ -54,16 +60,30 @@ async def create_staff(
     return UserResponse(**user)
 
 
-@router.post("/login", response_model=TokenResponse)
+@router.post(
+    "/login",
+    response_model=TokenResponse,
+    dependencies=[Depends(rate_limit("login_ip", default_limit=10))],
+)
 @inject
 async def login(
     request: LoginRequest,
+    http_request: Request,
     auth_use_case: AuthUseCase = Depends(Provide[Container.auth_use_case]),
 ) -> TokenResponse:
+    # Per-account limit slows credential stuffing that rotates IP addresses.
+    await enforce_rate_limit(
+        http_request, "login_email", default_limit=5,
+        key=request.email.strip().lower(), hash_key=True,
+    )
     return TokenResponse(**await auth_use_case.login(request.email, request.password))
 
 
-@router.post("/refresh", response_model=TokenResponse)
+@router.post(
+    "/refresh",
+    response_model=TokenResponse,
+    dependencies=[Depends(rate_limit("refresh_ip", default_limit=30))],
+)
 @inject
 async def refresh(
     request: RefreshRequest,

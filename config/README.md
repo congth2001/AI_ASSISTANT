@@ -34,7 +34,15 @@ API__DEBUG=false
 API__CORS_ORIGINS=["https://example.com","http://localhost:5173"]
 ```
 
-Danh sách/object dùng JSON trong biến môi trường. Chuỗi như mật khẩu `001234` giữ nguyên; không có bước tự ép mọi giá trị thành int/float. Các biến không thuộc schema trong `.env` được bỏ qua; field lồng nhau sai tên và key YAML không nhận diện sẽ bị từ chối. Biến đặc biệt `PUBLIC_FRONTEND_ORIGINS` vẫn được main.py đọc từ môi trường tiến trình.
+Danh sách/object dùng JSON trong biến môi trường. Chuỗi như mật khẩu `001234` giữ nguyên; không có bước tự ép mọi giá trị thành int/float. Các biến không thuộc schema trong `.env` được bỏ qua; field lồng nhau sai tên và key YAML không nhận diện sẽ bị từ chối. Biến cũ `PUBLIC_FRONTEND_ORIGINS` (danh sách phân tách bằng dấu phẩy) vẫn được `main.py` đọc từ môi trường tiến trình để tương thích; cách mới là `api.public_frontend_origins` (YAML hoặc `API__PUBLIC_FRONTEND_ORIGINS='["https://app.example.com"]'`). Cả `api.cors_origins` và origin public được chuẩn hóa/validate (dạng `http(s)://host[:port]`) và từ chối `*`.
+
+## Cấu hình API, rate limit và auth bổ sung
+
+- `api.host` mặc định `127.0.0.1` (chỉ máy local); đặt `0.0.0.0` khi cần truy cập từ xa.
+- `api.docs_enabled` (mặc định `true`) bật/tắt `/docs`, `/redoc`, `/openapi.json`; nên tắt khi public.
+- `rate_limit.*`: giới hạn cửa sổ trượt trong bộ nhớ cho `/auth/login` (theo IP và theo email), `/auth/guest`, `/auth/refresh`; trả `429` kèm `Retry-After`. Mỗi process có bộ đếm riêng và restart sẽ xóa bộ đếm. `trust_forwarded_for` chỉ bật khi chạy sau đúng một reverse proxy tin cậy (ngrok/Cloudflare), khi đó IP lấy từ mục ngoài cùng bên phải của `X-Forwarded-For`; nếu không bật, mọi client sau proxy dùng chung một bucket IP.
+- `auth.refresh_reuse_grace_seconds` (mặc định `0`): dùng lại refresh token đã bị tiêu thụ sẽ thu hồi toàn bộ refresh token của user và trả `401`. Đặt vài giây nếu nhiều tab trình duyệt có thể refresh đồng thời bằng cùng một token.
+- `database.username` không còn mặc định theo tên cá nhân (mặc định `postgres`); `DatabaseSettings.url` và `Settings.to_container_config()` chứa secret rõ, không log/in chúng.
 
 ## Cấu hình bắt buộc và secrets
 

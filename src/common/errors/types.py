@@ -56,3 +56,15 @@ class ExternalServiceError(InternalError):
     code = "external_service"
     error_type = ErrorType.EXTERNAL_SERVICE
     message_template = "External service unavailable"
+
+
+class RateLimitedError(ApplicationError):
+    """Too many requests; ``retry_after`` (seconds) is exposed as the Retry-After header."""
+
+    code = "rate_limited"
+    error_type = ErrorType.RATE_LIMITED
+    message_template = "Too many requests. Please retry later"
+
+    def __init__(self, message: str | None = None, *, retry_after: int = 1, **parameters):
+        super().__init__(message, **parameters)
+        self.retry_after = max(1, int(retry_after))

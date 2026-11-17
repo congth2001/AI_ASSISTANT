@@ -3,6 +3,7 @@ from src.common.errors import (
     InternalError,
     NotFoundError,
     PermissionDeniedError,
+    ValidationError,
 )
 
 
@@ -13,7 +14,14 @@ class ConversationNotFoundError(NotFoundError):
 
 class ConversationReadOnlyError(PermissionDeniedError):
     code = 'conversation_read_only'
-    message_template = 'Conversation của tài khoản khác chỉ được phép xem'
+    message_template = 'Conversations owned by other accounts are read-only'
+
+
+class ConversationScopeRequiredError(InternalError):
+    """Programming error: a conversation was accessed without an owner or an explicit admin scope."""
+
+    code = 'conversation_scope_required'
+    message_template = 'Conversation access requires an owner id or an explicit admin scope'
 
 
 class ConversationReadFailedError(InternalError):
@@ -39,3 +47,13 @@ class ConversationRenameFailedError(InternalError):
 class ConversationDeleteFailedError(InternalError):
     code = 'conversation_delete_failed'
     message_template = 'Error deleting conversation'
+
+
+class ConversationMetadataInvalidError(ValidationError):
+    code = 'conversation_metadata_invalid'
+    message_template = 'Conversation metadata must be JSON serializable'
+
+
+class ConversationMetadataTooLargeError(ValidationError):
+    code = 'conversation_metadata_too_large'
+    message_template = 'Conversation metadata must not exceed {max_bytes} bytes of JSON'

@@ -1,22 +1,20 @@
 import logging
-from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.engine import URL
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 
 logger = logging.getLogger(__name__)
 
 
-class PostgresClient():
+class PostgresClient:
     def __init__(
         self,
         url: str | URL,
         echo: bool = False,
     ):
-        self._engine: AsyncEngine = create_async_engine(url, echo=echo)
-        self._session_factory = sessionmaker(
+        # pool_pre_ping discards connections dropped while idle (Docker/network restarts).
+        self._engine: AsyncEngine = create_async_engine(url, echo=echo, pool_pre_ping=True)
+        self._session_factory = async_sessionmaker(
             bind=self._engine,
             class_=AsyncSession,
             expire_on_commit=False,
@@ -28,24 +26,8 @@ class PostgresClient():
         return self._engine
 
     @property
-    def session_factory(self):
+    def session_factory(self) -> async_sessionmaker[AsyncSession]:
         return self._session_factory
-
-    @asynccontextmanager
-    async def get_session(self) -> AsyncGenerator[AsyncSession, None]:
-        async with self._session_factory() as session:
-            try:
-                yield session
-                await session.commit()
-            except Exception:
-                await session.rollback()
-                raise
-
-    async def init_db(self, base) -> None:
-        """Create all tables defined in SQLAlchemy models."""
-        async with self._engine.begin() as conn:
-            await conn.run_sync(base.metadata.create_all)
-        logger.info("Database tables created")
 
     async def close(self) -> None:
         await self._engine.dispose()

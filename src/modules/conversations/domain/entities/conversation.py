@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, List
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from src.modules.conversations.domain.entities.message import Message
 from src.common.domain.time import now_vietnam

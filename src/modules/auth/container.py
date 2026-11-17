@@ -29,4 +29,5 @@ class AuthContainer(containers.DeclarativeContainer):
         token_service=token_service,
         access_token_minutes=config.auth.access_token_minutes,
         refresh_token_days=config.auth.refresh_token_days,
+        refresh_reuse_grace_seconds=config.auth.refresh_reuse_grace_seconds,
     )

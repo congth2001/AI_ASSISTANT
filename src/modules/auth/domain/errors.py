@@ -2,6 +2,7 @@
 from src.common.errors import (
     ConflictError,
     ErrorType,
+    PermissionDeniedError,
     UnauthorizedError,
     ValidationError,
 )
@@ -11,8 +12,7 @@ class AuthenticationError(UnauthorizedError):
     code = "authentication_error"
 
 
-class StaffCreationForbiddenError(AuthenticationError):
-    error_type = ErrorType.NOT_PERMISSION
+class StaffCreationForbiddenError(PermissionDeniedError):
     code = 'staff_creation_forbidden'
     message_template = 'Only administrators can create staff accounts'
 
@@ -66,3 +66,8 @@ class InvalidTokenError(AuthenticationError):
 class InvalidEmailError(ValidationError):
     code = 'invalid_email'
     message_template = 'Invalid email address'
+
+
+class PasswordTooLongError(ValidationError):
+    code = 'password_too_long'
+    message_template = 'Password must not exceed {max_bytes} bytes when UTF-8 encoded'

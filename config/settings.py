@@ -84,11 +84,12 @@ class EmbeddingSettings(ConfigModel):
 class DatabaseSettings(ConfigModel):
     host: NonEmpty = "localhost"
     port: Port = 5432
-    username: NonEmpty = "congvq"
+    username: NonEmpty = "postgres"
     password: SecretStr = SecretStr("")
     db_name: NonEmpty = "ai_assistant"
     echo: bool = False
-    query: dict[str, str | tuple[str, ...]] = Field(default_factory=dict)
+    # Driver query options may carry credentials (e.g. sslpassword): keep them out of repr().
+    query: dict[str, str | tuple[str, ...]] = Field(default_factory=dict, repr=False)
 
     @model_validator(mode="before")
     @classmethod
@@ -114,7 +115,11 @@ class DatabaseSettings(ConfigModel):
 
     @property
     def url(self) -> str:
-        """Unmasked URL for drivers only; never log this value."""
+        """Unmasked URL for drivers only.
+
+        WARNING: contains the plaintext password. Never log, print or include it in an error
+        message; use ``sqlalchemy_url.render_as_string(hide_password=True)`` for display.
+        """
         return self.sqlalchemy_url.render_as_string(hide_password=False)
 
 
@@ -126,13 +131,54 @@ class CacheSettings(ConfigModel):
     password: SecretStr | None = None
 
 
+def normalize_origin(value: str) -> str:
+    origin = value.strip().rstrip("/")
+    if origin == "*" or "*" in origin:
+        raise ValueError("CORS origins must be explicit; wildcard origins are not allowed")
+    scheme, separator, host = origin.partition("://")
+    if scheme not in {"http", "https"} or not separator or not host or "/" in host:
+        raise ValueError("CORS origin must look like http(s)://host[:port]")
+    return origin
+
+
 class APISettings(ConfigModel):
-    host: NonEmpty = "0.0.0.0"
+    # Loopback by default; bind 0.0.0.0 explicitly (api.host) when the API must be reachable remotely.
+    host: NonEmpty = "127.0.0.1"
     port: Port = 8000
     debug: bool = False
+    # Swagger UI and ReDoc; disable (api.docs_enabled: false) on public deployments.
+    docs_enabled: bool = True
     cors_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
+    # Deployed frontend origins; the legacy PUBLIC_FRONTEND_ORIGINS env var is merged in main.py.
+    public_frontend_origins: list[str] = Field(default_factory=list)
+
+    @field_validator("cors_origins", "public_frontend_origins")
+    @classmethod
+    def validate_origins(cls, values: list[str]) -> list[str]:
+        return [normalize_origin(value) for value in values]
+
+
+class RateLimitSettings(ConfigModel):
+    """In-memory, per-process sliding-window limits for unauthenticated endpoints."""
+    enabled: bool = True
+    window_seconds: int = Field(default=60, gt=0)
+    login_per_ip: int = Field(default=10, gt=0)
+    login_per_email: int = Field(default=5, gt=0)
+    guest_per_ip: int = Field(default=10, gt=0)
+    refresh_per_ip: int = Field(default=30, gt=0)
+    # Read the client IP from the right-most X-Forwarded-For entry. Enable only behind one
+    # trusted reverse proxy (ngrok, Cloudflare tunnel); otherwise clients could spoof it.
+    trust_forwarded_for: bool = False
+
+    def limits(self) -> dict[str, int]:
+        return {
+            "login_ip": self.login_per_ip,
+            "login_email": self.login_per_email,
+            "guest_ip": self.guest_per_ip,
+            "refresh_ip": self.refresh_per_ip,
+        }
 
 
 class AuthSettings(ConfigModel):
@@ -141,6 +187,10 @@ class AuthSettings(ConfigModel):
     jwt_audience: NonEmpty = "business-chatbot-web"
     access_token_minutes: int = Field(default=15, gt=0)
     refresh_token_days: int = Field(default=30, gt=0)
+    # Seconds after a refresh token is rotated during which replaying it only returns 401.
+    # 0 (default) treats any replay as theft and revokes all of the user's refresh tokens;
+    # set a few seconds if several browser tabs may refresh with the same token concurrently.
+    refresh_reuse_grace_seconds: int = Field(default=0, ge=0, le=60)
 
     @field_validator("jwt_secret")
     @classmethod
@@ -226,10 +276,16 @@ class Settings(SourceSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     cache: CacheSettings = Field(default_factory=CacheSettings)
     api: APISettings = Field(default_factory=APISettings)
+    rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     etl: ETLSettings = Field(default_factory=ETLSettings)
 
     def to_container_config(self) -> dict[str, Any]:
-        """Unwrap secrets only at the DI boundary; model_dump/repr remain redacted."""
+        """Unwrap secrets only at the DI boundary; model_dump/repr remain redacted.
+
+        WARNING: the returned dict (and ``["database"]["url"]``) contains plaintext secrets
+        (API keys, JWT secret, passwords). Pass it straight to the DI container; never log,
+        print, serialize or attach it to an error.
+        """
         def unwrap(value):
             if isinstance(value, SecretStr):
                 return value.get_secret_value()
