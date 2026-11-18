@@ -4,12 +4,12 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from src.domain.entities.dashboard_analytics import (
+from src.modules.analytics.domain.models.order_ledger import (
     OrderLedgerExportData,
     OrderLedgerExportFilters,
     OrderLedgerExportItem,
 )
-from src.infrastructure.exporters.order_ledger_workbook_exporter import (
+from src.modules.analytics.infrastructure.exporters.order_ledger_workbook_exporter import (
     OpenpyxlOrderLedgerWorkbookExporter,
 )
 

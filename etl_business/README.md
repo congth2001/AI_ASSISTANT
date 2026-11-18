@@ -1,33 +1,44 @@
 # Business ETL (iShopman MDB)
 
 Module này là adapter hạ tầng của project chính, không phải Python project
-hay virtual environment riêng. Chạy lệnh từ repository root:
+hay virtual environment riêng. Chạy lệnh từ thư mục `backend/` (mọi đường dẫn
+tương đối bên dưới tính từ đây; các script `.bat` cũng `cd` về `backend/`):
 
 ```bat
-python -m etl_business.shop_data_extractor.cli inspect
-python -m etl_business.shop_data_extractor.cli extract
-python run_business_etl.py
+.\env\Scripts\python.exe -m etl_business.shop_data_extractor.cli inspect
+.\env\Scripts\python.exe -m etl_business.shop_data_extractor.cli extract
+.\env\Scripts\python.exe run_business_etl.py
 ```
 
 Luồng dữ liệu:
 
 ```text
-iShopman.mdb
+iShopman.mdb (hoặc ZIP chứa MDB)
   -> etl_business/stats/extract.yml (source column -> canonical column)
   -> data/etl/csv/*.csv + data/etl/ishopman_extract.xlsx
-  -> data/documents/Khach_hang.xlsx + Hang_hoa.xlsx
-  -> data/documents/Cong_no.xlsx
+  -> normalization.py (alias sản phẩm, alias phường/xã)
+  -> data/documents/Khach_hang.xlsx, Hang_hoa.xlsx, Cong_no.xlsx,
+     Tra_hang.xlsx, Chi_tiet_tra_hang.xlsx
   -> SyncBusinessDataUseCase -> PostgreSQL
 ```
+
+ETL không cập nhật Milvus hay cache Redis.
+
+Đồng bộ PostgreSQL chạy trong một transaction và từ chối snapshot hóa đơn/công
+nợ/trả hàng rỗng hoặc giảm quá 30% so với dữ liệu đang hoạt động (tránh export
+lỗi xóa mềm toàn bộ dữ liệu). Chỉ khi chắc chắn mới thêm `--allow-shrink` cho
+`run_business_etl.py`, `sync_business_data.py` hoặc `shop_data_extractor.cli run`.
+`sync_business_data.py` dùng cùng file khóa `etl.lock_path`, nên không chạy chồng
+với job cron. Use case nhận tên cột canonical tiếng Anh; header tiếng Việt của
+file Excel được ánh xạ tại `snapshot_columns.py`. Lỗi xóa cache Redis chỉ được log.
 
 Lệnh `run_business_etl.py` là entrypoint production cho cron: nó khóa chống
 hai job chạy chồng, extract ZIP/MDB, áp dụng rule normalize nội bộ, ghi artifact audit,
 upsert idempotent và trả exit code khác 0 khi bất kỳ bước nào lỗi.
 
-Hai notebook `normalize_customer.ipynb` và `normalize_good.ipynb` chỉ là nguồn
-tham khảo ban đầu. Production ETL không đọc hoặc execute notebook: thuật toán
-nằm trong `etl_business/normalization.py`, bảng alias đã được version hóa tại
-`etl_business/stats/product_aliases.json`.
+Thuật toán chuẩn hóa nằm trong `etl_business/normalization.py`; bảng alias được
+version hóa tại `etl_business/stats/product_aliases.json` và
+`etl_business/stats/customer_ward_aliases.json`.
 
 Ledger công nợ được dựng từ bốn nguồn có dấu: `phaithu_dauky`
 và `exim_export_invoice.money_debit` là số dương; `receipt_debt.invoice_val`
@@ -47,13 +58,18 @@ Tên xã của khách hàng được canonicalize trước khi tạo
 `etl_business/stats/customer_ward_aliases.json`. Giá trị không rỗng ngoài
 danh sách được map thành `Khác`; giá trị rỗng được giữ là `NULL`.
 
-Bốn dataset `customers`, `sales`, `sale_items`, `products` phải được map sang
-các cột canonical sau; pipeline sẽ fail-fast nếu thiếu cột hoặc sai foreign key:
+Sáu dataset sau là bắt buộc và phải được map sang các cột canonical; pipeline
+fail-fast nếu thiếu dataset, thiếu cột hoặc sai foreign key (`pipeline.py`):
 
 - `customers`: `customer_id`, `customer_name`; tùy chọn `address_detail`, `village_name`, `ward_name`.
 - `sales`: `invoice_id`, `invoice_number`, `customer_id`, `issued_at`, `invoice_total_amount`; tùy chọn `debt_delta_amount`.
 - `sale_items`: `invoice_id`, `product_id`, `quantity`, `unit_price`, `line_amount`.
 - `products`: `product_id`, `product_name`, `unit_name`; tùy chọn `product_category_name`.
+- `sales_returns`: `source_id`, `return_number`, `customer_id`, `occurred_at`, `return_total_amount`, `amount`.
+- `sales_return_items`: `source_line_id`, `source_id`, `product_id`, `quantity`, `unit_price`, `line_amount`.
+
+`extract.yml` còn khai báo `product_categories` và `debt_receipts` (phiếu thu nợ
+cho sổ công nợ).
 
 Cấu hình runtime nằm trong block `etl` của `config/local.yml`; xem
 `config/local.example` để biết các field hỗ trợ. ETL không đọc `.env` riêng.
@@ -63,16 +79,19 @@ các dataset nghiệp vụ ra **CSV + Excel**.
 
 ## Output
 
-Sau khi chạy `extract`:
+Sau khi chạy `extract`, kết quả nằm trong `etl.output_dir` (mặc định `data/etl`):
 
 ```text
-output/
+data/etl/
 ├── csv/
-│   ├── products.csv
 │   ├── customers.csv
-│   ├── sales.csv
+│   ├── debt_receipts.csv
+│   ├── product_categories.csv
+│   ├── products.csv
 │   ├── sale_items.csv
-│   └── inventory.csv
+│   ├── sales.csv
+│   ├── sales_return_items.csv
+│   └── sales_returns.csv
 ├── ishopman_extract.xlsx
 └── extract_manifest.csv
 ```
@@ -92,8 +111,8 @@ Tên bảng/cột thực tế của iShopman có thể không giống tên nghi�
 sẽ sinh:
 
 ```text
-output/schema_profile.xlsx
-output/schema_profile.json
+data/etl/schema_profile.xlsx
+data/etl/schema_profile.json
 ```
 
 `schema_profile.xlsx` gồm:
@@ -143,6 +162,9 @@ etl:
   extract_config_path: etl_business/stats/extract.yml
   product_aliases_path: etl_business/stats/product_aliases.json
   lock_path: data/etl/business-etl.lock
+  # Tùy chọn, có default:
+  # customer_ward_aliases_path: etl_business/stats/customer_ward_aliases.json
+  # opening_balance_date: "2019-01-01"
 ```
 
 Khi `source_path` là thư mục, mỗi lần chạy pipeline sẽ chọn file `*.zip`
@@ -156,7 +178,7 @@ Không commit `config/local.yml`; chỉ commit `config/local.example`.
 ### 1. Inspect database
 
 ```bat
-scripts\run_inspect.bat
+etl_business\scripts\run_inspect.bat
 ```
 
 ### 2. Xác định mapping
@@ -195,14 +217,13 @@ Khi `columns: {}` thì export toàn bộ cột nguyên bản.
 
 ## Những dataset nghiệp vụ được chuẩn bị sẵn
 
-- `products`: danh mục hàng hóa.
+- `products`, `product_categories`: hàng hóa và danh mục.
 - `customers`: khách hàng.
-- `sales`: hóa đơn / giao dịch bán hàng.
-- `sale_items`: chi tiết hóa đơn.
-- `inventory`: tồn kho.
+- `sales`, `sale_items`: hóa đơn bán và dòng hàng.
+- `sales_returns`, `sales_return_items`: phiếu nhập trả và dòng trả.
+- `debt_receipts`: phiếu thu nợ.
 
-Đây là các nhóm phù hợp cho bước tiếp theo khi ingest sang PostgreSQL/RAG.
-Các bảng khác có thể thêm vào `extra_tables`.
+Chưa có dataset tồn kho. Các bảng khác có thể thêm vào `extra_tables`.
 
 ## Encoding CSV
 
@@ -218,9 +239,9 @@ Connection MDB sử dụng `READONLY=1`; extractor không ghi ngược vào data
 Sau khi mapping đã ổn định, Windows Task Scheduler có thể chạy:
 
 ```text
-D:\AI_assistant\etl_business\scripts\run_sync.bat
+D:\AI_ASSISTANT\backend\etl_business\scripts\run_sync.bat
 ```
 
 mỗi ngày sau khi ZIP backup đã được ghi xong. Task Scheduler nên cấu
-hình `Start in` là `D:\AI_assistant`; stdout/stderr có thể được redirect bởi
+hình `Start in` là `D:\AI_ASSISTANT\backend`; stdout/stderr có thể được redirect bởi
 wrapper giám sát của hệ thống.

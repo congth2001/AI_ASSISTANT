@@ -1,28 +1,33 @@
 from datetime import date, datetime
 from decimal import Decimal
+import pytest
 
 from dependency_injector import providers
 from main import create_app
 from fastapi.testclient import TestClient
 
 from config.container import container
-from src.application.use_cases.dashboard_analytics_use_case import (
+from src.modules.analytics.application.use_cases.dashboard_analytics_use_case import (
     DashboardAnalyticsUseCase,
 )
-from src.domain.entities.dashboard_analytics import (
+from src.modules.analytics.domain.models.dashboard import (
     DashboardFilterOptions,
     DashboardMetricSnapshot,
     DashboardSummary,
+)
+from src.modules.analytics.domain.models.customer_debt import (
     CustomerDebtWardSummary,
     CustomerOverviewItem,
     CustomerOverviewMetrics,
     CustomerOverviewPage,
+)
+from src.modules.analytics.domain.models.orders import (
     OrderDetail,
     OrderLine,
     OrderPage,
     OrderSummary,
 )
-from src.presentation.api.v1.auth import get_current_user
+from src.modules.auth.presentation.router import get_current_user
 
 
 def test_dashboard_analytics_routes_are_exposed_in_openapi():
@@ -231,11 +236,13 @@ def test_customer_overview_contract_for_staff():
     assert "offset" not in body
 
 
-def test_order_list_and_detail_contract_for_staff():
+@pytest.mark.parametrize('customer_geography', [False, True])
+def test_order_list_and_detail_contract_for_staff(customer_geography):
     issued_at = datetime(2025, 3, 20, 9, 30)
 
     class FakeUseCase:
         async def list_orders(self, filters, limit, offset):
+            assert filters.customer_geography is customer_geography
             assert (limit, offset) == (20, 40)
             assert filters.date_from == date(2025, 3, 1)
             assert filters.date_to == date(2025, 4, 1)
@@ -299,6 +306,7 @@ def test_order_list_and_detail_contract_for_staff():
                 "date_from": "2025-03-01",
                 "date_to": "2025-04-01",
                 "invoice_number": " HD-001 ",
+                "customer_geography": customer_geography,
                 "customer_id": "11111111-1111-1111-1111-111111111111",
                 "ward": "Minh Khai",
                 "village": "Thôn 1",

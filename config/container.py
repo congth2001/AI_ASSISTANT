@@ -1,289 +1,69 @@
-from dependency_injector import containers
-from dependency_injector.providers import Configuration, Singleton
+"""Composition root: connect modules and expose stable provider names for entry points."""
+from dependency_injector import containers, providers
 
-from src.application.use_cases.chat_use_case import ChatUseCase
-from src.application.use_cases.auth_use_case import AuthUseCase
-from src.application.use_cases.search_document_use_case import SearchDocumentsUseCase
-from src.application.use_cases.analytics_use_case import AnalyticsUseCase
-from src.application.use_cases.dashboard_analytics_use_case import (
-    DashboardAnalyticsUseCase,
-)
-from src.application.use_cases.export_customer_debt_use_case import (
-    ExportCustomerDebtUseCase,
-)
-from src.application.use_cases.export_order_ledger_use_case import (
-    ExportOrderLedgerUseCase,
-)
-from src.application.use_cases.sync_business_data_use_case import (
-    SyncBusinessDataUseCase,
-)
-from src.application.use_cases.conversation_use_case import ConversationUseCase
-from src.application.services.query_analyzer import QueryAnalyzer
-from src.application.services.query_contextualizer import QueryContextualizer
-from src.application.services.intent_classifier import IntentClassifier
-from src.application.services.context_builder import ContextBuilder
-from src.application.services.schema_linker import SchemaLinker
-from src.application.services.sql_service import SQLService
-from src.application.agent.tools.text_to_sql import TextToSQLTool
-from src.application.agent.tools.rag_tool import RAGTool
-from src.application.agent.agent_service import AgentService
-
-from src.infrastructure.repositories.analytics_repository import AnalyticsRepository
-from src.infrastructure.repositories.dashboard_analytics_repository import (
-    DashboardAnalyticsRepository,
-)
-from src.infrastructure.exporters.customer_debt_workbook_exporter import (
-    OpenpyxlCustomerDebtWorkbookExporter,
-)
-from src.infrastructure.exporters.order_ledger_workbook_exporter import (
-    OpenpyxlOrderLedgerWorkbookExporter,
-)
-from src.infrastructure.repositories.auth_repository import AuthRepository
-from src.infrastructure.repositories.milvus_search_repository import (
-    MilvusSearchRepository,
-)
-from src.infrastructure.repositories.milvus_ingestion_repository import (
-    MilvusIngestionRepository,
-)
-from src.infrastructure.repositories.conversation_repository import (
-    ConversationRepository,
-)
-from src.infrastructure.repositories.customer_repository import CustomerRepository
-from src.infrastructure.repositories.customer_debt_transaction_repository import (
-    CustomerDebtTransactionRepository,
-)
-from src.infrastructure.repositories.sales_invoice_repository import (
-    SalesInvoiceRepository,
-)
-from src.infrastructure.repositories.sales_invoice_line_repository import (
-    SalesInvoiceLineRepository,
-)
-from src.infrastructure.repositories.sales_return_repository import SalesReturnRepository
-from src.infrastructure.database.milvus_client import MilvusClient
-from src.infrastructure.database.postgres_client import PostgresClient
-from src.infrastructure.llm.openai_adapter import OpenAIAdapter
-from src.infrastructure.llm.openai_embedding import OpenAIEmbedding
-from src.infrastructure.cache.redis_cache import RedisCache
+from src.common.container import CommonContainer
+from src.modules.auth.container import AuthContainer
+from src.modules.conversations.container import ConversationsContainer
+from src.modules.sales.container import SalesContainer
+from src.modules.analytics.container import AnalyticsContainer
+from src.modules.assistant.container import AssistantContainer
 
 
 class Container(containers.DeclarativeContainer):
-    """Dependency injection container"""
-
-    # Configuration
-    config = Configuration()
-
-    # Database
-    postgres_client = Singleton(
-        PostgresClient,
-        host=config.database.host,
-        port=config.database.port,
-        username=config.database.username,
-        password=config.database.password,
-        db_name=config.database.db_name,
-        echo=config.database.echo,
+    config = providers.Configuration()
+    common = providers.Container(CommonContainer, config=config)
+    auth = providers.Container(AuthContainer, config=config, session_factory=common.session_factory)
+    conversations = providers.Container(ConversationsContainer, session_factory=common.session_factory)
+    sales = providers.Container(SalesContainer, session_factory=common.session_factory)
+    analytics = providers.Container(AnalyticsContainer, session_factory=common.session_factory)
+    assistant = providers.Container(
+        AssistantContainer,
+        config=config,
+        engine=common.postgres_client.provided.engine,
+        customer_repo=sales.customer_repo,
+        sales_invoice_line_repo=sales.sales_invoice_line_repo,
+        conversation_repo=conversations.conversation_repo,
     )
 
-    session_factory = postgres_client.provided.session_factory
-
-    milvus_client = Singleton(
-        MilvusClient,
-        host=config.vector_db.host,
-        port=config.vector_db.port,
-        collection_name=config.vector_db.collection_name,
-        vector_dimension=config.vector_db.vector_dimension,
-        metric_type=config.vector_db.metric_type,
-    )
-
-    # Infrastructure - LLM
-    llm_service = Singleton(
-        OpenAIAdapter, api_key=config.llm.openai_api_key, model=config.llm.model
-    )
-
-    # Infrastructure - Vector DB
-    # vector_db = Singleton(
-    #     MilvusClient,
-    #     uri=config.vector_db.uri
-    # )
-
-    # Infrastructure - Embedding
-    embedding_service = Singleton(
-        OpenAIEmbedding,
-        api_key=config.llm.openai_api_key,
-        model=config.embedding.model,
-        vector_dimension=config.vector_db.vector_dimension,
-    )
-
-    # Infrastructure - Milvus repository
-    milvus_ingestion_repository = Singleton(
-        MilvusIngestionRepository,
-        client=milvus_client,
-        embedding_service=embedding_service,
-        embedding_dim=config.vector_db.vector_dimension,
-    )
-
-    milvus_search_repository = Singleton(
-        MilvusSearchRepository,
-        client=milvus_client,
-        embedding_service=embedding_service,
-    )
-
-    # Infrastructure - Persistence
-    conversation_repo = Singleton(
-        ConversationRepository, session_factory=session_factory
-    )
-
-    customer_repo = Singleton(CustomerRepository, session_factory=session_factory)
-
-    sales_invoice_repo = Singleton(
-        SalesInvoiceRepository, session_factory=session_factory
-    )
-
-    sales_invoice_line_repo = Singleton(
-        SalesInvoiceLineRepository, session_factory=session_factory
-    )
-
-    customer_debt_transaction_repo = Singleton(
-        CustomerDebtTransactionRepository, session_factory=session_factory
-    )
-    sales_return_repo = Singleton(SalesReturnRepository, session_factory=session_factory)
-
-    # Infrastructure - Cache
-    cache_service = Singleton(
-        RedisCache,
-        host=config.cache.host,
-        port=config.cache.port,
-        db=config.cache.db,
-        password=config.cache.password,
-    )
-
-    # Application Services
-    context_builder = Singleton(ContextBuilder)
-
-    intent_classifier = Singleton(
-        IntentClassifier,
-        llm_service=llm_service,
-    )
-
-    query_contextualizer = Singleton(
-        QueryContextualizer,
-        llm_service=llm_service,
-    )
-
-    query_analyzer = Singleton(
-        QueryAnalyzer,
-        customer_repo=customer_repo,
-        good_repo=sales_invoice_line_repo,
-    )
-
-    analytics_repository = Singleton(
-        AnalyticsRepository,
-        engine=postgres_client.provided.engine,
-    )
-
-    dashboard_analytics_repository = Singleton(
-        DashboardAnalyticsRepository,
-        session_factory=session_factory,
-    )
-
-    # SQL pipeline services (steps 4-6)
-    schema_linker = Singleton(SchemaLinker)
-    sql_service = Singleton(SQLService, llm_service=llm_service)
-
-    analytics_use_case = Singleton(
-        AnalyticsUseCase,
-        analytics_repo=analytics_repository,
-        schema_linker=schema_linker,
-        sql_service=sql_service,
-    )
-
-    dashboard_analytics_use_case = Singleton(
-        DashboardAnalyticsUseCase,
-        repository=dashboard_analytics_repository,
-    )
-
-    customer_debt_workbook_exporter = Singleton(
-        OpenpyxlCustomerDebtWorkbookExporter,
-    )
-
-    export_customer_debt_use_case = Singleton(
-        ExportCustomerDebtUseCase,
-        repository=dashboard_analytics_repository,
-        workbook_exporter=customer_debt_workbook_exporter,
-    )
-
-    order_ledger_workbook_exporter = Singleton(
-        OpenpyxlOrderLedgerWorkbookExporter,
-    )
-
-    export_order_ledger_use_case = Singleton(
-        ExportOrderLedgerUseCase,
-        repository=dashboard_analytics_repository,
-        workbook_exporter=order_ledger_workbook_exporter,
-    )
-
-    # Use Cases
-    search_documents_use_case = Singleton(
-        SearchDocumentsUseCase,
-        search_repo=milvus_search_repository,
-        query_analyzer=query_analyzer,
-    )
-
-    sync_business_data_use_case = Singleton(
-        SyncBusinessDataUseCase,
-        customer_repository=customer_repo,
-        sales_invoice_repository=sales_invoice_repo,
-        sales_invoice_line_repository=sales_invoice_line_repo,
-        customer_debt_transaction_repository=customer_debt_transaction_repo,
-        sales_return_repository=sales_return_repo,
-    )
-
-    auth_repository = Singleton(AuthRepository, session_factory=session_factory)
-
-    auth_use_case = Singleton(
-        AuthUseCase,
-        auth_repository=auth_repository,
-        jwt_secret=config.auth.jwt_secret,
-        jwt_issuer=config.auth.jwt_issuer,
-        jwt_audience=config.auth.jwt_audience,
-        access_token_minutes=config.auth.access_token_minutes,
-        refresh_token_days=config.auth.refresh_token_days,
-    )
-
-    use_case_conversation = Singleton(
-        ConversationUseCase,
-        conversation_repo=conversation_repo,
-    )
-
-    # Agent tools
-    text_to_sql_tool = Singleton(
-        TextToSQLTool,
-        analytics_use_case=analytics_use_case,
-    )
-
-    rag_tool = Singleton(
-        RAGTool,
-        search_use_case=search_documents_use_case,
-        context_builder=context_builder,
-    )
-
-    # Agent service (holds compiled LangGraph)
-    agent_service = Singleton(
-        AgentService,
-        classifier=intent_classifier,
-        query_analyzer=query_analyzer,
-        contextualizer=query_contextualizer,
-        text_to_sql_tool=text_to_sql_tool,
-        rag_tool=rag_tool,
-        llm_service=llm_service,
-    )
-
-    chat_use_case = Singleton(
-        ChatUseCase,
-        agent_service=agent_service,
-        conversation_repo=conversation_repo,
-        cache_service=cache_service,
-    )
+    # Provider aliases keep CLI entry points and dependency overrides stable.
+    postgres_client = common.postgres_client
+    session_factory = common.session_factory
+    auth_repository = auth.auth_repository
+    auth_use_case = auth.auth_use_case
+    conversation_repo = conversations.conversation_repo
+    conversation_use_case = conversations.conversation_use_case
+    use_case_conversation = conversation_use_case  # legacy alias (same provider)
+    customer_repo = sales.customer_repo
+    sales_invoice_repo = sales.sales_invoice_repo
+    sales_invoice_line_repo = sales.sales_invoice_line_repo
+    customer_debt_transaction_repo = sales.customer_debt_transaction_repo
+    sales_return_repo = sales.sales_return_repo
+    sync_business_data_use_case = sales.sync_business_data_use_case
+    dashboard_analytics_repository = analytics.dashboard_analytics_repository
+    dashboard_analytics_use_case = analytics.dashboard_analytics_use_case
+    customer_debt_workbook_exporter = analytics.customer_debt_workbook_exporter
+    export_customer_debt_use_case = analytics.export_customer_debt_use_case
+    order_ledger_workbook_exporter = analytics.order_ledger_workbook_exporter
+    export_order_ledger_use_case = analytics.export_order_ledger_use_case
+    milvus_client = assistant.milvus_client
+    llm_service = assistant.llm_service
+    embedding_service = assistant.embedding_service
+    milvus_ingestion_repository = assistant.milvus_ingestion_repository
+    milvus_search_repository = assistant.milvus_search_repository
+    cache_service = assistant.cache_service
+    context_builder = assistant.context_builder
+    intent_classifier = assistant.intent_classifier
+    query_contextualizer = assistant.query_contextualizer
+    query_analyzer = assistant.query_analyzer
+    sql_executor = assistant.sql_executor
+    schema_linker = assistant.schema_linker
+    sql_service = assistant.sql_service
+    text_to_sql_use_case = assistant.text_to_sql_use_case
+    search_documents_use_case = assistant.search_documents_use_case
+    text_to_sql_tool = assistant.text_to_sql_tool
+    rag_tool = assistant.rag_tool
+    agent_service = assistant.agent_service
+    chat_use_case = assistant.chat_use_case
 
 
-# Global container instance
 container = Container()

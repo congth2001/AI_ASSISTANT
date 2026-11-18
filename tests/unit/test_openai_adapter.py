@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.infrastructure.llm.openai_adapter import OpenAIAdapter
+from src.common.errors import ExternalServiceError
+from src.modules.assistant.infrastructure.llm.llm_common import TRUNCATION_NOTICE
+from src.modules.assistant.infrastructure.llm.openai_adapter import OpenAIAdapter
 
 
 def make_response(content: str, usage=None):
@@ -44,7 +46,7 @@ async def test_generate_response_uses_async_client_and_strips_content():
     assert result == "Kết quả"
     kwargs = client.chat.completions.create.await_args.kwargs
     assert kwargs["model"] == "gpt-5-mini"
-    assert kwargs["max_completion_tokens"] == 1000
+    assert kwargs["max_completion_tokens"] == 8192
     assert "đầu ra kỹ thuật như SQL hoặc JSON" in kwargs["messages"][0]["content"]
     assert "Không hiển thị SQL" not in kwargs["messages"][0]["content"]
     assert kwargs["messages"][-1] == {"role": "user", "content": "Doanh thu?"}
@@ -71,6 +73,17 @@ async def test_generate_response_builds_grounded_context_and_history():
     assert "Luôn trả lời hoàn toàn bằng tiếng Việt" in messages[0]["content"]
     assert "Không hiển thị SQL" in messages[0]["content"]
     assert messages[1:3] == context["conversation_history"]
+    assert client.chat.completions.create.await_args.kwargs["max_completion_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content, finish_reason", [("", "stop"), ('[{"sql":"SELECT 1', "length")])
+async def test_generate_response_rejects_empty_or_truncated_output(content, finish_reason):
+    response = make_response(content)
+    response.choices[0].finish_reason = finish_reason
+    adapter = OpenAIAdapter(client=make_client(response))
+    with pytest.raises(Exception, match="OpenAI API error"):
+        await adapter.generate_response("SQL")
 
 
 @pytest.mark.asyncio
@@ -116,11 +129,18 @@ async def test_classify_route_parses_structured_json():
 
 
 @pytest.mark.asyncio
-async def test_classify_route_maps_unknown_value_to_conversation():
-    adapter = OpenAIAdapter(
-        client=make_client(make_response('{"route": "unsupported"}'))
-    )
-    assert await adapter.classify_route("question") == "conversation"
+@pytest.mark.parametrize("content", ['{"route": "unsupported"}', "not json", "", '{"other": 1}'])
+async def test_classify_route_maps_unusable_label_to_data_route_not_conversation(content):
+    adapter = OpenAIAdapter(client=make_client(make_response(content)))
+    assert await adapter.classify_route("question") == "rag"
+
+
+@pytest.mark.asyncio
+async def test_classify_route_raises_external_error_on_provider_failure():
+    client = make_client()
+    client.chat.completions.create.side_effect = RuntimeError("provider unavailable")
+    with pytest.raises(ExternalServiceError, match="OpenAI API error"):
+        await OpenAIAdapter(client=client).classify_route("question")
 
 
 @pytest.mark.asyncio
@@ -180,3 +200,83 @@ async def test_stream_response_yields_tokens_and_ignores_usage_only_chunk():
     kwargs = client.chat.completions.create.await_args.kwargs
     assert kwargs["stream"] is True
     assert kwargs["stream_options"] == {"include_usage": True}
+
+
+class AsyncStream:
+    def __init__(self, chunks):
+        self._chunks = chunks
+
+    def __aiter__(self):
+        self._iterator = iter(self._chunks)
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self._iterator)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+def stream_chunk(content=None, finish_reason=None):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=content), finish_reason=finish_reason)],
+        usage=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_truncated_after_output_appends_notice_instead_of_raising():
+    client = make_client()
+    client.chat.completions.create.return_value = AsyncStream(
+        [stream_chunk("Một phần"), stream_chunk(None, "length")]
+    )
+    tokens = [t async for t in OpenAIAdapter(client=client).stream_response("hello")]
+    assert tokens == ["Một phần", TRUNCATION_NOTICE]
+
+
+@pytest.mark.asyncio
+async def test_stream_truncated_without_output_is_an_error():
+    client = make_client()
+    client.chat.completions.create.return_value = AsyncStream([stream_chunk(None, "length")])
+    with pytest.raises(ExternalServiceError):
+        [t async for t in OpenAIAdapter(client=client).stream_response("hello")]
+
+
+@pytest.mark.asyncio
+async def test_stream_provider_failure_is_wrapped_as_external_error():
+    client = make_client()
+    client.chat.completions.create.side_effect = RuntimeError("boom")
+    with pytest.raises(ExternalServiceError, match="OpenAI API error"):
+        [t async for t in OpenAIAdapter(client=client).stream_response("hello")]
+
+
+@pytest.mark.asyncio
+async def test_guest_token_budget_is_capped_below_default():
+    client = make_client()
+    client.chat.completions.create.return_value = AsyncStream([stream_chunk("ok")])
+    context = {"conversation_history": [], "max_completion_tokens": 1536}
+    [t async for t in OpenAIAdapter(client=client).stream_response("hi", context)]
+    assert client.chat.completions.create.await_args.kwargs["max_completion_tokens"] == 1536
+
+
+@pytest.mark.asyncio
+async def test_token_budget_never_exceeds_adapter_limit():
+    client = make_client()
+    await OpenAIAdapter(client=client).generate_response("hi", {"max_completion_tokens": 10**6})
+    assert client.chat.completions.create.await_args.kwargs["max_completion_tokens"] == 4096
+
+
+def test_default_client_has_timeout_and_retries(monkeypatch):
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "src.modules.assistant.infrastructure.llm.openai_adapter.AsyncOpenAI", FakeAsyncOpenAI
+    )
+    OpenAIAdapter(api_key="k")
+    assert captured == {"api_key": "k", "timeout": 60.0, "max_retries": 2}
+    OpenAIAdapter(api_key="k", timeout=5, max_retries=0)
+    assert captured["timeout"] == 5 and captured["max_retries"] == 0

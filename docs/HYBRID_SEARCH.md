@@ -1,321 +1,72 @@
-# Hybrid Search Implementation
+# Hybrid search (RAG trên Milvus)
 
-## Overview
+Nhánh RAG tìm tài liệu bằng hybrid search: kết quả vector search và keyword search được gộp bằng Reciprocal Rank Fusion (RRF), với chuỗi bộ lọc nới dần khi không có kết quả. Toàn bộ API của `MilvusClient` là **đồng bộ**; `RAGTool` gọi chúng qua `asyncio.to_thread`.
 
-The Business Chatbot now supports **Hybrid Search** - combining semantic vector search with keyword/BM25-like matching. This provides better retrieval quality by leveraging both semantic understanding and exact keyword matching.
+## Luồng gọi
 
-## Architecture
-
-### Three Search Methods
-
-#### 1. **Vector Search (Semantic)**
-- Finds semantically similar content
-- Uses embeddings and L2 distance
-- Good for conceptual queries
-- Fast with vector indexing
-
-```python
-results = await vector_db.search_similar(query_embedding, top_k=5)
+```text
+RAGTool.run (agent node execute_rag / execute_hybrid, hoặc POST /search-documents)
+  -> SearchDocumentsUseCase.execute_analyzed(AnalyzedQuery)
+  -> MilvusSearchRepository.search
+       _build_filter_chain       # bộ lọc từ chặt đến lỏng
+       _hybrid_search_with_fallback
+  -> MilvusClient.hybrid_search  # vector + keyword, gộp RRF
+  -> ContextBuilder.build_context # retrieved_text, sources, cảnh báo fallback
 ```
 
-#### 2. **Keyword Search (BM25-like)**
-- Finds exact keyword matches
-- Calculates relevance based on term frequency
-- Good for specific terms and phrases
-- Implements term frequency and position boosting
+| Thành phần | File |
+| --- | --- |
+| Client Milvus, schema, RRF | `src/modules/assistant/infrastructure/database/milvus_client.py` |
+| Chuỗi bộ lọc, map kết quả | `src/modules/assistant/infrastructure/repositories/milvus_search_repository.py` |
+| Use case, phát hiện fallback | `src/modules/assistant/application/use_cases/search_documents_use_case.py` |
+| Top-k và ef theo intent | `src/modules/assistant/domain/constants/search_config.py` |
+| Wiring | provider `milvus_client`, `milvus_search_repository`, `search_documents_use_case`, `rag_tool` trong `src/modules/assistant/container.py` |
 
-```python
-results = await vector_db.keyword_search("query text", top_k=5)
+Kết nối Milvus là lazy: chỉ mở ở thao tác vector đầu tiên, nên luồng SQL/hội thoại không cần Milvus sẵn sàng.
+
+## Schema collection
+
+Tạo tự động nếu chưa có (`MilvusClient._create_collection`), không dùng dynamic field:
+
+| Trường | Kiểu | Ghi chú |
+| --- | --- | --- |
+| `doc_id` | VARCHAR(128) | Khóa chính |
+| `doc_type` | VARCHAR(32) | Dùng lọc theo loại tài liệu |
+| `text` | VARCHAR(4096) | Nội dung chunk |
+| `embedding` | FLOAT_VECTOR | `dim` = `vector_db.vector_dimension` (default 1024 ở settings và `local.example` — phải khớp model embedding và collection đã tạo) |
+| `year`, `month` | INT16, INT8 | Lọc theo thời gian |
+| `customer_id` | VARCHAR(128) | Lọc theo khách hàng |
+| `co_no` | BOOL | Tài liệu về công nợ |
+| `doanh_thu` | DOUBLE | Giá trị tham khảo |
+
+Index: HNSW (`M=16`, `efConstruction=200`), metric **COSINE**. Metric được hard-code trong code; giá trị `vector_db.metric_type` trong config hiện không được dùng khi tạo index hay khi search. Đổi dimension hoặc metric cần xóa và tạo lại collection.
+
+## Thuật toán
+
+**Vector search** — `search_similar(query_vector, top_k, filter, search_params)`, `ef` lấy theo intent (`SearchConfig.EF_BY_INTENT`, mặc định 100).
+
+**Keyword search** — `keyword_search(query_text, top_k, filter)` lấy tối đa 1.000 entity khớp `filter`, chấm điểm ngay trong Python:
+
+- Với mỗi từ của câu hỏi có trong `text`: cộng số lần xuất hiện, cộng thêm 5 nếu `text` bắt đầu bằng từ đó.
+- Chia cho độ dài `text`, rồi nhân với `1 + tỷ lệ từ khớp`.
+
+**Gộp RRF** — `hybrid_search` lấy `2 × top_k` kết quả mỗi nhánh rồi tính:
+
+```latex
+score(d) = \frac{w_v}{60 + rank_v(d)} + \frac{w_k}{60 + rank_k(d)}
 ```
 
-#### 3. **Hybrid Search (RECOMMENDED)**
-- Combines both vector and keyword search
-- Configurable weights for fine-tuning
-- Best of both worlds
-- Production-recommended approach
+với `w_v = 0.7`, `w_k = 0.3`, rank bắt đầu từ 1. RRF dựa trên thứ hạng nên không cần chuẩn hóa điểm giữa hai nhánh. Kết quả trả về là dict `{"id", "score", "content", "metadata"}`.
 
-```python
-results = await vector_db.hybrid_search(
-    query_vector=embedding,
-    query_text="query text",
-    vector_weight=0.7,
-    keyword_weight=0.3
-)
-```
+**Chuỗi bộ lọc** — `_build_filter_chain` tạo biểu thức Milvus từ `AnalyzedQuery` (loại tài liệu, `customer_id`, `co_no` khi intent là công nợ, `year`, `month`), rồi bỏ dần điều kiện tháng, thời gian, cuối cùng là không lọc. Dừng ở bộ lọc đầu tiên có kết quả; khi đã nới lọc, `SearchDocumentsUseCase` đánh dấu `used_fallback` và `ContextBuilder` thêm cảnh báo để câu trả lời không coi tài liệu lệch kỳ là số liệu đúng kỳ.
 
-## Implementation Details
+## Nạp dữ liệu
 
-### Collection Schema
+`MilvusIngestionRepository` (provider `milvus_ingestion_repository`) có các thao tác insert/update theo chunk, nhưng repository hiện **chưa có CLI hoặc job nào gọi** để nạp tài liệu. ETL chỉ đồng bộ PostgreSQL; Milvus và cache Redis không tự cập nhật sau ETL.
 
-The Milvus collection has been updated to support hybrid search:
+## Hạn chế
 
-```
-Field: id (VARCHAR, primary key)
-Field: vector (FLOAT_VECTOR, 512 dims)
-Field: content (VARCHAR, 8192 chars) ← NEW for keyword search
-Field: metadata_str (VARCHAR, 4096 chars)
-```
-
-### Scoring Algorithm
-
-#### Vector Score
-```
-vector_similarity = 1.0 / (1.0 + l2_distance)
-```
-
-#### Keyword Score (BM25-like)
-```
-for each query term:
-  - Count term occurrences in content
-  - Boost if term appears at beginning
-  - Normalize by content length
-  - Add match ratio bonus
-
-score = (occurrence_count / content_length) * (1 + match_ratio)
-```
-
-#### Combined Score
-```
-combined_score = vector_weight * vector_score + keyword_weight * keyword_score
-```
-
-### Default Configuration
-
-- **Vector Weight**: 0.7 (70%)
-- **Keyword Weight**: 0.3 (30%)
-
-This means semantic understanding is prioritized, but keyword matching is still important.
-
-## Usage Examples
-
-### Basic Hybrid Search
-
-```python
-from config.container import container
-from config.settings import settings
-
-# Setup
-container.config.from_dict(settings.dict())
-vector_db = container.vector_db()
-embedding_service = container.embedding_service()
-
-# Get embedding
-query = "monthly sales revenue"
-query_embedding = await embedding_service.generate_embedding(query)
-
-# Hybrid search
-results = await vector_db.hybrid_search(
-    query_vector=query_embedding,
-    query_text=query,
-    top_k=5,
-    vector_weight=0.7,
-    keyword_weight=0.3
-)
-
-# Results include:
-# - id: document ID
-# - combined_score: weighted score (0-1)
-# - vector_score: semantic similarity score
-# - keyword_score: keyword matching score
-# - content: document content
-# - metadata: associated metadata
-```
-
-### RAG with Hybrid Retrieval
-
-```python
-rag_orchestrator = container.rag_orchestrator()
-
-result = await rag_orchestrator.hybrid_retrieve_and_generate(
-    query="What was our Q4 profit?",
-    top_k=5,
-    vector_weight=0.7,
-    keyword_weight=0.3
-)
-
-# Returns:
-# - response: LLM-generated answer
-# - retrieved_context: concatenated search results
-# - search_scores: detailed scoring breakdown
-# - retrieval_method: 'hybrid'
-```
-
-### Compare Different Approaches
-
-```python
-# Vector-only (semantic)
-vector_results = await vector_db.search_similar(embedding, top_k=5)
-
-# Keyword-only (exact match)
-keyword_results = await vector_db.keyword_search("query", top_k=5)
-
-# Hybrid (best of both)
-hybrid_results = await vector_db.hybrid_search(embedding, "query", top_k=5)
-```
-
-## Weight Tuning Guide
-
-### Use Cases and Recommended Weights
-
-#### Balanced (Default)
-```python
-vector_weight=0.7, keyword_weight=0.3
-# Best for: General business queries
-# Reason: Semantic search catches related concepts, keywords ensure exact matches
-```
-
-#### Semantic Heavy
-```python
-vector_weight=0.9, keyword_weight=0.1
-# Best for: Conceptual analysis, trend analysis
-# Reason: Prioritize semantic understanding of business concepts
-```
-
-#### Keyword Heavy
-```python
-vector_weight=0.3, keyword_weight=0.7
-# Best for: Financial reports, product names, specific metrics
-# Reason: Exact terms are critical for accuracy
-```
-
-#### Pure Vector
-```python
-vector_weight=1.0, keyword_weight=0.0
-# Use when: Only semantic search is needed
-# Reason: Fast, simple, good for semantic understanding only
-```
-
-#### Pure Keyword
-```python
-vector_weight=0.0, keyword_weight=1.0
-# Use when: Only exact matching is needed
-# Reason: Good for database lookups, product searches
-```
-
-## Performance Considerations
-
-### Vector Search
-- **Speed**: Very Fast (indexed)
-- **Accuracy**: Good (captures semantics)
-- **Memory**: Moderate (index storage)
-
-### Keyword Search
-- **Speed**: Moderate (scans documents)
-- **Accuracy**: Good (exact matching)
-- **Memory**: Low
-
-### Hybrid Search
-- **Speed**: Moderate (vector fast + keyword moderate)
-- **Accuracy**: Excellent (combines both)
-- **Memory**: Moderate
-
-### Optimization Tips
-
-1. **Top-K Parameter**
-   ```python
-   # Increase for more thorough search (slower)
-   top_k=10
-   # Decrease for speed (may miss results)
-   top_k=3
-   ```
-
-2. **Re-ranking with Hybrid**
-   ```python
-   # Hybrid search naturally re-ranks results
-   # Top results often better than pure vector or keyword
-   ```
-
-3. **Caching**
-   ```python
-   # Consider caching frequent queries
-   # Hybrid search scores are deterministic
-   ```
-
-## API Reference
-
-### `hybrid_search()`
-```python
-async def hybrid_search(
-    query_vector: List[float],
-    query_text: str,
-    top_k: int = 5,
-    vector_weight: float = 0.7,
-    keyword_weight: float = 0.3
-) -> List[Dict[str, Any]]
-```
-
-**Parameters:**
-- `query_vector`: Embedding vector for semantic search
-- `query_text`: Text for keyword search
-- `top_k`: Number of results to return (default: 5)
-- `vector_weight`: Weight for vector similarity (0-1, default: 0.7)
-- `keyword_weight`: Weight for keyword matching (0-1, default: 0.3)
-
-**Returns:**
-```python
-[
-    {
-        'id': 'doc_1',
-        'combined_score': 0.85,
-        'vector_score': 0.9,
-        'keyword_score': 0.7,
-        'content': 'document content...',
-        'metadata': {...}
-    },
-    ...
-]
-```
-
-### `keyword_search()`
-```python
-async def keyword_search(
-    query_text: str,
-    top_k: int = 5,
-    case_sensitive: bool = False
-) -> List[Dict[str, Any]]
-```
-
-**Parameters:**
-- `query_text`: Query text for keyword matching
-- `top_k`: Number of results
-- `case_sensitive`: Whether to match case (default: False)
-
-## Troubleshooting
-
-### Low Scores in Keyword Search
-- **Cause**: Query terms don't match document content
-- **Solution**: 
-  - Use broader terms
-  - Lower keyword_weight in hybrid search
-  - Check content field is populated
-
-### Semantic Mismatches
-- **Cause**: Embedding model doesn't capture your domain
-- **Solution**:
-  - Increase vector_weight
-  - Fine-tune embedding model for domain
-  - Add domain-specific terms to content
-
-### Performance Issues
-- **Cause**: Scanning too many documents
-- **Solution**:
-  - Reduce top_k parameter
-  - Implement document filtering first
-  - Use vector search (indexed) primarily
-
-## Future Improvements
-
-1. **Elasticsearch Integration** - For large-scale keyword search
-2. **BM25 Index** - True BM25 algorithm in Milvus
-3. **Domain-Specific Embeddings** - Fine-tuned models for business terms
-4. **Query Expansion** - Automatically expand queries with synonyms
-5. **Learning-to-Rank** - ML model to optimize weights per query type
-
-## Examples
-
-See `examples/hybrid_search_example.py` for complete runnable examples including:
-- Vector-only search
-- Keyword search
-- Hybrid search
-- RAG with hybrid retrieval
-- Weight tuning demonstrations
+- Keyword search quét tối đa 1.000 entity trong Python mỗi lần gọi, không phải BM25 hay full-text index; chậm và kém chính xác khi collection lớn.
+- Lỗi Milvus trong `hybrid_search` / `keyword_search` / `search_similar` ném `VectorStoreQueryError` và chuỗi filter dừng ngay (không lặp qua các filter còn lại); `SearchDocumentsUseCase` trả `results=[]` kèm `error_code="vector_store_query"`. Kết quả rỗng hợp lệ vẫn nới filter như cũ. Bộ lọc theo số phiếu (`so_phieu`) không còn: trường này không có trong schema Milvus, số phiếu tra bằng SQL.
+- `keyword_search` vẫn quét tối đa 1000 bản ghi rồi chấm điểm bằng Python và ghi cảnh báo khi chạm trần; BM25 của Milvus cần thêm trường sparse vào schema và index lại nên chưa dùng.
+- `POST /search-documents` (staff/admin) trả `doc_id`, `doc_type`, `text`, `score`, `metadata` và cờ `used_fallback`, tiện kiểm tra chất lượng truy xuất.

@@ -3,15 +3,8 @@ from decimal import Decimal
 from sqlalchemy import Numeric
 from sqlalchemy.dialects.postgresql import UUID
 
-from src.infrastructure.repositories.models import (
-    Customer,
-    SalesInvoice,
-    SalesInvoiceLine,
-    CustomerDebtTransaction,
-    SalesReturn,
-    SalesReturnLine,
-)
-from src.infrastructure.repositories.repository_utils import to_decimal
+from src.modules.sales.infrastructure.models import Customer, SalesInvoice, SalesInvoiceLine, CustomerDebtTransaction, SalesReturn, SalesReturnLine
+from src.modules.sales.infrastructure.repositories.repository_utils import to_decimal
 
 
 def test_sales_model_table_names_and_grain_columns():
@@ -70,3 +63,31 @@ def test_sales_return_models_preserve_product_quantity_and_value():
 
 def test_decimal_conversion_does_not_keep_binary_float_artifacts():
     assert to_decimal(0.1) == Decimal("0.1")
+
+
+def _index_names(model):
+    return {index.name for index in model.__table__.indexes}
+
+
+def test_redundant_indexes_are_not_declared():
+    # Covered by the partial active index / unique-constraint prefixes; dropped by migration e7b3c5a19f42.
+    assert "ix_sales_invoices_issued_at" not in _index_names(SalesInvoice)
+    assert "ix_sales_invoices_active_issued_at" in _index_names(SalesInvoice)
+    assert "ix_sales_invoice_lines_invoice_id" not in _index_names(SalesInvoiceLine)
+    assert "ix_sales_return_lines_return_id" not in _index_names(SalesReturnLine)
+
+
+def test_debt_ledger_has_customer_occurred_composite_index():
+    index = next(
+        i for i in CustomerDebtTransaction.__table__.indexes
+        if i.name == "ix_debt_transactions_customer_occurred"
+    )
+    assert [column.name for column in index.columns] == ["customer_id", "occurred_at"]
+    assert "ix_debt_transactions_customer_id" not in _index_names(CustomerDebtTransaction)
+
+
+def test_business_timestamps_are_intentionally_naive_vietnam_local_time():
+    assert SalesInvoice.__table__.c.issued_at.type.timezone is False
+    assert SalesReturn.__table__.c.returned_at.type.timezone is False
+    assert CustomerDebtTransaction.__table__.c.occurred_at.type.timezone is False
+    assert SalesInvoice.__table__.c.created_at.type.timezone is True

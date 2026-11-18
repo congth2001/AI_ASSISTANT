@@ -1,301 +1,143 @@
-# Business Chatbot Assistant - Clean Architecture
+# Backend: modular monolith và Clean Architecture
 
-## Tổng quan
+Backend chia theo module nghiệp vụ. Mỗi module sở hữu use case, domain contract, adapter và HTTP API của mình. Các module vẫn chạy trong một FastAPI process và dùng một PostgreSQL database; việc tách module phục vụ quản lý và mở rộng code, không tự tăng năng lực xử lý hay biến hệ thống thành microservices.
 
-AI-powered business chatbot cho phân tích dữ liệu kinh doanh và business intelligence, sử dụng **RAG (Retrieval-Augmented Generation)** với hybrid search (vector + keyword). Hỗ trợ đa LLM provider (OpenAI GPT-4, Anthropic Claude).
+## Cấu trúc
 
-## Cấu trúc Project
-
-```
-AI_ASSISTANT/
-├── src/
-│   ├── domain/                        # Domain Layer - Pure business logic
-│   │   ├── entities/                  # Business entities
-│   │   │   ├── business_data.py       # Dữ liệu kinh doanh
-│   │   │   ├── message.py             # Tin nhắn hội thoại
-│   │   │   ├── report.py              # Báo cáo
-│   │   │   ├── constants.py
-│   │   │   └── errors.py              # Domain exceptions
-│   │   ├── interfaces/                # Abstract interfaces
-│   │   │   ├── i_llm_service.py
-│   │   │   ├── i_embedding_service.py
-│   │   │   ├── i_vector_db.py
-│   │   │   ├── i_cache_service.py
-│   │   │   ├── i_conversation_repository.py
-│   │   │   └── i_data_repository.py
-│   │   ├── services/                  # Domain services
-│   │   │   ├── context_builder.py     # Xây dựng context cho RAG
-│   │   │   └── intent_classifier.py  # Phân loại ý định query
-│   │   ├── value_objects/             # Immutable value objects
-│   │   │   ├── date_range.py
-│   │   │   ├── metric_type.py
-│   │   │   └── query_intent.py
-│   │   ├── repositories/              # Repository abstractions
-│   │   │   └── vector_repository.py
-│   │   └── llm_providers/
-│   │       └── base_provider.py
-│   ├── application/                   # Application Layer - Use cases
-│   │   ├── use_cases/
-│   │   │   ├── chat_use_case.py       # Xử lý hội thoại
-│   │   │   ├── ingest_data_use_case.py
-│   │   │   └── query_report_use_case.py
-│   │   ├── services/
-│   │   │   ├── rag_orchestrator.py    # Điều phối RAG pipeline
-│   │   │   ├── query_analyzer.py
-│   │   │   └── response_formatter.py
-│   │   └── dto/
-│   │       ├── chat_request.py
-│   │       └── chat_response.py
-│   ├── infrastructure/                # Infrastructure Layer
-│   │   ├── llm/                       # LLM adapters
-│   │   │   ├── openai_adapter.py
-│   │   │   └── anthropic_adapter.py
-│   │   ├── embedding/
-│   │   │   └── openai_embedding_service.py
-│   │   ├── vector_db/
-│   │   │   └── milvus_adapter.py
-│   │   ├── repositories/
-│   │   │   └── milvus_vector_repository.py
-│   │   ├── persistence/               # SQL repositories
-│   │   │   ├── business_data_repository.py
-│   │   │   ├── conversation_repository.py
-│   │   │   └── models.py              # SQLAlchemy ORM models
-│   │   ├── cache/
-│   │   │   └── redis_cache.py
-│   │   ├── database/
-│   │   │   ├── milvus_connection.py
-│   │   │   ├── mongo_connection.py
-│   │   │   └── postgres_connection.py
-│   │   └── utils/
-│   │       ├── logger/                # Structured logging
-│   │       └── singleton/
-│   └── presentation/                  # Presentation Layer
-│       ├── api/v1/
-│       │   ├── chat.py                # Chat endpoints
-│       │   ├── data.py                # Data ingestion endpoints
-│       │   └── reports.py             # Report endpoints
-│       ├── schemas/
-│       │   ├── chat_schema.py
-│       │   └── report_schema.py
-│       └── dependencies.py            # FastAPI DI wiring
+```text
+backend/
+├── main.py                         # FastAPI, CORS, lifespan; mount router tổng
 ├── config/
-│   ├── settings.py                    # Pydantic settings
-│   ├── container.py                   # DI container
-│   └── config_manager.py
-├── scripts/
-│   ├── ingest_data.py
-│   └── seed_database.py
-├── tests/
-│   └── unit/
-├── deploy/
-│   ├── Dockerfile
-│   └── docker-compose.yml
-├── docs/
-│   └── HYBRID_SEARCH.md
-├── main.py                            # Application entry point
-├── requirements.txt
-└── .env.example
+│   ├── container.py                # Composition root kết nối các module
+│   ├── config_manager.py
+│   └── settings.py
+├── src/
+│   ├── modules/
+│   │   ├── auth/                   # Đăng nhập, guest JWT, refresh, staff/admin
+│   │   ├── conversations/          # Lịch sử, ownership, đọc/đổi tên/xóa
+│   │   ├── assistant/              # Chat/SSE, LangGraph, Text-to-SQL, RAG
+│   │   ├── analytics/              # Dashboard, đơn hàng, công nợ, xuất Excel
+│   │   └── sales/                  # Đồng bộ khách hàng, bán/trả hàng, sổ công nợ
+│   ├── common/
+│   │   ├── container.py            # PostgreSQL và session factory chung
+│   │   ├── errors/                 # Nhóm lỗi phổ biến và template, thuần Python
+│   │   ├── domain/                # Tiện ích thời gian Việt Nam, DateRange
+│   │   ├── infrastructure/database/ # PostgresClient và SQLAlchemy Base
+│   │   └── utils/                 # Singleton metaclass
+│   └── bootstrap/
+│       ├── orm.py                  # Đăng ký toàn bộ model cho Alembic
+│       └── router.py               # Router tổng, prefix/tag và danh sách module cần wire
+├── migrations/                     # Lịch sử schema dùng chung
+├── etl_business/                    # Trích xuất/chuẩn hóa nguồn Excel/MDB
+├── evals/                           # Benchmark execution accuracy
+└── tests/
+    ├── unit/
+    │   ├── test_module_architecture.py
+    │   └── test_module_composition.py
+    └── integrate/
 ```
 
-## Clean Architecture Layers
+Một module có cấu trúc:
 
-### 1. Domain Layer (`src/domain/`)
-
-Core business logic hoàn toàn độc lập với framework và infrastructure.
-
-| Component | Mô tả |
-|-----------|-------|
-| **Entities** | `BusinessData`, `Message`, `Report` — pure Python objects |
-| **Interfaces** | Abstract contracts cho LLM, embedding, vector DB, cache, repositories |
-| **Domain Services** | `ContextBuilder` (xây dựng RAG context), `IntentClassifier` (phân loại query) |
-| **Value Objects** | `DateRange`, `MetricType`, `QueryIntent` — immutable, không có identity |
-
-### 2. Application Layer (`src/application/`)
-
-Điều phối use cases, không chứa business rules.
-
-| Component | Mô tả |
-|-----------|-------|
-| **ChatUseCase** | Xử lý toàn bộ chat flow |
-| **IngestDataUseCase** | Nạp dữ liệu vào vector DB và SQL DB |
-| **QueryReportUseCase** | Tạo báo cáo từ dữ liệu kinh doanh |
-| **RAGOrchestrator** | Điều phối hybrid search → context → LLM call |
-| **DTOs** | `ChatRequest`, `ChatResponse` — data transfer giữa layers |
-
-### 3. Infrastructure Layer (`src/infrastructure/`)
-
-Implementations cụ thể của các interfaces trong Domain.
-
-| Component | Implementation |
-|-----------|---------------|
-| **LLM** | `OpenAIAdapter` (GPT-4), `AnthropicAdapter` (Claude) |
-| **Embedding** | `OpenAIEmbeddingService` |
-| **Vector DB** | `MilvusClient`, `MilvusVectorRepository` |
-| **SQL DB** | SQLAlchemy + PostgreSQL/SQLite |
-| **Cache** | `RedisCacheService` |
-| **Logging** | Structured logger với decorators và middleware |
-
-### 4. Presentation Layer (`src/presentation/`)
-
-FastAPI routers, schemas, dependency injection.
-
-| Endpoint | Method | Mô tả |
-|----------|--------|-------|
-| `/api/v1/chat` | POST | Gửi tin nhắn |
-| `/api/v1/chat/{id}` | GET | Lịch sử hội thoại |
-| `/api/v1/data/ingest` | POST | Nạp dữ liệu |
-| `/api/v1/data/batch` | POST | Batch ingest |
-| `/api/v1/reports` | GET | Truy vấn báo cáo |
-| `/api/v1/reports/custom` | POST | Tạo báo cáo tùy chỉnh |
-| `/health` | GET | Health check |
-
-## Data Flow: Chat Request
-
-```
-User Message
-    │
-    ▼
-FastAPI Router (presentation/api/v1/chat.py)
-    │
-    ▼
-ChatUseCase (application/use_cases/)
-    │
-    ▼
-RAGOrchestrator
-    ├── EmbeddingService  → tạo query vector
-    ├── MilvusClient     → vector search (semantic)
-    ├── DataRepository    → keyword/metadata filter
-    └── Hybrid Merge      → weighted score combination
-    │
-    ▼
-ContextBuilder (domain/services/)
-    │  → format retrieved chunks thành prompt context
-    ▼
-OpenAIAdapter / AnthropicAdapter (infrastructure/llm/)
-    │  → LLM API call với context
-    ▼
-ResponseFormatter (application/services/)
-    │
-    ▼
-ConversationRepository → lưu lịch sử (PostgreSQL)
-    │
-    ▼
-ChatResponse → Client
+```text
+module/
+├── domain/         # Entity/value object, repository/service interface, error
+├── application/    # Use case, service, orchestration
+├── infrastructure/ # Repository, ORM, SDK adapter, workbook exporter
+├── presentation/   # Router và DTO nếu có HTTP endpoint
+└── container.py    # Wiring nội bộ; dependency bên ngoài được inject qua port
 ```
 
-## Dependency Flow
+Chỉ tạo layer khi module thực sự có code cho layer đó. Module sales hiện được gọi qua CLI/ETL và không có HTTP router riêng.
 
-```
-Presentation  ──────────────────►  Application  ──────────────►  Domain
-     │                                  │                           ▲
-     │                                  │                           │
-     └──────────►  Infrastructure  ─────┘───────────────────────────┘
-                  (implements Domain interfaces)
-```
+## Quy ước đặt tên và nhóm file
 
-- **Domain**: không phụ thuộc bất kỳ layer nào
-- **Application**: chỉ phụ thuộc Domain
-- **Infrastructure**: implement interfaces của Domain
-- **Presentation**: phụ thuộc Application và Domain
+- File/thư mục dùng snake_case; class dùng PascalCase. Tên file thể hiện trách nhiệm và khớp với class chính: text_to_sql_use_case.py / TextToSQLUseCase, text_to_sql_tool.py / TextToSQLTool, tool_result.py / ToolResult.
+- domain/ports/ chứa interface cho LLM, cache, embedding, vector DB, SQL executor, bảo mật và workbook exporter. domain/repositories/ giữ các repository contract. domain/services/ chỉ nên được tạo khi có domain service thực sự, không dùng làm tên khác cho các port.
+- assistant/application/prompts/sql_prompts.py và response_prompts.py chứa prompt LLM. assistant/domain/constants/query_analysis_rules.py chứa QueryAnalysisRules, là tập quy tắc phục vụ phân tích câu hỏi.
+- assistant/application/use_cases/search_documents_use_case.py và domain/entities/search_documents_result.py dùng số nhiều tương ứng với SearchDocumentsUseCase / SearchDocumentsResult.
+- analytics/domain/models/ nhóm filter, enum, value object và kết quả truy vấn theo nghiệp vụ: dashboard.py, overview.py, customer_debt.py, orders.py, order_ledger.py. Đây là các kiểu dữ liệu thuần Python; ORM vẫn nằm trong infrastructure/models.py, DTO HTTP nằm trong presentation/dto/.
+- Tên provider của pipeline SQL là text_to_sql_use_case và sql_executor. Tránh dùng analytics_use_case / analytics_repository trong assistant vì dễ nhầm với module analytics.
 
-## Technology Stack
+## Quy tắc dependency
 
-### Core
-| Thành phần | Công nghệ |
-|-----------|-----------|
-| Web framework | FastAPI + Uvicorn |
-| Data validation | Pydantic v2 |
-| DI container | `dependency-injector` |
-
-### AI / LLM
-| Thành phần | Công nghệ |
-|-----------|-----------|
-| LLM providers | OpenAI (GPT-4), Anthropic (Claude) |
-| Embeddings | OpenAI Embeddings, sentence-transformers |
-| Vector DB | Milvus (pymilvus) |
-| Hybrid search | Vector similarity + keyword/metadata filter |
-
-### Storage
-| Thành phần | Công nghệ |
-|-----------|-----------|
-| SQL Database | PostgreSQL (prod), SQLite (dev) |
-| ORM | SQLAlchemy 2.0 (async) |
-| Vector Database | Milvus Standalone |
-| Cache | Redis |
-
-### Infrastructure
-| Thành phần | Công nghệ |
-|-----------|-----------|
-| Container | Docker + Docker Compose |
-| Object storage | MinIO |
-| Message queue | RabbitMQ |
-| Milvus metadata | etcd |
-
-## Docker Compose Services
-
-```yaml
-services:
-  app          # FastAPI application (port 8000)
-  milvus       # Vector database (port 19530)
-  attu         # Milvus UI (port 8080)
-  etcd         # Milvus metadata store
-  minio        # Object storage (ports 9000, 9001)
-  rabbitmq     # Message queue (ports 5672, 15672)
+```mermaid
+flowchart TD
+    Root[config/container.py] --> Auth[auth]
+    Root --> Conversations[conversations]
+    Root --> Assistant[assistant]
+    Root --> Analytics[analytics]
+    Root --> Sales[sales]
+    Assistant --> Conversations
+    Assistant --> Sales
+    Assistant --> Auth
+    Conversations --> Auth
+    Analytics --> Sales
+    Analytics --> Auth
 ```
 
-## Configuration (.env)
+Trong mỗi module:
 
-```bash
-# LLM
-OPENAI_API_KEY=sk-...
-ANTHROPIC_API_KEY=sk-ant-...
-LLM__MODEL=gpt-4
+- presentation gọi application, sử dụng DTO và domain value object.
+- application điều phối nghiệp vụ thông qua domain interface; không import infrastructure/presentation hoặc config/container.py.
+- domain chỉ phụ thuộc thư viện chuẩn và domain contract; không import FastAPI, SQLAlchemy hay SDK.
+- infrastructure triển khai domain interface. Container của module ghép các implementation với use case.
+- config/container.py kết nối module với nhau và inject tài nguyên chung. Container của module không import container module khác.
+- common không phụ thuộc module nghiệp vụ. Không đưa code vào common chỉ vì muốn né ranh giới module.
 
-# Vector DB
-VECTOR_DB__HOST=localhost
-VECTOR_DB__PORT=19530
-VECTOR_DB__COLLECTION_NAME=business_data
-VECTOR_DB__VECTOR_DIMENSION=512
+Các nhóm lỗi dùng chung nằm trong `src/common/errors/`: `not_found`, `not_permission`, `unauthorized`, `validation`, `conflict`, cấu hình, timeout và lỗi dịch vụ/nội bộ. Mỗi module gom mã lỗi và mẫu thông điệp riêng trong `domain/errors.py`; nơi gọi khởi tạo lỗi có tên kèm tham số có tên. Ánh xạ sang HTTP status nằm tại `src/common/presentation/error_handlers.py`, giữ nguyên response `{"detail": ...}` và contract SSE. Lỗi domain không phụ thuộc framework. Xem `src/common/errors/README.md`.
 
-# SQL Database
-DATABASE__URL=postgresql+asyncpg://user:pass@localhost/db
+Application có thể dùng domain contract của module khác: assistant sử dụng IConversationRepository và repository contract của sales. Các HTTP adapter dùng dependency xác thực từ auth và ownership guard từ conversations.
 
-# Cache
-CACHE__HOST=localhost
-CACHE__PORT=6379
+Hai dependency hạ tầng phục vụ đọc được cho phép rõ ràng: analytics query các ORM model của sales để tổng hợp báo cáo; conversation repository join UserModel của auth để hiển thị chủ hội thoại. Không cho application/domain truy cập các ORM model này. Nếu tách database/service trong tương lai, thay các read adapter này bằng projection hoặc API port; chưa có tính độc lập về triển khai/database.
 
-# API
-API__PORT=8000
-API__HOST=0.0.0.0
+LangGraph nằm trong application của assistant vì đây là cơ chế orchestration hiện tại. RapidFuzz và pandas vẫn là thư viện xử lý dữ liệu của các application service hiện có. Adapter truy cập dịch vụ ngoài, JWT/bcrypt, SQLAlchemy, Redis, Milvus, LLM và OpenPyXL nằm trong infrastructure.
+
+## Điểm vào và DI
+
+src/bootstrap/router.py tập hợp bốn router auth/conversations/assistant/analytics dưới /api/v1, khai báo prefix/tag và các endpoint public /health, /. ROUTER_MODULES trong cùng file liệt kê module cần DI wiring. main.create_app() cấu hình container, wire ROUTER_MODULES rồi mount router tổng. CLI create_admin.py và sync_business_data.py tiếp tục dùng config.container.container.
+
+Pydantic Settings parse/merge/validate theo environment → backend/.env → YAML được chọn → defaults. ConfigManager chỉ chọn file và cache model; YAML được chọn bằng argument hoặc AI_ASSISTANT_CONFIG_FILE, fallback local development duy nhất là config/local.yml nếu có. Secrets dùng SecretStr và chỉ được giải mã tại settings.to_container_config() khi truyền cho DI. PostgreSQL URL được tạo bằng URL.create(); Alembic và backend cùng đọc DatabaseSettings, không lấy DSN riêng từ alembic.ini. Xem config/README.md cho tên env, source precedence và validation.
+
+Tên provider phẳng hiện có (auth_use_case, chat_use_case, dashboard_analytics_use_case, v.v.) được giữ làm alias đến provider trong module để CLI và test override tiếp tục dùng được. Code mới có thể truy cập container.auth(), container.sales(), container.assistant(), v.v. để kiểm tra wiring của một module. Không khởi tạo adapter trực tiếp trong router hoặc use case.
+
+TextToSQLUseCase của assistant nhận ISQLExecutor từ domain/ports/i_sql_executor.py; PostgresSQLExecutor tại infrastructure/database/postgres_sql_executor.py triển khai port và giữ transaction chỉ đọc cùng statement timeout. AuthUseCase nhận IPasswordHasher và ITokenService từ auth/domain/ports/; BcryptPasswordHasher và JWTTokenService nằm trong auth/infrastructure/security.py. JWT vẫn dùng HS256, kiểm tra issuer/audience/expiry/type; refresh token tiếp tục rotate qua repository.
+
+## Persistence và migration
+
+Mỗi module sở hữu models.py trong infrastructure:
+
+| Module | Bảng |
+| --- | --- |
+| auth | users, refresh_tokens |
+| conversations | conversations, messages |
+| sales | customers, sales_invoices, sales_invoice_lines, sales_returns, sales_return_lines, customer_debt_transactions |
+
+Tất cả kế thừa src.common.infrastructure.database.base.Base. src/bootstrap/orm.py import mọi model vào một metadata registry; migrations/env.py import registry này. Khi thêm ORM model, thêm import vào registry để Alembic nhận đủ metadata và foreign key.
+
+Alembic là nguồn sự thật cho schema; head hiện tại là e7b3c5a19f42. Mọi thay đổi bảng/cột/index/constraint phải có revision mới. Không gọi create_all khi khởi động.
+
+Tiền giữ Decimal/numeric; công nợ dùng signed ledger customer_debt_transactions.
+
+## Thêm tính năng hoặc module
+
+1. Chọn module sở hữu nghiệp vụ. Thêm domain contract trước nếu cần dependency mới.
+2. Viết use case với dependency inject; triển khai adapter trong infrastructure của module sở hữu dữ liệu/tích hợp.
+3. Khai báo provider trong container.py của module. Kết nối dependency liên module tại config/container.py.
+4. Nếu có HTTP API, thêm DTO/router và đăng ký tại src/bootstrap/router.py (gồm ROUTER_MODULES cho DI wiring); cập nhật frontend contract khi API thay đổi.
+5. Nếu đổi schema, thêm migration. Kiểm tra metadata registry khi thêm module/model.
+6. Chạy test liên quan và kiểm tra kiến trúc, sau đó chạy suite backend.
+
+Không có package shim cho đường dẫn import cũ (src.application.*, src.domain.*, src.infrastructure.*, src.presentation.*, src.utils.*, src.shared.*). Dùng src.modules.<module>.* hoặc src.common.*; container dùng chung là CommonContainer/container.common.
+
+## Kiểm tra
+
+Chạy từ backend/:
+
+```powershell
+.\env\Scripts\python.exe -m pytest tests/unit/test_module_architecture.py tests/unit/test_module_composition.py
+.\env\Scripts\python.exe -m pytest tests/unit tests/integrate etl_business/tests
+.\env\Scripts\python.exe -m alembic heads
 ```
 
-## SOLID Principles
-
-| Principle | Áp dụng |
-|-----------|---------|
-| **S** — Single Responsibility | Mỗi class một trách nhiệm: `RAGOrchestrator` chỉ điều phối RAG, `ContextBuilder` chỉ format context |
-| **O** — Open/Closed | Thêm LLM provider mới bằng cách tạo adapter mới, không sửa use case |
-| **L** — Liskov Substitution | `OpenAIAdapter` và `AnthropicAdapter` hoán đổi nhau qua `ILLMService` |
-| **I** — Interface Segregation | `ILLMService`, `IEmbeddingService`, `IVectorDB` tách biệt rõ ràng |
-| **D** — Dependency Inversion | `ChatUseCase` phụ thuộc `ILLMService` (interface), không phải `OpenAIAdapter` |
-
-## Adding New Features
-
-1. **Domain**: Định nghĩa entity và interface mới trong `src/domain/`
-2. **Application**: Viết use case trong `src/application/use_cases/`
-3. **Infrastructure**: Implement interface trong `src/infrastructure/`
-4. **Presentation**: Thêm router trong `src/presentation/api/v1/`
-5. **Config**: Wire dependencies trong `config/container.py`
-
-## Testing Strategy
-
-```
-tests/
-├── unit/           # Test domain entities, value objects, domain services
-├── integration/    # Test use cases với real DB (không mock)
-└── e2e/            # Test API endpoints
-```
-
-- Unit test: domain layer (không cần framework)
-- Integration test: use cases với real DB — không mock database
-- E2E test: HTTP endpoints via TestClient
+Architecture test kiểm tra hướng phụ thuộc layer, domain không dùng framework, dependency liên module không vòng, common không import nghiệp vụ và đường dẫn import nội bộ còn tồn tại. Composition test kiểm tra provider dùng chung/override xuyên module và metadata/foreign key đầy đủ. Các test xác thực, guest, ownership, SSE, SQL, analytics và xuất workbook tiếp tục kiểm tra hành vi.

@@ -3,7 +3,12 @@ from uuid import uuid4
 
 import pytest
 
-from src.application.use_cases.auth_use_case import AuthenticationError, AuthUseCase
+from src.common.errors import PermissionDeniedError
+from src.modules.auth.application.use_cases.auth_use_case import AuthUseCase
+from src.modules.auth.domain.errors import AuthenticationError
+from src.modules.auth.domain.repositories.i_auth_repository import RefreshRotation
+
+from src.modules.auth.infrastructure.security import BcryptPasswordHasher, JWTTokenService
 
 
 class FakeAuthRepository:
@@ -40,6 +45,22 @@ class FakeAuthRepository:
         token["revoked"] = True
         return True
 
+    async def rotate_refresh_token(self, jti, user_id, new_jti, new_expires_at, reuse_grace_seconds=0):
+        token = self.refresh_tokens.get(jti)
+        if token and token["user_id"] == user_id and not token["revoked"]:
+            token["revoked"] = True
+            await self.store_refresh_token(new_jti, user_id, new_expires_at)
+            return RefreshRotation.ROTATED
+        if token and token["user_id"] == user_id and token["revoked"]:
+            await self.revoke_all_refresh_tokens(user_id)
+            return RefreshRotation.REUSED
+        return RefreshRotation.INVALID
+
+    async def revoke_all_refresh_tokens(self, user_id):
+        for token in self.refresh_tokens.values():
+            if token["user_id"] == user_id:
+                token["revoked"] = True
+
     async def revoke_refresh_token(self, jti, user_id):
         token = self.refresh_tokens.get(jti)
         if token and token["user_id"] == user_id:
@@ -49,9 +70,12 @@ class FakeAuthRepository:
 def build_use_case():
     return AuthUseCase(
         auth_repository=FakeAuthRepository(),
-        jwt_secret="unit-test-secret-that-is-at-least-32-characters-long",
-        jwt_issuer="test-issuer",
-        jwt_audience="test-audience",
+        password_hasher=BcryptPasswordHasher(rounds=4),
+        token_service=JWTTokenService(
+            secret="unit-test-secret-that-is-at-least-32-characters-long",
+            issuer="test-issuer",
+            audience="test-audience",
+        ),
         access_token_minutes=15,
         refresh_token_days=30,
     )
@@ -98,7 +122,7 @@ async def test_only_admin_can_create_staff():
     use_case = build_use_case()
     guest_session = await use_case.create_guest_session()
 
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(PermissionDeniedError):
         await use_case.create_staff(
             "staff@example.com", "Staff User", "password123", guest_session["user"]
         )

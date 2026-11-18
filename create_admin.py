@@ -5,6 +5,7 @@ from getpass import getpass
 
 from config.config_manager import get_settings
 from config.container import container
+from src.modules.auth.domain.ports.i_password_hasher import MAX_PASSWORD_BYTES, password_byte_length
 
 
 async def main() -> None:
@@ -13,15 +14,16 @@ async def main() -> None:
     parser.add_argument("--name", required=True)
     args = parser.parse_args()
 
-    password = getpass("Password (8-72 characters): ")
+    password = getpass(f"Password (8-{MAX_PASSWORD_BYTES} bytes, UTF-8): ")
     confirmation = getpass("Confirm password: ")
     if password != confirmation:
         raise SystemExit("Passwords do not match")
-    if not 8 <= len(password) <= 72:
-        raise SystemExit("Password must contain 8-72 characters")
+    # bcrypt ignores everything after 72 BYTES, so validate the encoded length.
+    if not 8 <= password_byte_length(password) <= MAX_PASSWORD_BYTES:
+        raise SystemExit(f"Password must contain 8-{MAX_PASSWORD_BYTES} bytes (UTF-8 encoded)")
 
     settings = get_settings()
-    container.config.from_dict(settings.model_dump())
+    container.config.from_dict(settings.to_container_config())
     try:
         user = await container.auth_use_case().bootstrap_admin(args.email, args.name, password)
         print(f"Created admin {user['email']} ({user['id']})")

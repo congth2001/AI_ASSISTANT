@@ -4,12 +4,12 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from src.domain.entities.dashboard_analytics import (
+from src.modules.analytics.domain.models.customer_debt import (
     CustomerDebtExportFilters,
     CustomerDebtExportItem,
     CustomerDebtSheetMode,
 )
-from src.infrastructure.exporters.customer_debt_workbook_exporter import (
+from src.modules.analytics.infrastructure.exporters.customer_debt_workbook_exporter import (
     OpenpyxlCustomerDebtWorkbookExporter,
 )
 
@@ -123,5 +123,7 @@ def test_export_escapes_formula_like_customer_text():
         CustomerDebtExportFilters(),
     )
 
+    # Literal text, never a formula, and the visible value is not altered.
     assert workbook.active["B5"].data_type == "s"
-    assert workbook.active["B5"].value == "'=HYPERLINK(\"bad\")"
+    assert workbook.active["B5"].value == '=HYPERLINK("bad")'
+    assert workbook.active["B5"].quotePrefix is True

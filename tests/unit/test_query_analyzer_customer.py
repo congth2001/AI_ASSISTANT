@@ -1,6 +1,6 @@
 import pytest
 
-from src.application.services.query_analyzer import QueryAnalyzer
+from src.modules.assistant.application.services.query_analyzer import QueryAnalyzer
 
 
 def analyzer(*customer_names: str) -> QueryAnalyzer:

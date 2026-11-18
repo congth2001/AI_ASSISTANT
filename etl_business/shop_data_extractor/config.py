@@ -15,8 +15,8 @@ def _resolve_path(value: str, base: Path) -> Path:
 
 
 def load_settings(config_path: str | Path | None = None) -> dict:
-    local_config = PROJECT_ROOT / "config" / "local.yml"
-    etl_settings = ConfigManager(str(local_config)).get_settings().etl
+    manager = ConfigManager()
+    etl_settings = manager.get_settings().etl
     configured_path = config_path or etl_settings.extract_config_path
     cfg_path = (
         _resolve_path(str(configured_path), PROJECT_ROOT)
@@ -36,7 +36,7 @@ def load_settings(config_path: str | Path | None = None) -> dict:
             else ""
         ),
         "mdb_member": etl_settings.mdb_member,
-        "mdb_password": etl_settings.mdb_password,
+        "mdb_password": etl_settings.mdb_password.get_secret_value(),
         "output_dir": str(_resolve_path(etl_settings.output_dir, PROJECT_ROOT)),
         "snapshot_dir": str(
             _resolve_path(etl_settings.snapshot_dir, PROJECT_ROOT)
@@ -49,7 +49,7 @@ def load_settings(config_path: str | Path | None = None) -> dict:
         ),
         "lock_path": str(_resolve_path(etl_settings.lock_path, PROJECT_ROOT)),
         "opening_balance_date": etl_settings.opening_balance_date,
-        "project_config_path": str(local_config),
+        "project_config_path": str(manager.config_path) if manager.config_path else None,
         "config_path": str(cfg_path),
     }
     return cfg

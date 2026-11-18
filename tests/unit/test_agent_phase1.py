@@ -7,23 +7,23 @@ import pytest
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT_DIR)
 
-from src.application.agent.graph.edges import (
+from src.modules.assistant.application.agent.graph.edges import (
     route_after_analysis,
-    route_after_text_to_sql,
     route_after_request_assessment,
     route_after_context_evaluation,
     route_after_response_evaluation,
 )
-from src.application.agent.graph.nodes import (
+from src.modules.assistant.application.agent.graph.nodes import (
     make_evaluate_context_node,
     make_prepare_conversation_node,
 )
-from src.application.services.intent_classifier import IntentClassifier
-from src.application.services.sql_service import SQLService, SQLValidationError
-from src.application.use_cases.chat_use_case import ChatUseCase
-from src.domain.entities.conversation import Conversation
-from src.domain.entities.message import Message
-from src.application.agent.runtime import AgentOperationTimeout, run_with_policy
+from src.modules.assistant.application.services.intent_classifier import IntentClassifier
+from src.modules.assistant.application.services.sql_service import SQLService, SQLValidationError
+from src.modules.assistant.application.use_cases.chat_use_case import ChatUseCase
+from src.modules.conversations.domain.entities.conversation import Conversation
+from src.modules.conversations.domain.entities.message import Message
+from src.modules.assistant.application.agent.runtime import AgentOperationTimeout, run_with_policy
+from src.modules.assistant.domain.errors import OpenAIRequestError, SQLPlanValidationFailedError
 
 
 class _LLM:
@@ -82,7 +82,6 @@ async def test_conversation_node_prepares_context_without_data_tool():
         "messages": [],
         "trace_id": "test-trace",
         "node_metrics": [],
-        "attempted_routes": [],
     }
 
     updates = await node(state)
@@ -91,20 +90,8 @@ async def test_conversation_node_prepares_context_without_data_tool():
     assert updates["context"]["has_data"] is True
     assert updates["context"]["sources"] == []
     assert updates["tool_name"] is None
-    assert updates["attempted_routes"] == ["conversation"]
+    assert "attempted_routes" not in updates
     assert route_after_analysis({"route": "conversation"}) == "conversation"
-
-
-def test_successful_sql_with_no_rows_still_routes_to_response():
-    assert route_after_text_to_sql(
-        {"context": {"has_data": False}, "tool_success": True}
-    ) == "generate_response"
-
-
-def test_sql_data_routes_to_response():
-    assert (
-        route_after_text_to_sql({"context": {"has_data": True}}) == "generate_response"
-    )
 
 
 @pytest.mark.asyncio
@@ -125,15 +112,12 @@ async def test_clear_sales_question_ignores_incorrect_llm_rag_route():
 
 
 @pytest.mark.asyncio
-async def test_successful_empty_sql_context_does_not_replan_to_rag():
+async def test_successful_empty_sql_context_responds_without_rag():
     node = make_evaluate_context_node()
     state = {
         "context": {"has_data": False},
         "tool_name": "text_to_sql",
         "tool_success": True,
-        "attempted_routes": ["text_to_sql"],
-        "iteration": 1,
-        "max_iterations": 3,
         "trace_id": "test-trace",
         "node_metrics": [],
     }
@@ -169,7 +153,7 @@ def test_sql_validator_rejects_unsafe_queries(sql):
 
 def test_sql_validator_caps_large_limit():
     sql = SQLService(llm_service=None).validate(
-        "SELECT invoice_id FROM invoices LIMIT 999999"
+        "SELECT i.invoice_id FROM sales_invoices i LIMIT 999999"
     )
     assert "LIMIT 1000" in sql
 
@@ -197,7 +181,7 @@ async def test_runtime_policy_retries_transient_failure():
         nonlocal attempts
         attempts += 1
         if attempts == 1:
-            raise RuntimeError("temporary")
+            raise OpenAIRequestError()
         return "ok"
 
     assert (
@@ -225,9 +209,10 @@ def test_phase3_decision_edges():
         route_after_context_evaluation({"evaluation": {"decision": "respond"}})
         == "respond"
     )
+    # `replan` was removed; any unknown decision falls back to asking for clarification.
     assert (
         route_after_context_evaluation({"evaluation": {"decision": "replan"}})
-        == "replan"
+        == "clarify"
     )
     assert (
         route_after_response_evaluation({"evaluation": {"decision": "retry_response"}})
@@ -236,3 +221,47 @@ def test_phase3_decision_edges():
     assert (
         route_after_response_evaluation({"evaluation": {"decision": "done"}}) == "done"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error", [SQLPlanValidationFailedError(), ValueError("bad input"), RuntimeError("bug")]
+)
+async def test_runtime_policy_does_not_retry_non_transient_errors(error):
+    attempts = 0
+
+    async def operation():
+        nonlocal attempts
+        attempts += 1
+        raise error
+
+    with pytest.raises(type(error)):
+        await run_with_policy(operation, name="test", timeout_seconds=1, retries=3)
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_runtime_policy_retries_timeout_then_raises_operation_timeout():
+    import asyncio
+
+    attempts = 0
+
+    async def slow_operation():
+        nonlocal attempts
+        attempts += 1
+        await asyncio.sleep(0.1)
+
+    with pytest.raises(AgentOperationTimeout):
+        await run_with_policy(slow_operation, name="slow", timeout_seconds=0.001, retries=1)
+    assert attempts == 2
+
+
+def test_replan_node_and_dead_state_fields_are_gone():
+    from src.modules.assistant.application.agent.graph import builder, edges, nodes
+    from src.modules.assistant.application.agent.graph.state import AgentState
+
+    assert not hasattr(nodes, "make_replan_node")
+    assert not hasattr(edges, "route_after_text_to_sql")
+    assert not hasattr(builder, "make_replan_node")
+    removed = {"plan", "attempted_routes", "iteration", "max_iterations", "awaiting_approval", "pending_action"}
+    assert removed.isdisjoint(AgentState.__annotations__)

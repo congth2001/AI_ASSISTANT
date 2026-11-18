@@ -61,9 +61,9 @@ def cmd_extract(cfg: dict):
         print(f"Application snapshots: {paths[0]}, {paths[1]}, {paths[2]}")
 
 
-def cmd_run(cfg: dict):
+def cmd_run(cfg: dict, allow_shrink: bool = False):
     require_mdb(cfg["_runtime"])
-    result = asyncio.run(run_business_etl(cfg))
+    result = asyncio.run(run_business_etl(cfg, allow_shrink=allow_shrink))
     print(json.dumps(result, ensure_ascii=False, default=str))
 
 def main():
@@ -71,7 +71,12 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("inspect", help="Inspect MDB schema and samples")
     sub.add_parser("extract", help="Extract configured business datasets")
-    sub.add_parser("run", help="Extract, normalize, and sync to PostgreSQL")
+    run_parser = sub.add_parser("run", help="Extract, normalize, and sync to PostgreSQL")
+    run_parser.add_argument(
+        "--allow-shrink",
+        action="store_true",
+        help="Permit soft-deleting records when a snapshot is empty or much smaller",
+    )
     parser.add_argument("--config", help="Path to extraction YAML")
     args = parser.parse_args()
 
@@ -81,7 +86,7 @@ def main():
     elif args.command == "extract":
         cmd_extract(cfg)
     elif args.command == "run":
-        cmd_run(cfg)
+        cmd_run(cfg, allow_shrink=args.allow_shrink)
 
 if __name__ == "__main__":
     main()

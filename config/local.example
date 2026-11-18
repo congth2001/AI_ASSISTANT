@@ -1,5 +1,5 @@
 # ============================================================================
-# OPTIONAL SETTINGS (with defaults)
+# APPLICATION SETTINGS (secrets are required via YAML, .env or process environment)
 # ============================================================================
 
 # LLM Configuration
@@ -29,7 +29,7 @@ database:
     host: localhost
     port: 5432
     username: congvq
-    password: congvq
+    password: "" # Set here or through DATABASE__PASSWORD; no built-in DB password.
     db_name: ai_assistant
     echo: false
 
@@ -43,20 +43,33 @@ cache:
 
 # API Configuration
 api:
-    host: 0.0.0.0
+    host: 127.0.0.1 # Loopback by default; use 0.0.0.0 only when remote access is intended.
     port: 8000
     debug: false
-    cors_origins:
+    docs_enabled: true # Swagger (/docs) and ReDoc; set false on public deployments.
+    cors_origins: # Explicit origins only; "*" is rejected.
         - http://localhost:5173
         - http://127.0.0.1:5173
+    public_frontend_origins: [] # Deployed frontend origins (also: env PUBLIC_FRONTEND_ORIGINS, comma separated).
+
+# Rate limit for /auth/login, /auth/guest and /auth/refresh (in-memory, per process)
+rate_limit:
+    enabled: true
+    window_seconds: 60
+    login_per_ip: 10
+    login_per_email: 5
+    guest_per_ip: 10
+    refresh_per_ip: 30
+    trust_forwarded_for: false # true only behind one trusted proxy (ngrok/Cloudflare); else per-IP limits are bypassable.
 
 # Authentication (generate a strong random secret for every environment)
 auth:
-    jwt_secret: "replace-with-at-least-32-random-characters"
+    jwt_secret: # Required: provide your own random secret here or AUTH__JWT_SECRET.
     jwt_issuer: business-chatbot
     jwt_audience: business-chatbot-web
     access_token_minutes: 15
     refresh_token_days: 30
+    refresh_reuse_grace_seconds: 30 # tolerates concurrent refresh from several tabs sharing one token; 0 = strict replay detection.
 
 # Business ETL Configuration (Microsoft Access/iShopman)
 etl:

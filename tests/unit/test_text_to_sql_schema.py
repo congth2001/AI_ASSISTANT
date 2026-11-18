@@ -3,16 +3,16 @@ from decimal import Decimal
 
 import pytest
 
-from src.application.services.schema_linker import SchemaLinker
-from src.application.services.sql_service import (
+from src.modules.assistant.application.services.schema_linker import SchemaLinker
+from src.modules.assistant.application.services.sql_service import (
     SQLQueryPlan,
     SQLService,
     SQLValidationError,
 )
-from src.application.use_cases.analytics_use_case import AnalyticsUseCase
-from src.domain.constants.query_intent import QueryIntent
-from src.domain.entities.analyzed_query import AnalyzedQuery
-from src.domain.entities.time_filter import TimeFilter
+from src.modules.assistant.application.use_cases.text_to_sql_use_case import TextToSQLUseCase
+from src.modules.assistant.domain.constants.query_intent import QueryIntent
+from src.modules.assistant.domain.entities.analyzed_query import AnalyzedQuery
+from src.modules.assistant.domain.entities.time_filter import TimeFilter
 
 
 class RecordingLLM:
@@ -228,7 +228,7 @@ def test_validator_rejects_legacy_schema_and_placeholders(sql):
 
 
 def test_result_summary_prefers_revenue_over_quantity():
-    content = AnalyticsUseCase._format_results(
+    content = TextToSQLUseCase._format_results(
         [
             (
                 "products",
