@@ -190,7 +190,7 @@ class AuthSettings(ConfigModel):
     # Seconds after a refresh token is rotated during which replaying it only returns 401.
     # 0 (default) treats any replay as theft and revokes all of the user's refresh tokens;
     # set a few seconds if several browser tabs may refresh with the same token concurrently.
-    refresh_reuse_grace_seconds: int = Field(default=0, ge=0, le=60)
+    refresh_reuse_grace_seconds: int = Field(default=30, ge=0, le=60)
 
     @field_validator("jwt_secret")
     @classmethod

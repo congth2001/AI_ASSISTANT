@@ -41,7 +41,7 @@ Danh sách/object dùng JSON trong biến môi trường. Chuỗi như mật kh�
 - `api.host` mặc định `127.0.0.1` (chỉ máy local); đặt `0.0.0.0` khi cần truy cập từ xa.
 - `api.docs_enabled` (mặc định `true`) bật/tắt `/docs`, `/redoc`, `/openapi.json`; nên tắt khi public.
 - `rate_limit.*`: giới hạn cửa sổ trượt trong bộ nhớ cho `/auth/login` (theo IP và theo email), `/auth/guest`, `/auth/refresh`; trả `429` kèm `Retry-After`. Mỗi process có bộ đếm riêng và restart sẽ xóa bộ đếm. `trust_forwarded_for` chỉ bật khi chạy sau đúng một reverse proxy tin cậy (ngrok/Cloudflare), khi đó IP lấy từ mục ngoài cùng bên phải của `X-Forwarded-For`; nếu không bật, mọi client sau proxy dùng chung một bucket IP.
-- `auth.refresh_reuse_grace_seconds` (mặc định `0`): dùng lại refresh token đã bị tiêu thụ sẽ thu hồi toàn bộ refresh token của user và trả `401`. Đặt vài giây nếu nhiều tab trình duyệt có thể refresh đồng thời bằng cùng một token.
+- `auth.refresh_reuse_grace_seconds` (mặc định `30`): dùng lại refresh token đã bị xoay vòng quá khoảng này sẽ thu hồi toàn bộ refresh token của user và trả `401`; trong khoảng này (nhiều tab refresh cùng lúc bằng cùng một token) chỉ trả `401` cho request đến sau. Đặt `0` để phát hiện replay nghiêm ngặt. Logout xóa hẳn token nên token đã logout bị gửi lại chỉ nhận `401`, không thu hồi các phiên khác.
 - `database.username` không còn mặc định theo tên cá nhân (mặc định `postgres`); `DatabaseSettings.url` và `Settings.to_container_config()` chứa secret rõ, không log/in chúng.
 
 ## Cấu hình bắt buộc và secrets

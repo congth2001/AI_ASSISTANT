@@ -176,25 +176,6 @@ class ConversationRepository(IConversationRepository):
             await session.commit()
             return result.rowcount > 0
 
-    async def add_message(self, conversation_id: UUID, message_data: Dict[str, Any]) -> bool:
-        """Add message to conversation"""
-        async with self.session_factory() as session:
-            message = MessageModel(
-                id=message_data['id'],
-                conversation_id=str(conversation_id),
-                content=message_data['content'],
-                role=message_data['role'],
-                extra_metadata=message_data.get('metadata'),
-            )
-            session.add(message)
-            await session.execute(
-                update(ConversationModel)
-                .where(ConversationModel.id == str(conversation_id))
-                .values(updated_at=datetime.now(timezone.utc))
-            )
-            await session.commit()
-            return True
-
     async def add_messages(self, conversation_id: UUID, messages: List[Dict[str, Any]]) -> List[Message]:
         """Persist messages atomically: either every message is stored or none is."""
         if not messages:

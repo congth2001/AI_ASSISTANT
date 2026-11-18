@@ -142,15 +142,33 @@ class AgentService:
         )
 
     async def stream_response(self, query: str, context: Dict[str, Any]) -> AsyncGenerator[str, None]:
-        """Delegate token streaming to the underlying LLM service."""
+        """Delegate token streaming to the underlying LLM service.
+
+        The time budget covers only waiting for the provider. The deadline is
+        never held across ``yield``: time the consumer (a slow SSE client) spends
+        between tokens is not counted, and a deadline cannot fire while the task
+        is suspended outside this generator, where it would surface as a plain
+        cancellation (client disconnect) instead of ``AgentOperationTimeout``.
+        """
+        loop = asyncio.get_running_loop()
+        remaining = float(STREAM_RESPONSE_TIMEOUT_SECONDS)
+        tokens = self._llm_service.stream_response(query, context).__aiter__()
         try:
-            async with asyncio.timeout(STREAM_RESPONSE_TIMEOUT_SECONDS):
-                async for token in self._llm_service.stream_response(query, context):
-                    yield token
-        except AgentOperationTimeout:
-            raise
-        except TimeoutError as exc:
-            raise AgentOperationTimeout(operation="stream_response") from exc
+            while True:
+                started = loop.time()
+                try:
+                    async with asyncio.timeout(max(remaining, 0.0)):
+                        token = await tokens.__anext__()
+                except StopAsyncIteration:
+                    return
+                except TimeoutError as exc:
+                    raise AgentOperationTimeout(operation="stream_response") from exc
+                remaining -= loop.time() - started
+                yield token
+        finally:
+            aclose = getattr(tokens, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     async def classify_route(self, query: str) -> str:
         """Classify a query without executing SQL, RAG, or any data tool."""

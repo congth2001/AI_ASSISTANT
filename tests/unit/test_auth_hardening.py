@@ -243,7 +243,7 @@ async def test_refresh_rotation_replaces_token_and_replay_revokes_every_session(
 
 
 @pytest.mark.asyncio
-async def test_replay_of_logged_out_token_revokes_all_sessions(session_factory):
+async def test_replay_of_logged_out_token_is_rejected_without_revoking_other_sessions(session_factory):
     use_case = build_use_case(session_factory)
     await use_case.bootstrap_admin("a@b.co", "Admin", "password123")
     laptop = await use_case.login("a@b.co", "password123")
@@ -251,8 +251,8 @@ async def test_replay_of_logged_out_token_revokes_all_sessions(session_factory):
     await use_case.logout(laptop["refresh_token"])
     with pytest.raises(InvalidRefreshTokenError):
         await use_case.refresh(laptop["refresh_token"])
-    with pytest.raises(InvalidRefreshTokenError):
-        await use_case.refresh(phone["refresh_token"])
+    # Logout deletes the token, so its replay is "unknown", not theft.
+    assert (await use_case.refresh(phone["refresh_token"]))["user"]["email"] == "a@b.co"
 
 
 @pytest.mark.asyncio

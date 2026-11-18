@@ -84,7 +84,7 @@ def test_api_defaults_are_safe_for_local_development(yaml_config):
     assert settings.rate_limit.limits() == {
         "login_ip": 10, "login_email": 5, "guest_ip": 10, "refresh_ip": 30,
     }
-    assert settings.auth.refresh_reuse_grace_seconds == 0
+    assert settings.auth.refresh_reuse_grace_seconds == 30
 
 
 def _settings_with(base: Settings, **sections) -> Settings:

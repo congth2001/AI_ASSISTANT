@@ -14,8 +14,29 @@ from src.modules.assistant.domain.constants.search_config import SearchConfig
 from src.modules.assistant.domain.ports.i_llm_service import ILLMService
 from src.modules.assistant.application.agent.runtime import run_with_policy, node_metric
 from src.modules.assistant.domain.errors import (
+    DocumentRetrievalFailedError,
     SQLGenerationFailedError, SQLPlanValidationFailedError, SQLExecutionFailedError,
 )
+
+_SQL_TOOL_ERRORS = (SQLGenerationFailedError, SQLPlanValidationFailedError, SQLExecutionFailedError)
+
+
+def _tool_error_message(error_code: str | None, *, tool_name: str | None) -> str:
+    """User-facing message for a failed data tool; never exposes internals."""
+    sql_error = next((error for error in _SQL_TOOL_ERRORS if error.code == error_code), None)
+    if sql_error is not None:
+        return sql_error().message + " Vui lòng thử lại sau."
+    if tool_name == "text_to_sql":
+        return SQLExecutionFailedError().message + " Vui lòng thử lại sau."
+    return DocumentRetrievalFailedError().message + " Vui lòng thử lại sau."
+
+
+def _tool_error_evaluation(context: dict, reason: str, message: str) -> dict:
+    return {
+        "evaluation": {"decision": "respond", "reason": reason},
+        "context": {**context, "response_mode": "tool_error"},
+        "response": message,
+    }
 
 logger = logging.getLogger(__name__)
 
@@ -301,6 +322,12 @@ def make_execute_hybrid_node(
                 sql_context={"queries": sql_queries, "result": sql_result.content},
                 rag_context={"documents": rag_documents, "result": rag_result.content},
             )
+            if rag_result.error_code and rag_context.get("fallback_warning"):
+                # SQL data can still answer; tell the LLM documents were unavailable
+                # (adapters read retrieved_text, not fallback_warning).
+                context["fallback_warning"] = rag_context["fallback_warning"]
+                warning = f"Lưu ý: {rag_context['fallback_warning']}"
+                context["retrieved_text"] = "\n\n".join(filter(None, [merged_text, warning]))
             calls = [_tool_call("text_to_sql", sql_result), _tool_call("rag", rag_result)]
             return {
                 "tool_name": "hybrid",
@@ -334,18 +361,18 @@ def make_evaluate_context_node():
                         "reason": "sql_completed_without_matching_rows",
                     }
                 }
-            if state.get("tool_name") == "text_to_sql" and not state.get("tool_success"):
-                errors = (SQLGenerationFailedError, SQLPlanValidationFailedError, SQLExecutionFailedError)
-                error_type = next(
-                    (error for error in errors if error.code == state.get("tool_error_code")),
-                    SQLExecutionFailedError,
+            tool_name = state.get("tool_name")
+            error_code = state.get("tool_error_code")
+            if tool_name == "text_to_sql" and not state.get("tool_success"):
+                return _tool_error_evaluation(
+                    context, "sql_tool_failed", _tool_error_message(error_code, tool_name=tool_name)
                 )
-                message = error_type().message + " Vui lòng thử lại sau."
-                return {
-                    "evaluation": {"decision": "respond", "reason": "sql_tool_failed"},
-                    "context": {**context, "response_mode": "tool_error"},
-                    "response": message,
-                }
+            # A failed vector search must not read as "no matching documents":
+            # report the outage instead of asking the user to clarify.
+            if tool_name in ("rag", "hybrid") and error_code:
+                return _tool_error_evaluation(
+                    context, f"{tool_name}_tool_failed", _tool_error_message(error_code, tool_name=tool_name)
+                )
 
             return {
                 "evaluation": {"decision": "clarify", "reason": "insufficient_grounding"},

@@ -213,9 +213,8 @@ class ChatUseCase:
             yield _sse({"type": "token", "content": token})
         assistant_msg = await self._persist_exchange(
             turn.conversation_id, turn.user_message, payload["response"],
-            payload["metadata"], turn.user_id, turn.is_first_message,
+            payload["metadata"], turn.user_id, turn.is_first_message, turn=turn,
         )
-        turn.persisted = True
         yield _sse({
             "type": "done",
             "conversation_id": str(turn.conversation_id),
@@ -245,9 +244,8 @@ class ChatUseCase:
         }
         assistant_msg = await self._persist_exchange(
             turn.conversation_id, turn.user_message, response_content,
-            metadata, turn.user_id, turn.is_first_message,
+            metadata, turn.user_id, turn.is_first_message, turn=turn,
         )
-        turn.persisted = True
         await self._cache_response(cache_key, response_content, intent, metadata)
         yield _sse({
             "type": "done",
@@ -299,10 +297,14 @@ class ChatUseCase:
         assistant_metadata: Optional[Dict[str, Any]],
         user_id: Optional[str],
         is_first_message: bool,
+        turn: Optional[_StreamTurn] = None,
     ) -> Message:
         """Save the user + assistant messages in one transaction, then set the title.
 
         Metadata describes the assistant answer only; the user message has none.
+        ``turn`` is marked persisted right after the messages commit, before the
+        title update, so a cancellation during the title update cannot make the
+        interrupt handler save the same exchange a second time.
         """
         user_msg = Message(conversation_id=conversation_id, content=user_message, role="user")
         assistant_msg = Message(
@@ -314,6 +316,8 @@ class ChatUseCase:
         await self.conversation_repo.add_messages(
             conversation_id, [self._message_to_dict(user_msg), self._message_to_dict(assistant_msg)]
         )
+        if turn is not None:
+            turn.persisted = True
         await self._set_title_if_first(conversation_id, user_message, user_id, is_first_message)
         return assistant_msg
 

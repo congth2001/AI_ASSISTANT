@@ -54,11 +54,6 @@ class IConversationRepository(ABC):
         pass
 
     @abstractmethod
-    async def add_message(self, conversation_id: UUID, message_data: Dict[str, Any]) -> bool:
-        """Add message to conversation"""
-        pass
-
-    @abstractmethod
     async def add_messages(self, conversation_id: UUID, messages: List[Dict[str, Any]]) -> List[Message]:
         """Persist several messages in ONE transaction and bump ``conversations.updated_at``.
 

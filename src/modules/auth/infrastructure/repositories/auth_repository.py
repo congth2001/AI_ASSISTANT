@@ -115,15 +115,19 @@ class AuthRepository(IAuthRepository):
             return RefreshRotation.REUSED
 
     async def revoke_refresh_token(self, jti: str, user_id: str) -> None:
+        """Logout: delete the token instead of marking it revoked.
+
+        Revoked rows are kept only for rotated tokens so a replay can be detected;
+        a logged-out token that is sent again is simply unknown (INVALID) and must
+        not revoke the user's other sessions.
+        """
         async with self.session_factory() as session:
             await session.execute(
-                update(RefreshTokenModel)
-                .where(
+                delete(RefreshTokenModel).where(
                     RefreshTokenModel.jti == jti,
                     RefreshTokenModel.user_id == user_id,
                     RefreshTokenModel.revoked_at.is_(None),
                 )
-                .values(revoked_at=datetime.now(timezone.utc))
             )
             await session.commit()
 

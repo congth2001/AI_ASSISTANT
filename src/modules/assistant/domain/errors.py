@@ -154,6 +154,12 @@ class VectorStoreWriteError(ExternalServiceError):
     message_template = 'Vector store rejected a write to collection {collection} ({count} chunks)'
 
 
+class DocumentRetrievalFailedError(ExternalServiceError):
+    """User-facing message when the vector store cannot be searched."""
+    code = 'document_retrieval_failed'
+    message_template = 'Không truy xuất được tài liệu do kho dữ liệu tài liệu đang gặp sự cố.'
+
+
 class VectorStoreQueryError(ExternalServiceError):
     code = 'vector_store_query'
     message_template = 'Vector store {operation} failed on collection {collection}'

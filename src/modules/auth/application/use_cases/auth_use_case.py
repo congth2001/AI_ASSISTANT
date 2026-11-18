@@ -28,14 +28,14 @@ class AuthUseCase:
         token_service: ITokenService,
         access_token_minutes: int,
         refresh_token_days: int,
-        refresh_reuse_grace_seconds: int = 0,
+        refresh_reuse_grace_seconds: int = 30,
     ):
         self.repository = auth_repository
         self.password_hasher = password_hasher
         self.token_service = token_service
         self.access_token_minutes = access_token_minutes
         self.refresh_token_days = refresh_token_days
-        self.refresh_reuse_grace_seconds = int(refresh_reuse_grace_seconds or 0)
+        self.refresh_reuse_grace_seconds = 30 if refresh_reuse_grace_seconds is None else int(refresh_reuse_grace_seconds)
 
     async def create_staff(
         self, email: str, display_name: str, password: str, actor: Dict[str, Any]

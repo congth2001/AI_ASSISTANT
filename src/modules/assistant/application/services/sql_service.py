@@ -130,7 +130,7 @@ _KEYWORDS_BEFORE_PAREN = frozenset({
 })
 # Session/role information is available without parentheses.
 _FORBIDDEN_BARE_IDENTIFIERS = frozenset({
-    "current_user", "session_user", "current_role", "current_catalog", "current_schema",
+    "user", "current_user", "session_user", "current_role", "current_catalog", "current_schema",
 })
 # FROM is also part of these expressions and is not a table reference there.
 _FROM_EXPRESSION_FUNCTIONS = frozenset({"extract", "substring", "trim", "overlay", "position"})
@@ -167,11 +167,13 @@ def _normalize_identifier(identifier: str) -> list[str]:
     ]
 
 
+def _is_escape_string_prefix(sql: str, quote_start: int) -> bool:
+    """True when the literal starting at ``quote_start`` is written E'...' (or e '...')."""
+    head = sql[:quote_start].rstrip()
+    return bool(head) and head[-1] in "eE" and (len(head) == 1 or not re.match(r"[\w$]", head[-2]))
+
+
 def _tokenize(sql: str) -> list[tuple[str, str]]:
-    # E'..' strings treat backslash as an escape, so their end differs between this
-    # scanner and PostgreSQL; text after a backslash-quote could be hidden from every check.
-    if re.search(r"(?<![\w$])e\s*'", sql, re.IGNORECASE):
-        raise SQLKeywordForbiddenError(blocked="E'...'")
     tokens: list[tuple[str, str]] = []
     position = 0
     for match in _TOKEN.finditer(sql):
@@ -185,6 +187,11 @@ def _tokenize(sql: str) -> list[tuple[str, str]]:
         if kind == "dollar":
             # Dollar quoting can hide arbitrary text from the checks below.
             raise SQLTableNotAllowedError(table=match.group())
+        if kind == "string" and _is_escape_string_prefix(sql, match.start()):
+            # E'..' strings treat backslash as an escape, so their end differs between
+            # this scanner and PostgreSQL; text after a backslash-quote could be hidden
+            # from every check. Checked here, outside literals, so 'Vitamin E' is fine.
+            raise SQLKeywordForbiddenError(blocked="E'...'")
         if kind != "string":
             tokens.append((kind, match.group()))
     rest = sql[position:]

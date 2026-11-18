@@ -47,9 +47,12 @@ class PostgresSQLExecutor(ISQLExecutor):
         try:
             return await self._run(sql)
         except DBAPIError as exc:
+            # InterfaceError subclasses DBAPIError, so it must be checked here,
+            # not in a later except clause that would never run.
+            if isinstance(exc, InterfaceError) or exc.connection_invalidated:
+                logger.warning("SQL execution lost its database connection")
+                raise SQLDatabaseConnectionLostError() from exc
             raise self._translate(exc) from exc
-        except InterfaceError as exc:
-            raise SQLDatabaseConnectionLostError() from exc
 
     async def _run(self, sql: str) -> tuple[list, list[str]]:
         async with self._engine.connect() as conn:

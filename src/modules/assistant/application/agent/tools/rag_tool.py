@@ -34,9 +34,11 @@ class RAGTool(BaseTool):
         context = await asyncio.to_thread(
             self.run_sync, analyzed, messages, current_query
         )
+        retrieval_error = context.get("retrieval_error")
         return ToolResult(
-            success=True,
+            success=not retrieval_error,
             has_data=bool(context.get("has_data", False)),
+            error_code=retrieval_error,
             content=context.get("retrieved_text", ""),
             metadata={"context": context},
         )

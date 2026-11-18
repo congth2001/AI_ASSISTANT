@@ -55,10 +55,11 @@ stateless được mô tả bên dưới.
 
 Refresh token chỉ dùng được một lần. Khi refresh, token cũ bị tiêu thụ và token mới được lưu
 trong cùng một transaction; hệ thống trả về một cặp token mới. Nếu một refresh token đã bị
-tiêu thụ hoặc thu hồi (kể cả do đăng xuất) bị dùng lại, hệ thống coi là có nguy cơ bị đánh cắp:
-thu hồi toàn bộ refresh token còn hiệu lực của người dùng đó và trả `401`
-(`auth.refresh_reuse_grace_seconds` cho phép dung sai vài giây khi nhiều tab refresh đồng
-thời). Đăng xuất thu hồi refresh token hiện tại.
+xoay vòng bị dùng lại sau quá `auth.refresh_reuse_grace_seconds` (mặc định 30 giây), hệ thống coi là
+có nguy cơ bị đánh cắp: thu hồi toàn bộ refresh token còn hiệu lực của người dùng đó và trả `401`.
+Trong khoảng ân hạn (nhiều tab refresh cùng lúc bằng cùng một token trong `localStorage`), request
+đến sau chỉ nhận `401` mà không thu hồi các phiên khác. Đăng xuất xóa hẳn refresh token hiện tại, nên
+token đã đăng xuất bị gửi lại chỉ nhận `401`.
 
 Mật khẩu dùng bcrypt, giới hạn 72 **byte** (UTF-8) và được hash/verify trong thread riêng để không
 chặn event loop. Đăng nhập luôn chạy đúng một lần verify (với hash giả cố định khi không có tài

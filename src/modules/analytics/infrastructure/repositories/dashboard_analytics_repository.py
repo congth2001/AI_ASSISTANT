@@ -249,14 +249,26 @@ class DashboardAnalyticsRepository(
         total_revenue = select(
             func.coalesce(func.sum(movements.c.amount), 0)
         ).scalar_subquery()
+        if has_line_filters(filters):
+            # Same grain as total_revenue: only the matching lines of each invoice,
+            # not the full total of every invoice that contains one such line.
+            matching_line_sales = (
+                select(func.coalesce(func.sum(SalesInvoiceLine.line_amount), 0))
+                .select_from(sales_lines_from())
+                .where(*sales_line_predicates(filters, filters.date_from, filters.date_to))
+                .scalar_subquery()
+            )
+            average_invoice_value = func.coalesce(
+                matching_line_sales / func.nullif(func.count(SalesInvoice.invoice_id), 0), 0
+            )
+        else:
+            average_invoice_value = func.coalesce(func.avg(SalesInvoice.invoice_total_amount), 0)
         statement = (
             select(
                 total_revenue.label("total_revenue"),
                 func.count(SalesInvoice.invoice_id).label("invoice_count"),
                 func.count(distinct(SalesInvoice.customer_id)).label("customer_count"),
-                func.coalesce(func.avg(SalesInvoice.invoice_total_amount), 0).label(
-                    "average_invoice_value"
-                ),
+                average_invoice_value.label("average_invoice_value"),
                 debt_delta.label("net_debt_delta"),
             )
             .select_from(from_clause)
