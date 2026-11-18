@@ -152,6 +152,29 @@ def test_create_and_rename_limits():
         CreateConversationRequest(metadata={"k": "é" * (MAX_METADATA_BYTES // 2)})
 
 
+def test_message_citations_are_exposed_from_metadata_but_other_metadata_is_not():
+    citation = {"id": "sql:1", "type": "sql", "query": "SELECT 1"}
+
+    class WithMessages(FakeConversations):
+        def _row(self, owner="owner"):
+            row = super()._row(owner)
+            row["messages"] = [
+                # Repository rows (newest first) expose the JSON column as ``extra_metadata``.
+                {"role": "assistant", "content": "Doanh thu [sql:1]",
+                 "extra_metadata": {"citations": [citation, "bad"], "trace_id": "private"}},
+                {"role": "user", "content": "Doanh thu?", "extra_metadata": None},
+            ]
+            return row
+
+    with client_for("staff", "owner", WithMessages()) as client:
+        response = client.get(f"/api/v1/conversations/{CONVERSATION_ID}")
+    assert response.status_code == 200
+    user_message, assistant_message = response.json()["messages"]
+    assert user_message["citations"] is None
+    assert assistant_message["citations"] == [citation]
+    assert "trace_id" not in response.text
+
+
 def test_oversized_metadata_is_rejected_over_http():
     fake = FakeConversations()
     with client_for("staff", "owner", fake) as client:

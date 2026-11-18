@@ -1,5 +1,5 @@
 import json
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 
@@ -40,6 +40,22 @@ class MessageResponse(BaseModel):
     role: str
     content: str
     timestamp: Optional[datetime] = None
+    # Sources of an assistant answer (``metadata.citations``) so a reloaded
+    # conversation can still show them; the rest of the metadata stays private.
+    citations: Optional[List[Dict[str, Any]]] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def extract_citations(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or data.get("citations") is not None:
+            return data
+        # Repository rows expose the JSON column as ``extra_metadata`` (ORM attribute name).
+        metadata = data.get("metadata") or data.get("extra_metadata")
+        citations = metadata.get("citations") if isinstance(metadata, dict) else None
+        if isinstance(citations, list):
+            items = [item for item in citations if isinstance(item, dict) and item.get("id")]
+            return {**data, "citations": items or None}
+        return data
 
 
 class ConversationOwnerResponse(BaseModel):

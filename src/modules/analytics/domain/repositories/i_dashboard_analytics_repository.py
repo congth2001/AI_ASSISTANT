@@ -72,7 +72,9 @@ class IDashboardAnalyticsRepository(
         limit: int,
         ward_names: tuple[str, ...] = (),
         village_names: tuple[str, ...] = (),
+        category_names: tuple[str, ...] = (),
     ) -> DashboardFilterOptions:
+        """``category_names`` restricts only the product catalog to those categories."""
         raise NotImplementedError
 
     @abstractmethod

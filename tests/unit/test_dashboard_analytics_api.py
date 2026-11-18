@@ -123,9 +123,9 @@ def test_filter_options_api_forwards_geography_context():
         received = None
 
         async def get_filter_options(
-            self, search, limit, ward_names=(), village_names=()
+            self, search, limit, ward_names=(), village_names=(), category_names=()
         ):
-            self.received = (search, limit, ward_names, village_names)
+            self.received = (search, limit, ward_names, village_names, category_names)
             return DashboardFilterOptions((), (), (), (), ())
 
     fake = FakeUseCase()
@@ -143,6 +143,8 @@ def test_filter_options_api_forwards_geography_context():
                 ("limit", "20"),
                 ("ward", "Minh Khai"),
                 ("village", "Thôn 1"),
+                ("category", "XI MĂNG"),
+                ("category", "THÉP"),
             ],
         )
     finally:
@@ -154,6 +156,7 @@ def test_filter_options_api_forwards_geography_context():
         20,
         ("Minh Khai",),
         ("Thôn 1",),
+        ("XI MĂNG", "THÉP"),
     )
 
 

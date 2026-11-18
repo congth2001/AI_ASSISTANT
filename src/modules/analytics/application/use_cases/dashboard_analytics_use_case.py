@@ -141,6 +141,7 @@ class DashboardAnalyticsUseCase:
         limit: int,
         ward_names: tuple[str, ...] = (),
         village_names: tuple[str, ...] = (),
+        category_names: tuple[str, ...] = (),
     ) -> DashboardFilterOptions:
         normalized_search = search.strip() if search and search.strip() else None
         return await self._repository.get_filter_options(
@@ -148,6 +149,7 @@ class DashboardAnalyticsUseCase:
             limit,
             ward_names=ward_names,
             village_names=village_names,
+            category_names=category_names,
         )
 
     async def get_customer_overview(

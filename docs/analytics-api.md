@@ -105,11 +105,14 @@ Tham số như `time-series`. Response: `period`, `previous_period`, `grain`, `i
 
 | Tham số | Ghi chú |
 | --- | --- |
-| `search` | Tối đa 100 ký tự; khớp chứa, không phân biệt hoa thường; `%` và `_` được escape (là ký tự thường, không phải wildcard). Áp cho khách, phường/xã, thôn/xóm, danh mục, sản phẩm. |
+| `search` | Tối đa 100 ký tự; khớp chứa, không phân biệt hoa thường và không phân biệt dấu tiếng Việt ("tiep chen" khớp "Tiệp Chen", gồm cả đ/Đ; so khớp bằng `translate()` trong `text_search.py`); `%` và `_` được escape (là ký tự thường, không phải wildcard). Áp cho khách, phường/xã, thôn/xóm, danh mục, sản phẩm. |
 | `limit` | 1-200, mặc định 50. |
 | `ward`, `village` | Lặp lại được (tối đa 100 giá trị); thu hẹp option khách hàng và thôn/xóm phụ thuộc. |
+| `category` | Lặp lại được (tối đa 100 giá trị); chỉ thu hẹp `products[]` theo danh mục (cả dòng bán và dòng trả). |
 
 Response: `customers[]` (`value` = UUID, `label` = tên), `wards[]`, `villages[]`, `categories[]`, `products[]`. Danh sách khách sắp xếp theo tên rồi UUID.
+
+Frontend cache response theo bộ tham số 5 phút và dùng chung request đang chạy (`services/analyticsApi.ts`, xóa bằng `clearAnalyticsCache()` khi đổi phiên); `data-freshness` cache 1 phút, nút "Làm mới" ở Tổng quan bỏ qua cache.
 
 ### 3.6 `GET /analytics/data-freshness`
 

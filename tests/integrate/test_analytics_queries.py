@@ -282,3 +282,38 @@ async def test_customer_debt_export_and_filter_option_escaping(repository):
     underscore = await repo.get_filter_options("hà_g", 50)
     assert underscore.customers == ()
     assert [o.label for o in (await repo.get_filter_options("%", 50)).customers] == ["Giảm 100% hàng_lẻ"]
+
+
+@pytest.mark.asyncio
+async def test_filter_option_search_ignores_vietnamese_diacritics_and_case(repository):
+    repo, connection = repository
+    async with AsyncSession(bind=connection) as session:
+        session.add(customer(cid(11), "Đặng Tiệp Chen", "Thụy Hưng"))
+        await session.flush()
+    for search in ("tiep chen", "TIỆP", "dang tiep", "Đặng"):
+        options = await repo.get_filter_options(search, 50)
+        assert "Đặng Tiệp Chen" in [o.label for o in options.customers], search
+    assert "Thụy Hưng" in (await repo.get_filter_options("thuy hung", 50)).wards
+
+
+@pytest.mark.asyncio
+async def test_filter_option_products_follow_selected_categories(repository):
+    repo, connection = repository
+    inv, lines = invoice("XB-S1", B, "2025-03-09", "40", [("Thép phi 6", "THÉP", "40")])
+    ret, ret_line = sales_return("NT-S1", B, "2025-03-11", "Sơn trắng", "SƠN", "15")
+    async with AsyncSession(bind=connection) as session:
+        session.add_all([inv, ret])
+        await session.flush()
+        session.add_all([*lines, ret_line])
+        await session.flush()
+
+    steel = await repo.get_filter_options(None, 50, category_names=("THÉP",))
+    assert list(steel.products) == ["Thép phi 6"]
+    # Only the product catalog is narrowed; categories stay selectable.
+    assert {"THÉP", "SƠN", "VLXD"} <= set(steel.categories)
+    # Return-only products are included for their category, combined with search.
+    assert list((await repo.get_filter_options(None, 50, category_names=("SƠN", "THÉP"))).products) == [
+        "Sơn trắng", "Thép phi 6",
+    ]
+    assert list((await repo.get_filter_options("son", 50, category_names=("SƠN", "THÉP"))).products) == ["Sơn trắng"]
+    assert list((await repo.get_filter_options(None, 50, category_names=("VLXD",))).products) == ["Gạch", "Xi măng"]

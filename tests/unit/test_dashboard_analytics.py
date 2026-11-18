@@ -41,13 +41,14 @@ class FakeDashboardRepository:
         return [], 0
 
     async def get_filter_options(
-        self, search, limit, ward_names=(), village_names=()
+        self, search, limit, ward_names=(), village_names=(), category_names=()
     ):
         self.filter_option_args = {
             "search": search,
             "limit": limit,
             "ward_names": ward_names,
             "village_names": village_names,
+            "category_names": category_names,
         }
         return DashboardFilterOptions((), (), (), (), ())
 
@@ -334,6 +335,7 @@ async def test_filter_options_forward_dependent_geography_filters():
         25,
         ward_names=("Minh Khai",),
         village_names=("Thôn 1",),
+        category_names=("XI MĂNG",),
     )
 
     assert repository.filter_option_args == {
@@ -341,4 +343,5 @@ async def test_filter_options_forward_dependent_geography_filters():
         "limit": 25,
         "ward_names": ("Minh Khai",),
         "village_names": ("Thôn 1",),
+        "category_names": ("XI MĂNG",),
     }

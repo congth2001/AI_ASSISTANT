@@ -46,6 +46,7 @@ from src.modules.analytics.infrastructure.repositories.order_ledger_queries impo
     OrderLedgerQueriesMixin,
 )
 from src.modules.analytics.infrastructure.repositories.order_queries import OrderQueriesMixin
+from src.modules.analytics.infrastructure.repositories.text_search import folded_contains
 from src.modules.sales.infrastructure.models import (
     Customer,
     CustomerDebtTransaction,
@@ -496,6 +497,7 @@ class DashboardAnalyticsRepository(
         limit: int,
         ward_names: tuple[str, ...] = (),
         village_names: tuple[str, ...] = (),
+        category_names: tuple[str, ...] = (),
     ) -> DashboardFilterOptions:
         customer_statement = select(
             Customer.customer_id, Customer.customer_name
@@ -506,7 +508,7 @@ class DashboardAnalyticsRepository(
             customer_statement = customer_statement.where(Customer.village_name.in_(village_names))
         if search:
             customer_statement = customer_statement.where(
-                Customer.customer_name.icontains(search, autoescape=True)
+                folded_contains(Customer.customer_name, search)
             )
         customer_statement = customer_statement.order_by(
             Customer.customer_name, Customer.customer_id
@@ -532,6 +534,7 @@ class DashboardAnalyticsRepository(
             )
             products = await self._distinct_line_values(
                 session, SalesInvoiceLine.product_name, search, limit,
+                category_names=category_names,
             )
 
         return DashboardFilterOptions(
@@ -558,8 +561,7 @@ class DashboardAnalyticsRepository(
             deleted_column.is_(None), value_column.is_not(None), *extra_predicates
         )
         if search:
-            # autoescape: '%' and '_' typed by the user are literals, not wildcards.
-            statement = statement.where(value_column.icontains(search, autoescape=True))
+            statement = statement.where(folded_contains(value_column, search))
         statement = statement.order_by(value_column).limit(limit)
         return list((await session.execute(statement)).scalars().all())
 
@@ -569,6 +571,7 @@ class DashboardAnalyticsRepository(
         value_column,
         search: str | None,
         limit: int,
+        category_names: tuple[str, ...] = (),
     ) -> list[str]:
         sales_statement = (
             select(distinct(value_column).label("value"))
@@ -590,8 +593,15 @@ class DashboardAnalyticsRepository(
             )
         )
         if search:
-            sales_statement = sales_statement.where(value_column.icontains(search, autoescape=True))
-            return_statement = return_statement.where(return_column.icontains(search, autoescape=True))
+            sales_statement = sales_statement.where(folded_contains(value_column, search))
+            return_statement = return_statement.where(folded_contains(return_column, search))
+        if category_names:
+            sales_statement = sales_statement.where(
+                SalesInvoiceLine.product_category_name.in_(category_names)
+            )
+            return_statement = return_statement.where(
+                SalesReturnLine.product_category_name.in_(category_names)
+            )
         values = union_all(sales_statement, return_statement).subquery("line_filter_values")
         statement = select(distinct(values.c.value)).order_by(values.c.value).limit(limit)
         return list((await session.execute(statement)).scalars().all())
