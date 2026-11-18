@@ -405,14 +405,17 @@ async def get_filter_options(
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     ward: Annotated[list[str] | None, Query()] = None,
     village: Annotated[list[str] | None, Query()] = None,
+    category: Annotated[list[str] | None, Query()] = None,
     _current_user: dict = Depends(require_role("staff", "admin")),
     use_case: DashboardAnalyticsUseCase = Depends(
         Provide[Container.dashboard_analytics_use_case]
     ),
 ) -> AnalyticsFilterOptionsResponse:
+    """Filter catalogs; ``ward``/``village`` narrow villages and customers, ``category`` narrows products."""
     try:
         ward_names = _bounded_values(ward, "ward")
         village_names = _bounded_values(village, "village")
+        category_names = _bounded_values(category, "category")
     except ValueError as exc:
         raise RequestValidationError(error=exc) from exc
     options = await use_case.get_filter_options(
@@ -420,6 +423,7 @@ async def get_filter_options(
         limit,
         ward_names=ward_names,
         village_names=village_names,
+        category_names=category_names,
     )
     return AnalyticsFilterOptionsResponse(
         customers=[

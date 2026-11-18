@@ -386,6 +386,43 @@ async def test_filter_options_escape_like_wildcards_for_every_search():
     assert "'%100%_x%'" not in sql
 
 
+@pytest.mark.asyncio
+async def test_filter_options_category_narrows_only_the_product_catalog():
+    captured = []
+
+    class Result:
+        @staticmethod
+        def all():
+            return []
+
+        @staticmethod
+        def scalars():
+            return Result()
+
+    class Session:
+        async def execute(self, statement):
+            captured.append(statement)
+            return Result()
+
+    class Context:
+        async def __aenter__(self):
+            return Session()
+
+        async def __aexit__(self, *args):
+            return False
+
+    await DashboardAnalyticsRepository(lambda: Context()).get_filter_options(
+        None, 10, category_names=("XI MĂNG",)
+    )
+    customers, wards, villages, categories, products = (
+        compile_sql(statement) for statement in captured
+    )
+    assert "sales_invoice_lines.product_category_name IN ('XI MĂNG')" in products
+    assert "sales_return_lines.product_category_name IN ('XI MĂNG')" in products
+    for sql in (customers, wards, villages, categories):
+        assert "IN ('XI MĂNG')" not in sql
+
+
 def _client(role="staff"):
     app = create_app()
     app.dependency_overrides[get_current_user] = lambda: {"id": "staff", "role": role}
@@ -393,7 +430,7 @@ def _client(role="staff"):
 
 
 @pytest.mark.parametrize("path,param", [
-    ("filter-options", "ward"), ("filter-options", "village"),
+    ("filter-options", "ward"), ("filter-options", "village"), ("filter-options", "category"),
     ("summary", "ward"), ("summary", "village"), ("summary", "category"), ("summary", "product"),
     ("orders", "ward"), ("orders", "village"),
 ])
@@ -413,7 +450,7 @@ def test_filter_value_length_is_capped():
 
 def test_exactly_100_values_are_accepted():
     class UseCase:
-        async def get_filter_options(self, search, limit, ward_names=(), village_names=()):
+        async def get_filter_options(self, search, limit, ward_names=(), village_names=(), category_names=()):
             from src.modules.analytics.domain.models.dashboard import DashboardFilterOptions
             assert len(ward_names) == 100
             return DashboardFilterOptions((), (), (), (), ())
