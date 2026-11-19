@@ -13,8 +13,8 @@ Columns:
     customer_identity_key TEXT UNIQUE -- normalized name|ward|village
     customer_name         TEXT
     address_detail        TEXT
-    village_name          TEXT
-    ward_name             TEXT
+    village_name          TEXT -- thôn/xóm/làng (current address, below ward)
+    ward_name             TEXT -- phường/xã (current address); geography reports group/filter on this
     created_at            TIMESTAMPTZ
     updated_at            TIMESTAMPTZ
     deleted_at            TIMESTAMPTZ -- active row requires deleted_at IS NULL
@@ -31,7 +31,7 @@ Columns:
     customer_name_snapshot           TEXT
     customer_address_detail_snapshot TEXT
     customer_village_name_snapshot   TEXT
-    customer_ward_name_snapshot      TEXT
+    customer_ward_name_snapshot      TEXT -- address printed on the invoice back then; not for geography reports
     invoice_total_amount             NUMERIC(18,2) -- gross sales before customer returns
     debt_delta_amount                NUMERIC(18,2) -- positive increases receivable; negative is advance/credit
     created_at                       TIMESTAMP
@@ -117,7 +117,12 @@ Mandatory metric rules:
        sales_return_lines.line_amount at the same grain. Filter sales by issued_at and
        returns by returned_at using the same date range.
     3. Net product quantity is SUM(sales_invoice_lines.quantity) minus
-       SUM(sales_return_lines.quantity), grouped by product and unit_name.
+       SUM(sales_return_lines.quantity), grouped by product and unit_name. "Quantity sold"
+       means this net quantity unless the question explicitly asks for gross sales.
+    3b. Revenue of the invoices containing product X = SUM(invoice_total_amount) of those
+       invoices (EXISTS on lines) plus the sales_return ledger amounts (negative) in the same
+       date range of the customer_ids owning those invoices. Returns are not linked to an
+       invoice, so do not filter them by product and never include other customers' returns.
     4. Never SUM invoice_total_amount after a direct one-to-many line join.
        Filter qualifying invoices with EXISTS or a DISTINCT invoice_id CTE.
     4. Group customer analytics by customers.customer_id and customers.customer_name,

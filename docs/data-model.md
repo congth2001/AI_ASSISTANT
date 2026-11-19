@@ -260,6 +260,11 @@ Quy ước dấu (theo AGENTS.md và comment bảng):
 
 Số dư hiện tại của khách = tổng `amount` của các dòng `deleted_at IS NULL` (và `occurred_at` trước ngày kết thúc loại trừ khi tính theo kỳ). Phải thu = phần dương của số dư từng khách; khách ứng trước (số dư âm) không bù trừ vào phải thu. Doanh thu sau trả hàng cộng thêm tổng `amount` của `sales_return` (đã âm) trong kỳ.
 
+Phiếu trả không tham chiếu hóa đơn gốc (`sales_return_lines.source_line_id` là mã dòng của chính phiếu trả). Vì vậy các định nghĩa nghiệp vụ dùng cho agent (prompt SQL, metric rules trong `schema_linker.py`, benchmark `evals/`) là:
+
+- **Doanh thu của các hóa đơn có mặt hàng X** = `SUM(invoice_total_amount)` của các hóa đơn có X trong kỳ (lọc bằng `EXISTS`) + tổng `amount` `sales_return` trong cùng kỳ của chính các khách sở hữu các hóa đơn đó. Không lọc phiếu trả theo mặt hàng, không trừ phiếu trả của khách khác.
+- **Số lượng đã bán** mặc định là số lượng bán thuần: `SUM(sales_invoice_lines.quantity) - SUM(sales_return_lines.quantity)`, nhóm theo `product_name` + `unit_name`.
+
 ## 5. Nguồn dữ liệu và ETL
 
 `backend/sync_business_data.py` đọc năm file Excel trong `backend/data/documents/` rồi gọi `SyncBusinessDataUseCase.sync_all` (`src/modules/sales/application/use_cases/sync_business_data_use_case.py`):
