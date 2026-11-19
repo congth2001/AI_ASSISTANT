@@ -28,3 +28,13 @@ class ResponsePrompt:
         "Khi dữ liệu có ghi chú 'đã cắt N dòng', bảng chỉ là phần đầu của kết quả; nêu rõ giới hạn "
         "này và không suy diễn về các dòng đã bị cắt."
     )
+
+    # Appended when the data block holds the Overview dashboard's own numbers.
+    OVERVIEW_REPORT = (
+        "Khối dữ liệu là số liệu dashboard Tổng quan đã được hệ thống tính sẵn theo đúng kỳ và bộ lọc "
+        "người dùng đang xem, trùng với số trên màn hình. Dùng nguyên các số này, không tự tính lại "
+        "tổng/doanh thu khác đi; chỉ được tính thêm phép so sánh đơn giản từ chính các số đã có. "
+        "Tập trung trả lời đúng câu hỏi, mở đầu bằng kết luận chính, sau đó nêu số liệu và kỳ so sánh. "
+        "Trích dẫn ID nguồn [report:...] tương ứng sau mỗi nhận định. Nếu phần độ phủ dữ liệu cho biết "
+        "kỳ đang xem vượt quá ngày giao dịch mới nhất, nói rõ điều đó trước khi nhận xét biến động."
+    )

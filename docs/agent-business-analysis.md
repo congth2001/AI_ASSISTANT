@@ -45,6 +45,14 @@ Luồng không streaming dùng graph đầy đủ, có bước kiểm tra câu t
 
 Kế hoạch phân tích nhiều chỉ số hiện vẫn được LLM sinh SQL theo prompt, chưa phải bộ công cụ analytics cố định. Graph hiện không có bước replan (đã xóa node không có đường vào), chưa phân rã nhiệm vụ hoặc tự tìm thêm dữ liệu. Dashboard đã có truy vấn deterministic trong module analytics nhưng agent chưa gọi trực tiếp các truy vấn đó. Vì vậy kiểm thử giả lập chưa chứng minh chất lượng SQL do mô hình sinh ra.
 
+## Câu hỏi có sẵn của Tổng quan dùng số liệu dashboard (2026-11-19)
+
+Đo trên dữ liệu thật (kỳ 21/07–19/08/2026), câu "Phân tích kết quả kinh doanh và các biến động đáng chú ý" sinh 5 SQL plan và **sai doanh thu kỳ này trong 4/5 lần chạy** (ví dụ cộng tổng hóa đơn sau khi JOIN dòng hàng: 8,55 tỷ so với 1,30 tỷ trên dashboard), một lần lỗi không có câu trả lời, mất 32–46s. Ba câu theo từng insight đúng số nhưng vẫn sinh 4–5 plan, 14–44s.
+
+Từ nay bốn câu hỏi có sẵn gửi kèm `report_context` (chỉ khi người dùng không sửa nội dung). `ChatUseCase._stream_report` bỏ qua Text-to-SQL và cache, `OverviewReportBuilder` lấy KPI hai kỳ, xu hướng ghép theo thứ tự ngày, khách giảm doanh thu, tập trung công nợ, biến động phường/xã và độ phủ dữ liệu từ `IDashboardAnalyticsRepository` (cùng `summarize_periods`/`align_period_series` với dashboard). Mỗi câu chỉ nhận các phần liên quan (`report:kpi`, `report:trend`, `report:customers`, `report:debt`, `report:wards`, `report:freshness`); LLM được dặn dùng nguyên số và trích dẫn `[report:...]`. Metadata: `tool_used = overview_report`, `report_topic`.
+
+Kết quả sau sửa (3 lần mỗi câu, LLM thật): 12/12 lượt có câu trả lời, 57/57 số then chốt khớp dashboard, câu tổng quan ~19s, ba câu insight 4–13s. Câu hỏi tự do trong panel vẫn đi Text-to-SQL kèm ngữ cảnh báo cáo như trước.
+
 ## Bằng chứng và giới hạn xác minh
 
 - Kiểm tra local chỉ đọc: PostgreSQL truy cập được, có 33.655 hóa đơn đang hoạt động. Ngày hóa đơn mới nhất là **20/08/2026**. Đây là độ phủ hóa đơn, không phải xác nhận ETL đã hoàn tất hoặc toàn bộ loại giao dịch đều kết thúc ngày đó.

@@ -21,6 +21,7 @@ from src.modules.conversations.presentation.access import ensure_conversation_wr
 from src.modules.assistant.domain.errors import (
     ChatFailedError,
     ConversationIdRequiredError,
+    GuestBusinessDataForbiddenError,
     DocumentSearchFailedError,
     InvalidConversationIdError,
     StreamingResponseFailedError,
@@ -44,6 +45,15 @@ def parse_conversation_id(value: str) -> UUID:
         return UUID(value)
     except ValueError as exc:
         raise InvalidConversationIdError() from exc
+
+
+def _report_scope(request: ChatRequest, current_user: dict):
+    """Overview report filters; guests never get business data, even pre-aggregated."""
+    if request.report_context is None:
+        return None
+    if current_user["role"] == "guest":
+        raise GuestBusinessDataForbiddenError()
+    return request.report_context.to_scope()
 
 
 def _sse_error() -> str:
@@ -80,6 +90,7 @@ async def chat_endpoint(
 ) -> ChatResponse:
     """Send a message and receive a full response."""
     try:
+        report_scope = _report_scope(request, current_user)
         if current_user["role"] == "guest":
             return ChatResponse(**await chat_use_case.execute_guest(request.message))
         if not request.conversation_id:
@@ -92,6 +103,7 @@ async def chat_endpoint(
             conversation_id=conversation_id,
             user_message=request.message,
             user_id=current_user["id"],
+            report_scope=report_scope,
         )
         return ChatResponse(
             conversation_id=result["conversation_id"],
@@ -123,6 +135,7 @@ async def chat_stream_endpoint(
                                    "timestamp": "...", "metadata": {...}}
         data: {"type": "error",   "message": "..."}
     """
+    report_scope = _report_scope(request, current_user)
     if current_user["role"] == "guest":
         # Authorize before opening the stream so a refusal is a real HTTP error
         # (403/502/...) mapped from the domain error, not an SSE event.
@@ -149,6 +162,7 @@ async def chat_stream_endpoint(
         conversation_id=conversation_id,
         user_message=request.message,
         user_id=current_user["id"],
+        report_scope=report_scope,
     )
     return StreamingResponse(
         _guarded_events(events), media_type="text/event-stream", headers=SSE_HEADERS

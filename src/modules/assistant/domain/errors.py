@@ -207,3 +207,13 @@ class SQLExecutionFailedError(InternalError):
     @classmethod
     def diagnostic(cls, error: str) -> str:
         return f'[Lỗi: {error}]'
+
+
+class OverviewReportUnavailableError(ConfigurationError):
+    code = 'overview_report_unavailable'
+    message_template = 'Overview report builder is not configured'
+
+
+class InvalidReportPeriodError(ValidationError):
+    code = 'invalid_report_period'
+    message_template = 'Khoảng ngày báo cáo không hợp lệ: date_to phải sau date_from và tối đa {max_days} ngày'

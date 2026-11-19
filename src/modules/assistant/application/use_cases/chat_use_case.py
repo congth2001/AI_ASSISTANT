@@ -5,14 +5,18 @@ import logging
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Dict, List, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from src.common.cache_keys import CHAT_RESPONSE_CACHE_PREFIX  # re-exported for ETL/CLI imports
 from src.common.domain.time import now_vietnam
 from src.modules.assistant.application.agent.agent_service import AgentService
+from src.modules.assistant.application.services.context_builder import shorten_history_message
+from src.modules.assistant.application.services.overview_report_builder import OverviewReportBuilder
 from src.modules.assistant.domain.constants.search_config import SearchConfig
+from src.modules.assistant.domain.entities.overview_report import OverviewReportScope
 from src.modules.assistant.domain.errors import (
     GuestBusinessDataForbiddenError,
+    OverviewReportUnavailableError,
     StreamingResponseFailedError,
 )
 from src.modules.assistant.domain.ports.i_cache_service import ICacheService
@@ -29,7 +33,12 @@ _CLARIFICATION_FALLBACK = "Bạn có thể nói rõ yêu cầu không?"
 # Tools whose answers come from the sales tables. The ETL refreshes those tables
 # and the cache key is scoped to one conversation plus its history, so a stored
 # answer is almost never reused and could silently show stale numbers when it is.
-_NON_CACHEABLE_TOOLS = frozenset({"text_to_sql", "hybrid"})
+_NON_CACHEABLE_TOOLS = frozenset({"text_to_sql", "hybrid", "overview_report"})
+_OVERVIEW_REPORT_TOOL = "overview_report"
+# Marker the Overview dashboard appends before its filter description; the report
+# path answers the question part and takes filters from the structured scope.
+_REPORT_CONTEXT_MARKER = "\nNgữ cảnh báo cáo đang xem:"
+_REPORT_TIMEOUT_SECONDS = 30
 # Keys of the pre-cleanup agent state that API clients may still read from
 # message metadata. The agent no longer produces them; they stay as constants.
 _LEGACY_METADATA = {
@@ -76,11 +85,13 @@ class ChatUseCase:
         self,
         agent_service: AgentService,
         conversation_repo: IConversationRepository,
-        cache_service: ICacheService
+        cache_service: ICacheService,
+        overview_report_builder: Optional[OverviewReportBuilder] = None,
     ):
         self.agent_service = agent_service
         self.conversation_repo = conversation_repo
         self.cache_service = cache_service
+        self.overview_report_builder = overview_report_builder
         # Strong references so fire-and-forget persistence is not garbage collected.
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -128,10 +139,29 @@ class ChatUseCase:
     # Authenticated chat
     # ─────────────────────────────────────────────────────────────────────
     async def execute(
-        self, conversation_id: UUID, user_message: str, user_id: Optional[str]
+        self,
+        conversation_id: UUID,
+        user_message: str,
+        user_id: Optional[str],
+        report_scope: Optional[OverviewReportScope] = None,
     ) -> Dict[str, Any]:
         conversation = await self._load_conversation(conversation_id, user_id)
         is_first_message = not conversation.messages
+
+        if report_scope is not None:
+            question, context, metadata = await self._prepare_report(conversation, user_message, report_scope)
+            chunks = [token async for token in self.agent_service.stream_response(question, context)]
+            response_content = "".join(chunks) or _FALLBACK_RESPONSE
+            assistant_msg = await self._persist_exchange(
+                conversation_id, user_message, response_content, metadata, user_id, is_first_message
+            )
+            return {
+                "conversation_id": str(conversation_id),
+                "response": response_content,
+                "intent": _OVERVIEW_REPORT_TOOL,
+                "timestamp": assistant_msg.timestamp.isoformat(),
+                "metadata": metadata,
+            }
 
         cache_key = self._make_cache_key(user_message, conversation)
         cached_payload = await self._get_cached(cache_key)
@@ -162,7 +192,11 @@ class ChatUseCase:
         }
 
     async def execute_stream(
-        self, conversation_id: UUID, user_message: str, user_id: Optional[str]
+        self,
+        conversation_id: UUID,
+        user_message: str,
+        user_id: Optional[str],
+        report_scope: Optional[OverviewReportScope] = None,
     ) -> AsyncGenerator[str, None]:
         """Yield SSE-formatted strings for the streaming chat endpoint.
 
@@ -184,13 +218,16 @@ class ChatUseCase:
             turn.loaded = True
             turn.is_first_message = not conversation.messages
 
-            cache_key = self._make_cache_key(user_message, conversation)
-            cached_payload = await self._get_cached(cache_key)
-            events = (
-                self._stream_cached(turn, cached_payload)
-                if cached_payload
-                else self._stream_fresh(turn, conversation, cache_key)
-            )
+            if report_scope is not None:
+                events = self._stream_report(turn, conversation, report_scope)
+            else:
+                cache_key = self._make_cache_key(user_message, conversation)
+                cached_payload = await self._get_cached(cache_key)
+                events = (
+                    self._stream_cached(turn, cached_payload)
+                    if cached_payload
+                    else self._stream_fresh(turn, conversation, cache_key)
+                )
             async with aclosing(events):
                 async for event in events:
                     yield event
@@ -254,6 +291,76 @@ class ChatUseCase:
             "timestamp": assistant_msg.timestamp.isoformat(),
             "metadata": metadata,
         })
+
+    async def _stream_report(
+        self, turn: _StreamTurn, conversation: Conversation, scope: OverviewReportScope
+    ) -> AsyncGenerator[str, None]:
+        """Answer a preset Overview question from the dashboard's own numbers (no SQL)."""
+        yield _sse({"type": "status", "step": "routing", "message": "Đang lấy số liệu báo cáo..."})
+        question, context, metadata = await self._prepare_report(conversation, turn.user_message, scope)
+        yield _sse({"type": "status", "step": "generating", "message": "Đang tạo câu trả lời..."})
+        async for token in self.agent_service.stream_response(question, context):
+            turn.chunks.append(token)
+            yield _sse({"type": "token", "content": token})
+        response_content = "".join(turn.chunks) or _FALLBACK_RESPONSE
+        metadata["response_evaluation"] = {
+            "citation_verified": self._citation_verified(metadata["citations"], response_content),
+            "mode": "streaming_post_check",
+        }
+        assistant_msg = await self._persist_exchange(
+            turn.conversation_id, turn.user_message, response_content,
+            metadata, turn.user_id, turn.is_first_message, turn=turn,
+        )
+        yield _sse({
+            "type": "done",
+            "conversation_id": str(turn.conversation_id),
+            "intent": _OVERVIEW_REPORT_TOOL,
+            "timestamp": assistant_msg.timestamp.isoformat(),
+            "metadata": metadata,
+        })
+
+    async def _prepare_report(
+        self, conversation: Conversation, user_message: str, scope: OverviewReportScope
+    ) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
+        """Question, LLM context and message metadata for an Overview report answer."""
+        if self.overview_report_builder is None:
+            raise OverviewReportUnavailableError()
+        async with asyncio.timeout(_REPORT_TIMEOUT_SECONDS):
+            report = await self.overview_report_builder.build(scope)
+        question = user_message.partition(_REPORT_CONTEXT_MARKER)[0].strip() or user_message
+        history = [
+            {"role": m.role, "content": shorten_history_message(m.content, SearchConfig.DATA_HISTORY_MESSAGE_CHARS)}
+            for m in reversed(conversation.messages[:SearchConfig.HISTORY_WINDOW])
+        ]
+        context = {
+            "retrieved_text": report.retrieved_text,
+            "conversation_history": history,
+            "current_query": question,
+            "intent": _OVERVIEW_REPORT_TOOL,
+            "has_data": True,
+            "used_fallback": False,
+            "fallback_warning": None,
+            "sources": report.citations,
+            "response_mode": _OVERVIEW_REPORT_TOOL,
+        }
+        metadata = {
+            "has_data": True,
+            "used_fallback": False,
+            "fallback_warning": None,
+            "tool_used": _OVERVIEW_REPORT_TOOL,
+            "tool_success": True,
+            "tool_error_code": None,
+            "sql_query": None,
+            "trace_id": str(uuid4()),
+            "node_metrics": [],
+            "tool_calls": [{"tool": _OVERVIEW_REPORT_TOOL, "success": True, "has_data": True, "error_code": None}],
+            "citations": report.citations,
+            "evaluation": None,
+            "needs_clarification": False,
+            "report_topic": scope.topic.value,
+            **_LEGACY_METADATA,
+        }
+        return question, context, metadata
 
     async def _stream_answer(
         self, turn: _StreamTurn, final_state: Dict[str, Any], context: Dict[str, Any]
