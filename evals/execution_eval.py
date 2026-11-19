@@ -97,6 +97,82 @@ def results_equal(
     )
 
 
+def accepted_query_results(case: dict[str, Any]) -> list[QueryResult]:
+    """Other result shapes that answer the question equally well.
+
+    Example: "doanh thu từng tháng" may return the month number (``EXTRACT``) or
+    the first day of the month (``DATE_TRUNC``). Each alternative is declared in the
+    dataset next to the reference answer.
+    """
+    return [
+        QueryResult(
+            columns=tuple(alternative.get("columns", [])),
+            rows=tuple(tuple(row) for row in alternative["rows"]),
+        )
+        for alternative in case.get("accepted_results", [])
+    ]
+
+
+def _column_values(result: QueryResult, index: int, *, ordered: bool) -> list[str]:
+    values = [
+        json.dumps(canonical_value(row[index]), ensure_ascii=False, sort_keys=True)
+        for row in result.rows
+    ]
+    return values if ordered else sorted(values)
+
+
+def _project(result: QueryResult, indexes: tuple[int, ...]) -> QueryResult:
+    return QueryResult(
+        columns=tuple(result.columns[i] for i in indexes),
+        rows=tuple(tuple(row[i] for i in indexes) for row in result.rows),
+    )
+
+
+def results_match(
+    actual: QueryResult,
+    expected: QueryResult,
+    *,
+    ordered: bool,
+    compare_columns: bool = False,
+    allow_extra_columns: bool = False,
+) -> bool:
+    """Compare results; optionally accept extra or reordered predicted columns.
+
+    With ``allow_extra_columns`` the prediction is correct when some of its columns,
+    taken in some order, reproduce the expected result exactly (same rows, same row
+    order when ``ordered``). Agent SQL legitimately adds context columns such as
+    ``ma_khach_hang`` or ``don_vi_tinh``; extra rows or wrong values still fail.
+    """
+    if results_equal(actual, expected, ordered=ordered, compare_columns=compare_columns):
+        return True
+    if not allow_extra_columns or len(actual.rows) != len(expected.rows):
+        return False
+    width = len(expected.columns) or (len(expected.rows[0]) if expected.rows else 0)
+    if len(actual.columns) < width:
+        return False
+    candidates: list[list[int]] = []
+    for j in range(width):
+        wanted = _column_values(expected, j, ordered=ordered)
+        matches = [
+            i for i in range(len(actual.columns))
+            if _column_values(actual, i, ordered=ordered) == wanted
+            and (not compare_columns or actual.columns[i].lower() == expected.columns[j].lower())
+        ]
+        if not matches:
+            return False
+        candidates.append(matches)
+
+    def search(j: int, chosen: tuple[int, ...]) -> bool:
+        if j == width:
+            return results_equal(
+                _project(actual, chosen), expected,
+                ordered=ordered, compare_columns=compare_columns,
+            )
+        return any(search(j + 1, chosen + (i,)) for i in candidates[j] if i not in chosen)
+
+    return search(0, ())
+
+
 def validate_case_set(cases: Iterable[dict[str, Any]]) -> None:
     required = {"id", "question", "reference_sql", "expected_result", "ordered"}
     for case in cases:
@@ -105,6 +181,9 @@ def validate_case_set(cases: Iterable[dict[str, Any]]) -> None:
             raise ValueError(f"Case {case.get('id', '<unknown>')} thiếu: {sorted(missing)}")
         if not isinstance(case["expected_result"].get("rows"), list):
             raise ValueError(f"Case {case['id']} có expected_result.rows không hợp lệ")
+        for alternative in case.get("accepted_results", []):
+            if not isinstance(alternative.get("rows"), list):
+                raise ValueError(f"Case {case['id']} có accepted_results.rows không hợp lệ")
 
 
 def summary_metrics(details: list[dict[str, Any]], total_cases: int) -> dict[str, Any]:

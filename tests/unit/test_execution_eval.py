@@ -50,3 +50,58 @@ def test_execution_accuracy_uses_all_cases_as_denominator():
         "execution_result_accuracy": 0.25,
     }
 
+
+
+# ── Column-subset matching and accepted alternatives ───────────────────────
+
+from evals.execution_eval import accepted_query_results, results_match, validate_case_set  # noqa: E402
+
+
+def test_extra_and_reordered_columns_match_only_when_allowed():
+    expected = QueryResult(("ten", "doanh_thu"), (("An Phát", 6100), ("Bình Minh", 5200)))
+    actual = QueryResult(
+        ("ma", "doanh_thu_thuan", "ten_khach_hang"),
+        (("id-1", Decimal("6100.00"), "An Phát"), ("id-2", Decimal("5200.00"), "Bình Minh")),
+    )
+
+    assert results_match(actual, expected, ordered=True, allow_extra_columns=True)
+    assert not results_match(actual, expected, ordered=True, allow_extra_columns=False)
+
+
+def test_subset_match_still_rejects_wrong_values_extra_rows_and_split_groups():
+    expected = QueryResult(("ten", "doanh_thu"), (("Thép D10", 4200),))
+    wrong_value = QueryResult(("ten", "dt", "dvt"), (("Thép D10", 2500, "cây"),))
+    split_rows = QueryResult(("ten", "dt", "don_gia"), (("Thép D10", 2500, 62.5), ("Thép D10", 1700, 60)))
+
+    assert not results_match(wrong_value, expected, ordered=True, allow_extra_columns=True)
+    assert not results_match(split_rows, expected, ordered=True, allow_extra_columns=True)
+
+
+def test_subset_match_keeps_row_pairing_across_columns():
+    expected = QueryResult(("ten", "doanh_thu"), (("A", 1), ("B", 2)))
+    # Each column alone has the right values, but rows pair A with 2.
+    crossed = QueryResult(("ten", "doanh_thu", "x"), (("A", 2, 0), ("B", 1, 0)))
+
+    assert not results_match(crossed, expected, ordered=False, allow_extra_columns=True)
+
+
+def test_accepted_results_accept_typed_values_and_are_validated():
+    case = {
+        "id": "rev", "question": "q", "reference_sql": "SELECT 1", "ordered": True,
+        "expected_result": {"columns": ["thang"], "rows": [[1]]},
+        "accepted_results": [{"columns": ["thang"], "rows": [[{"$datetime": "2025-01-01T00:00:00"}]]}],
+    }
+    validate_case_set([case])
+    from datetime import datetime
+
+    actual = QueryResult(("thang_nam",), ((datetime(2025, 1, 1),),))
+    (alternative,) = accepted_query_results(case)
+    assert results_equal(actual, alternative, ordered=True)
+
+    broken = {**case, "accepted_results": [{"columns": ["thang"]}]}
+    try:
+        validate_case_set([broken])
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("accepted_results without rows must be rejected")

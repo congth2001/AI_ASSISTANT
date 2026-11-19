@@ -74,7 +74,9 @@ INSERT INTO customers (
     ('00000000-0000-0000-0000-000000000002', 'binh-minh', 'Cửa hàng Bình Minh', 'Phường 2', NULL),
     ('00000000-0000-0000-0000-000000000003', 'chi-lan', 'Chị Lan', 'Phường 3', NULL),
     ('00000000-0000-0000-0000-000000000004', 'dai-nam', 'Công ty Đại Nam', 'Phường 4', NULL),
-    ('00000000-0000-0000-0000-000000000005', 'deleted-customer', 'Khách đã xóa', 'Phường 5', TIMESTAMPTZ '2025-01-01 00:00:00+07');
+    ('00000000-0000-0000-0000-000000000005', 'deleted-customer', 'Khách đã xóa', 'Phường 5', TIMESTAMPTZ '2025-01-01 00:00:00+07'),
+    -- Khách ứng trước (số dư âm): không được bù trừ vào tổng phải thu.
+    ('00000000-0000-0000-0000-000000000006', 'anh-tam', 'Anh Tâm', 'Phường 2', NULL);
 
 INSERT INTO sales_invoices (
     invoice_id,
@@ -97,6 +99,12 @@ INSERT INTO sales_invoices (
     ('I009', 'HD-2025-009', TIMESTAMP '2025-03-20 10:00:00', '00000000-0000-0000-0000-000000000002', 'Cửa hàng Bình Minh', 9999.00, 9999.00, TIMESTAMP '2025-03-21 08:00:00'),
     ('I010', 'HD-2025-010', TIMESTAMP '2025-02-10 10:00:00', '00000000-0000-0000-0000-000000000002', 'Cửa hàng Bình Minh', 700.00, 0.00, NULL);
 
+-- Địa bàn in trên hóa đơn là ảnh chụp lịch sử. Bình Minh đã chuyển từ Phường 9 sang
+-- Phường 2: báo cáo địa bàn phải dùng customers.ward_name hiện tại, không dùng snapshot.
+UPDATE sales_invoices SET customer_ward_name_snapshot = 'Phường 1' WHERE customer_id = '00000000-0000-0000-0000-000000000001';
+UPDATE sales_invoices SET customer_ward_name_snapshot = 'Phường 9' WHERE customer_id = '00000000-0000-0000-0000-000000000002';
+UPDATE sales_invoices SET customer_ward_name_snapshot = 'Phường 3' WHERE customer_id = '00000000-0000-0000-0000-000000000003';
+
 INSERT INTO customer_debt_transactions (
     debt_transaction_id, customer_id, source_type, source_id, occurred_at, amount, deleted_at
 ) VALUES
@@ -110,7 +118,13 @@ INSERT INTO customer_debt_transactions (
     ('D008', '00000000-0000-0000-0000-000000000001', 'sales_return', 'NT001', TIMESTAMP '2025-01-20 10:00:00', -100.00, NULL),
     ('D009', '00000000-0000-0000-0000-000000000001', 'sales_return', 'NT002', TIMESTAMP '2025-03-20 10:00:00', -300.00, NULL),
     ('D010', '00000000-0000-0000-0000-000000000002', 'sales_return', 'NT003', TIMESTAMP '2025-03-25 10:00:00', -999.00, TIMESTAMP '2025-03-26 08:00:00'),
-    ('D011', '00000000-0000-0000-0000-000000000001', 'sales_return', 'NT004', TIMESTAMP '2025-04-01 12:00:00', -500.00, NULL);
+    ('D011', '00000000-0000-0000-0000-000000000001', 'sales_return', 'NT004', TIMESTAMP '2025-04-01 12:00:00', -500.00, NULL),
+    -- Số dư đầu kỳ và thu nợ: thuộc công nợ, không phải doanh thu.
+    ('D012', '00000000-0000-0000-0000-000000000004', 'opening', 'OP-DN', TIMESTAMP '2024-12-31 23:00:00', 600.00, NULL),
+    ('D013', '00000000-0000-0000-0000-000000000004', 'receipt', 'R002', TIMESTAMP '2025-02-15 09:00:00', -600.00, NULL),
+    ('D014', '00000000-0000-0000-0000-000000000006', 'opening', 'OP-AT', TIMESTAMP '2025-01-01 00:00:00', -800.00, NULL),
+    -- Trả hàng của khách không có hóa đơn Xi măng: không được trừ vào "doanh thu các hóa đơn có Xi măng".
+    ('D015', '00000000-0000-0000-0000-000000000006', 'sales_return', 'NT005', TIMESTAMP '2025-03-10 10:00:00', -50.00, NULL);
 
 INSERT INTO sales_returns (
     return_id, source_id, return_number, returned_at, customer_id,
@@ -119,14 +133,18 @@ INSERT INTO sales_returns (
     ('RT001', 'NT001', 'NT-001', TIMESTAMP '2025-01-20 10:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 100.00, NULL),
     ('RT002', 'NT002', 'NT-002', TIMESTAMP '2025-03-20 10:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 300.00, NULL),
     ('RT003', 'NT003', 'NT-003', TIMESTAMP '2025-03-25 10:00:00', '00000000-0000-0000-0000-000000000002', 'Cửa hàng Bình Minh', 999.00, TIMESTAMP '2025-03-26 08:00:00'),
-    ('RT004', 'NT004', 'NT-004', TIMESTAMP '2025-04-01 12:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 500.00, NULL);
+    ('RT004', 'NT004', 'NT-004', TIMESTAMP '2025-04-01 12:00:00', '00000000-0000-0000-0000-000000000001', 'Công ty An Phát', 500.00, NULL),
+    ('RT005', 'NT005', 'NT-005', TIMESTAMP '2025-03-10 10:00:00', '00000000-0000-0000-0000-000000000006', 'Anh Tâm', 50.00, NULL);
 
 INSERT INTO sales_return_lines (
     return_line_id, return_id, source_line_id, line_number, product_name,
     product_category_name, unit_name, unit_price, quantity, line_amount, deleted_at
 ) VALUES
     ('RL001', 'RT001', '1', 1, 'Gạch A', 'Gạch', 'viên', 10.00, 10.000, 100.00, NULL),
-    ('RL002', 'RT002', '2', 1, 'Thép D10', 'Sắt', 'cây', 60.00, 5.000, 300.00, NULL),
+    ('RL002', 'RT002', '2', 1, 'Thép D10', 'Sắt', 'cây', 50.00, 2.000, 100.00, NULL),
+    -- Trả Xi măng trong quý 1: số lượng bán thuần = bán - trả.
+    ('RL005', 'RT002', '5', 2, 'Xi măng PCB40', 'Xi măng', 'bao', 80.00, 2.500, 200.00, NULL),
+    ('RL006', 'RT005', '6', 1, 'Cát xây dựng', 'Cát', 'm3', 50.00, 1.000, 50.00, NULL),
     ('RL003', 'RT003', '3', 1, 'Gạch A', 'Gạch', 'viên', 99.90, 10.000, 999.00, NULL),
     ('RL004', 'RT004', '4', 1, 'Thép D10', 'Sắt', 'cây', 50.00, 10.000, 500.00, NULL);
 
@@ -157,4 +175,6 @@ INSERT INTO sales_invoice_lines (
     ('L013', 'I007', 1, 'Cát xây dựng', 'Cát', 'm3', 50.00, 10.000, 500.00, NULL),
     ('L014', 'I008', 1, 'Thép D10', 'Sắt', 'cây', 75.00, 120.000, 9000.00, NULL),
     ('L015', 'I009', 1, 'Gạch A', 'Gạch', 'viên', 99.99, 100.000, 9999.00, NULL),
-    ('L016', 'I010', 1, 'Gạch A', 'Gạch', 'viên', 7.00, 100.000, 700.00, TIMESTAMP '2025-02-11 08:00:00');
+    ('L016', 'I010', 1, 'Gạch A', 'Gạch', 'viên', 7.00, 100.000, 700.00, TIMESTAMP '2025-02-11 08:00:00'),
+    -- Cùng sản phẩm, khác đơn vị tính: grain sản phẩm là product_name + unit_name.
+    ('L017', 'I007', 2, 'Cát xây dựng', 'Cát', 'xe', 800.00, 1.000, 800.00, NULL);

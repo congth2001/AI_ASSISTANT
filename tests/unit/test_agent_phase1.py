@@ -265,3 +265,35 @@ def test_replan_node_and_dead_state_fields_are_gone():
     assert not hasattr(builder, "make_replan_node")
     removed = {"plan", "attempted_routes", "iteration", "max_iterations", "awaiting_approval", "pending_action"}
     assert removed.isdisjoint(AgentState.__annotations__)
+
+
+@pytest.mark.asyncio
+async def test_data_answers_shorten_history_but_small_talk_keeps_it():
+    from unittest.mock import AsyncMock
+
+    from src.modules.assistant.application.agent.graph.nodes import make_execute_text_to_sql_node
+    from src.modules.assistant.application.agent.tools.tool_result import ToolResult
+    from src.modules.assistant.application.services.query_analyzer import QueryAnalyzer
+    from src.modules.assistant.domain.constants.search_config import SearchConfig
+
+    long_answer = "## Doanh thu\n" + "| Khách | 1.000.000 VND |\n" * 200
+    conversation_id = uuid4()
+    messages = [  # repository order: newest first
+        Message(conversation_id=conversation_id, role="assistant", content=long_answer),
+        Message(conversation_id=conversation_id, role="user", content="Doanh thu tháng 7/2026?"),
+    ]
+    state = {"query": "Còn tháng 6 thì sao?", "messages": messages, "node_metrics": [], "tool_calls": []}
+
+    contextualizer = AsyncMock()
+    contextualizer.resolve.return_value = "Doanh thu tháng 6/2026?"
+    tool = AsyncMock()
+    tool.run.return_value = ToolResult(content="[sql:1] ...", success=True, has_data=True,
+                                       metadata={"sql_queries": ["SELECT 1"]})
+    data_state = await make_execute_text_to_sql_node(tool, QueryAnalyzer(), contextualizer)(state)
+    history = data_state["context"]["conversation_history"]
+    assert history[0] == {"role": "user", "content": "Doanh thu tháng 7/2026?"}
+    assert len(history[1]["content"]) < SearchConfig.DATA_HISTORY_MESSAGE_CHARS + 20
+    assert history[1]["content"].endswith("(đã rút gọn)")
+
+    chat_state = await make_prepare_conversation_node()(state)
+    assert chat_state["context"]["conversation_history"][1]["content"] == long_answer

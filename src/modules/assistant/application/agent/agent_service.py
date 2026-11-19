@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 # Upper bounds for a whole graph run. Individual nodes carry their own timeouts
 # (see graph/nodes.py); these caps stop a chain of slow nodes and retries from
 # holding a request open indefinitely.
-CONTEXT_GRAPH_TIMEOUT_SECONDS = 120
+# Must stay above analyze_query (15s) + the slowest tool node (hybrid, 95s).
+CONTEXT_GRAPH_TIMEOUT_SECONDS = 150
 FULL_GRAPH_TIMEOUT_SECONDS = 240
 STREAM_RESPONSE_TIMEOUT_SECONDS = 60
 # Guests only get short small-talk answers; keep their token spend low.

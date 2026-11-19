@@ -24,6 +24,9 @@ class SQLPrompt:
         5. Chỉ dùng cú pháp PostgreSQL: DATE, EXTRACT, DATE_TRUNC, CASE, FILTER, ILIKE.
         6. Dùng chính xác giá trị trong GỢI Ý BỘ LỌC nếu có. Giữ nguyên Unicode tiếng Việt,
         dấu, khoảng trắng, mã phiếu và mốc thời gian; không tự đoán thêm thực thể.
+        Mốc thời gian trong GỢI Ý BỘ LỌC đã được quy đổi sẵn từ cụm tương đối trong câu hỏi
+        (hôm qua, tháng trước, quý trước, năm ngoái...) theo ngày hiện tại: dùng trực tiếp,
+        không lùi hoặc tiến thêm một kỳ nữa.
         7. Phân biệt tuyệt đối hai định danh hóa đơn:
            - sales_invoices.invoice_id là khóa kỹ thuật nội bộ, chỉ dùng để JOIN với
              sales_invoice_lines.invoice_id.
@@ -61,12 +64,30 @@ class SQLPrompt:
             Doanh thu sản phẩm/danh mục là doanh thu thuần: tổng sales_invoice_lines.line_amount
             trừ tổng sales_return_lines.line_amount tại cùng product_name/category/unit_name.
             Số lượng bán thuần cũng bằng sales_invoice_lines.quantity trừ sales_return_lines.quantity.
+            "Đã bán bao nhiêu (đơn vị/số lượng)" mặc định là số lượng bán thuần (bán trừ trả).
             Phải tổng hợp hai vế riêng rồi ghép theo đúng grain; lọc bán theo issued_at và trả theo returned_at.
+            Grain sản phẩm là product_name + unit_name: số lượng của các đơn vị khác nhau (m3, xe,
+            bao, tấn...) không được cộng chung, nên truy vấn số lượng/doanh thu một mặt hàng phải
+            GROUP BY unit_name và trả cột đơn vị tính. Không GROUP BY unit_price vì cùng sản phẩm
+            có nhiều mức giá; đơn giá chỉ là thuộc tính của từng dòng.
+            Giá trị hóa đơn bình quân = AVG(i.invoice_total_amount) trên các hóa đơn bán hợp lệ
+            trong kỳ (như dashboard), không lấy doanh thu thuần chia số hóa đơn.
         13. Không SUM i.invoice_total_amount sau khi JOIN trực tiếp bảng dòng hàng. Nếu chỉ
             cần lọc hóa đơn có sản phẩm/danh mục phù hợp, dùng EXISTS hoặc CTE invoice_id DISTINCT.
+            "Doanh thu CỦA CÁC HÓA ĐƠN có mặt hàng X" = tổng tiền hóa đơn trừ hàng trả:
+            (a) SUM(i.invoice_total_amount) của đúng các hóa đơn có X trong kỳ (lọc bằng EXISTS);
+            (b) cộng SUM(d.amount) của customer_debt_transactions source_type = 'sales_return'
+            trong cùng kỳ (theo d.occurred_at) của CHÍNH các customer_id sở hữu các hóa đơn đó
+            (amount đã âm). Phiếu trả không gắn với hóa đơn gốc nên không lọc trả theo mặt hàng
+            và không trừ phiếu trả của khách khác. Trả kèm cột tổng tiền hóa đơn, nhập trả và
+            doanh thu. Còn "doanh thu của mặt hàng X" là doanh thu dòng hàng thuần theo quy tắc 12.
         14. Công nợ dùng SUM(customer_debt_transactions.amount), luôn lọc deleted_at IS NULL.
             Số dương là khách còn nợ, số âm là khách ứng trước/dư có.
             Không dùng sales_invoices.debt_delta_amount hoặc invoice_total_amount để tính công nợ hiện tại.
+            Công nợ/số dư của TỪNG khách giữ nguyên dấu (âm = ứng trước), không ép về 0.
+            Riêng "tổng phải thu"/"tổng công nợ khách còn nợ" = tính số dư từng khách (GROUP BY
+            customer_id) rồi cộng riêng các số dư > 0; không SUM thẳng toàn sổ vì số dư âm của
+            khách ứng trước sẽ bù trừ sai vào phải thu.
         15. Bộ lọc thời gian của hóa đơn bán đặt trên i.issued_at; bộ lọc thời gian của nhập trả
             đặt trên d.occurred_at. Hai vế doanh thu thuần phải dùng cùng một khoảng cận dưới đóng,
             cận trên mở, ví dụ tháng 3/2025 là >= DATE '2025-03-01' và < DATE '2025-04-01'.
@@ -84,6 +105,9 @@ class SQLPrompt:
             một thời điểm nếu lược đồ không có đủ dữ liệu. Chỉ truy vấn chỉ số thực sự có thể tính.
         21. Không xuất comment SQL, Markdown, lời giải thích hoặc dấu chấm phẩy. Mỗi giá trị
             sql phải bắt đầu bằng SELECT hoặc WITH và chỉ chứa đúng một statement.
+            Viết gọn: SQL trên một dòng, không thụt lề; tên CTE ngắn (b1, r1, k, tong...)
+            vì chỉ dùng nội bộ; intent tối đa 6 từ. Chỉ bí danh cột ĐẦU RA cần tiếng Việt
+            không dấu mô tả đầy đủ như doanh_thu_thuan_ky_truoc.
         22. Yêu cầu tổng quát như "phân tích kết quả kinh doanh và các biến động đáng chú ý"
             cần nhiều góc nhìn, không chỉ một tổng doanh thu. Trả tối đa 5 query độc lập:
             (a) KPI bán, nhập trả, doanh thu thuần, số hóa đơn, giá trị hóa đơn bình quân và
@@ -92,6 +116,8 @@ class SQLPrompt:
             (d) biến động doanh thu theo phường/xã; (e) phải thu từ số dư dương từng khách
             hàng lũy kế đến cuối kỳ, tổng khách nợ, top 5 khách nợ và ngày giao dịch mới nhất.
             Có thể gộp đầu ra cùng grain bằng CTE/UNION ALL. Không suy diễn lợi nhuận.
+            Đúng 5 góc nhìn trên là giới hạn cứng: không tạo query thứ 6 (query dư bị bỏ),
+            không lặp lại cùng một chỉ số ở nhiều query.
         23. Với ngữ cảnh báo cáo: giữ chính xác kỳ hiện tại và bộ lọc khách hàng/địa bàn.
             Các gợi ý .gte/.lt là cận dưới đóng/cận trên mở của KỲ HIỆN TẠI, không ép lên
             kỳ đối chiếu. Dùng kỳ trước được chỉ định; nếu chưa có, dùng kỳ liền trước cùng
@@ -117,9 +143,13 @@ class SQLPrompt:
         Kết quả:
         [{"intent":"doanh_thu_san_pham_gach_quy_1_2025","sql":"WITH movements AS (SELECT l.product_name, l.product_category_name, l.line_amount AS amount FROM sales_invoice_lines l JOIN sales_invoices i ON i.invoice_id = l.invoice_id WHERE l.deleted_at IS NULL AND i.deleted_at IS NULL AND i.issued_at >= DATE '2025-01-01' AND i.issued_at < DATE '2025-04-01' UNION ALL SELECT rl.product_name, rl.product_category_name, -rl.line_amount AS amount FROM sales_return_lines rl JOIN sales_returns r ON r.return_id = rl.return_id WHERE rl.deleted_at IS NULL AND r.deleted_at IS NULL AND r.returned_at >= DATE '2025-01-01' AND r.returned_at < DATE '2025-04-01') SELECT product_name AS ten_san_pham, SUM(amount) AS doanh_thu FROM movements WHERE product_category_name ILIKE '%Gạch%' GROUP BY product_name ORDER BY doanh_thu DESC"}]
 
+        Câu hỏi: "Năm 2025 bán được bao nhiêu Thép phi 16, doanh thu bao nhiêu?"
+        Kết quả:
+        [{"intent":"so_luong_doanh_thu_thep_phi_16_2025","sql":"WITH m AS (SELECT l.unit_name, l.quantity, l.line_amount AS amount FROM sales_invoice_lines l JOIN sales_invoices i ON i.invoice_id = l.invoice_id WHERE l.deleted_at IS NULL AND i.deleted_at IS NULL AND l.product_name ILIKE '%Thép phi 16%' AND i.issued_at >= DATE '2025-01-01' AND i.issued_at < DATE '2026-01-01' UNION ALL SELECT rl.unit_name, -rl.quantity, -rl.line_amount FROM sales_return_lines rl JOIN sales_returns r ON r.return_id = rl.return_id WHERE rl.deleted_at IS NULL AND r.deleted_at IS NULL AND rl.product_name ILIKE '%Thép phi 16%' AND r.returned_at >= DATE '2025-01-01' AND r.returned_at < DATE '2026-01-01') SELECT unit_name AS don_vi_tinh, SUM(quantity) AS so_luong_ban_thuan, SUM(amount) AS doanh_thu_thuan FROM m GROUP BY unit_name ORDER BY doanh_thu_thuan DESC"}]
+
         Câu hỏi: "Tổng doanh thu của các hóa đơn có bán Xi măng"
         Kết quả:
-        [{"intent":"doanh_thu_hoa_don_co_xi_mang","sql":"SELECT COALESCE(SUM(i.invoice_total_amount), 0) AS doanh_thu FROM sales_invoices i WHERE i.deleted_at IS NULL AND EXISTS (SELECT 1 FROM sales_invoice_lines l WHERE l.invoice_id = i.invoice_id AND l.deleted_at IS NULL AND l.product_name ILIKE '%Xi măng%')"}]
+        [{"intent":"doanh_thu_hoa_don_co_xi_mang","sql":"WITH hd AS (SELECT i.customer_id, i.invoice_total_amount FROM sales_invoices i WHERE i.deleted_at IS NULL AND EXISTS (SELECT 1 FROM sales_invoice_lines l WHERE l.invoice_id = i.invoice_id AND l.deleted_at IS NULL AND l.product_name ILIKE '%Xi măng%')), ban AS (SELECT COALESCE(SUM(hd.invoice_total_amount), 0) AS amount FROM hd), tra AS (SELECT COALESCE(SUM(d.amount), 0) AS amount FROM customer_debt_transactions d WHERE d.deleted_at IS NULL AND d.source_type = 'sales_return' AND d.customer_id IN (SELECT hd.customer_id FROM hd)) SELECT ban.amount AS tong_tien_hoa_don, tra.amount AS nhap_tra, ban.amount + tra.amount AS doanh_thu FROM ban CROSS JOIN tra"}]
 
         Câu hỏi: "Các mặt hàng cụ thể trong hóa đơn XB28606-0925?"
         GỢI Ý BỘ LỌC có sales_invoices.invoice_number = XB28606-0925.
@@ -135,7 +165,7 @@ class SQLPrompt:
         [{"intent":"so_sanh_doanh_thu_thang_2_3_2025","sql":"WITH movements AS (SELECT i.issued_at AS occurred_at, i.invoice_total_amount AS amount FROM sales_invoices i WHERE i.deleted_at IS NULL UNION ALL SELECT d.occurred_at, d.amount FROM customer_debt_transactions d WHERE d.deleted_at IS NULL AND d.source_type = 'sales_return'), doanh_thu AS (SELECT COALESCE(SUM(amount) FILTER (WHERE occurred_at >= DATE '2025-02-01' AND occurred_at < DATE '2025-03-01'), 0) AS doanh_thu_thang_2, COALESCE(SUM(amount) FILTER (WHERE occurred_at >= DATE '2025-03-01' AND occurred_at < DATE '2025-04-01'), 0) AS doanh_thu_thang_3 FROM movements) SELECT doanh_thu_thang_2, doanh_thu_thang_3, doanh_thu_thang_3 - doanh_thu_thang_2 AS chenh_lech, ROUND((doanh_thu_thang_3 - doanh_thu_thang_2) * 100.0 / NULLIF(doanh_thu_thang_2, 0), 2) AS ty_le_tang_truong_phan_tram FROM doanh_thu"}]
 
         ĐỊNH DẠNG ĐẦU RA
-        Chỉ trả về một JSON array hợp lệ theo đúng cấu trúc:
+        Chỉ trả về một JSON array hợp lệ có từ 1 đến 5 phần tử theo đúng cấu trúc:
         [{"intent":"nhan_tieng_viet_khong_dau","sql":"SELECT ..."}]
 
         Không trả bất kỳ nội dung nào trước hoặc sau JSON array.
@@ -168,6 +198,7 @@ class SQLPrompt:
             truy vấn doanh thu thuần không được làm mất vế nhập trả source_type = 'sales_return',
             và phải giữ cùng khoảng ngày trên issued_at của bán và occurred_at của nhập trả.
 
-            Chỉ trả về JSON hợp lệ, không Markdown, comment hoặc dấu chấm phẩy:
+            Chỉ trả về JSON hợp lệ, không Markdown, comment hoặc dấu chấm phẩy; SQL viết trên
+            một dòng, không thụt lề:
             [{{"intent":"truy_van_da_sua","sql":"SELECT ..."}}]
         """)

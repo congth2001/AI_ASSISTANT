@@ -62,7 +62,7 @@ Khởi tạo đầy đủ mọi khóa trong `AgentService._make_initial_state`.
 
 ## Node
 
-Mọi node chạy qua `_run_node` -> `run_with_policy` (`asyncio.wait_for` + retry với backoff `min(0.25 * 2^attempt, 1.0)` giây), ghi `node_metrics` và log `trace_id`. Timeout hết hạn ném `AgentOperationTimeout`. Chỉ lỗi tạm thời được retry: timeout, `ExternalServiceError`, `ConnectionError`; lỗi domain/validation và lỗi lập trình ném ngay. Giới hạn: `wait_for` không hủy được việc chạy trong `asyncio.to_thread` (thread vẫn chạy tiếp nền), nên thao tác bọc trong thread phải chỉ đọc/idempotent. Ngoài timeout từng node, mỗi lượt có trần tổng: 120s (`invoke_for_context`) và 240s (`invoke`), quá hạn ném `AgentOperationTimeout`.
+Mọi node chạy qua `_run_node` -> `run_with_policy` (`asyncio.wait_for` + retry với backoff `min(0.25 * 2^attempt, 1.0)` giây), ghi `node_metrics` và log `trace_id`. Timeout hết hạn ném `AgentOperationTimeout`. Chỉ lỗi tạm thời được retry: timeout, `ExternalServiceError`, `ConnectionError`; lỗi domain/validation và lỗi lập trình ném ngay. Giới hạn: `wait_for` không hủy được việc chạy trong `asyncio.to_thread` (thread vẫn chạy tiếp nền), nên thao tác bọc trong thread phải chỉ đọc/idempotent. Ngoài timeout từng node, mỗi lượt có trần tổng: 150s (`invoke_for_context`) và 240s (`invoke`), quá hạn ném `AgentOperationTimeout`.
 
 | Node | Việc làm | Timeout / retry |
 | --- | --- | --- |
@@ -70,9 +70,9 @@ Mọi node chạy qua `_run_node` -> `run_with_policy` (`asyncio.wait_for` + ret
 | `request_clarification` | Đặt `response` = câu hỏi làm rõ (mặc định nếu chưa có) | 2s |
 | `analyze_query` | `query_analyzer.ensure_fresh()` rồi `classifier.classify` -> `route` | 15s |
 | `prepare_conversation` | Dựng `context` hội thoại (`has_data=True`, `response_mode="conversation"`, `HISTORY_WINDOW` = 5 tin gần nhất) | 2s |
-| `execute_text_to_sql` | `contextualizer.resolve` -> `query_analyzer.analyze` -> `TextToSQLTool.run`; citation `sql:N` | 45s |
+| `execute_text_to_sql` | `contextualizer.resolve` -> `query_analyzer.analyze` -> `TextToSQLTool.run`; citation `sql:N`. `TextToSQLUseCase` validate/repair và chạy các SQL plan song song để câu phân tích nhiều plan không vượt timeout. Bảng dữ liệu gửi LLM trả lời viết gọn (không căn lề), ẩn cột UUID khi đã có cột tên phân biệt được từng dòng (giữ lại nếu câu hỏi hỏi "mã"/"id" hoặc hai khách trùng tên); lịch sử ở nhánh SQL/RAG/hybrid cắt mỗi tin còn `SearchConfig.DATA_HISTORY_MESSAGE_CHARS` = 500 ký tự, nhánh hội thoại giữ nguyên | 90s |
 | `execute_rag` | Dùng `analyzed` có sẵn hoặc phân tích mới; `RAGTool.run`; citation `doc:<doc_id>` | 30s, retry 1 |
-| `execute_hybrid` | `asyncio.gather` SQL và RAG, gộp `retrieved_text`, citation SQL + doc | 50s |
+| `execute_hybrid` | `asyncio.gather` SQL và RAG, gộp `retrieved_text`, citation SQL + doc | 95s |
 | `evaluate_context` | Quyết định `respond` / `clarify` (xem dưới) | 2s |
 | `generate_response` | `llm_service.generate_response`; nếu `response_mode == "tool_error"` thì trả `response` có sẵn, `response_attempts=1` | 60s, retry 1 |
 | `evaluate_response` | Kiểm tra citation (xem dưới) | 2s |

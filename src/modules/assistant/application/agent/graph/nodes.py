@@ -7,6 +7,7 @@ from src.modules.assistant.application.agent.graph.state import AgentState
 from src.modules.assistant.application.agent.tools.text_to_sql_tool import TextToSQLTool
 from src.modules.assistant.application.agent.tools.rag_tool import RAGTool
 from src.modules.assistant.application.agent.tools.tool_result import ToolResult
+from src.modules.assistant.application.services.context_builder import shorten_history_message
 from src.modules.assistant.application.services.intent_classifier import IntentClassifier
 from src.modules.assistant.application.services.query_analyzer import QueryAnalyzer
 from src.modules.assistant.application.services.query_contextualizer import QueryContextualizer
@@ -19,6 +20,12 @@ from src.modules.assistant.domain.errors import (
 )
 
 _SQL_TOOL_ERRORS = (SQLGenerationFailedError, SQLPlanValidationFailedError, SQLExecutionFailedError)
+
+# A business-analysis question asks the LLM for up to 5 SQL plans (generation alone
+# takes ~20s) and each failing plan may need up to two repair round-trips. A tighter
+# budget made the whole node time out and discard every result already computed.
+SQL_NODE_TIMEOUT_SECONDS = 90
+HYBRID_NODE_TIMEOUT_SECONDS = 95
 
 
 def _tool_error_message(error_code: str | None, *, tool_name: str | None) -> str:
@@ -68,10 +75,16 @@ async def _run_node(
 # Shared helpers
 # ─────────────────────────────────────────────
 
-def _conversation_history(state: AgentState) -> list[dict]:
-    """Recent turns oldest-first (the repository returns newest-first)."""
+def _conversation_history(state: AgentState, *, max_chars: int | None = None) -> list[dict]:
+    """Recent turns oldest-first (the repository returns newest-first).
+
+    ``max_chars`` shortens each message; ``None`` keeps them whole (small talk relies
+    on the full wording of earlier turns). Data answers pass
+    ``SearchConfig.DATA_HISTORY_MESSAGE_CHARS``: they are grounded in the fresh result
+    and full earlier answers (long Markdown tables) cost ~1.4k tokens per follow-up.
+    """
     return [
-        {"role": message.role, "content": message.content}
+        {"role": message.role, "content": shorten_history_message(message.content, max_chars)}
         for message in reversed(state["messages"][:SearchConfig.HISTORY_WINDOW])
     ]
 
@@ -117,7 +130,7 @@ def _data_context(
     """Context dict consumed by the LLM for SQL/hybrid nodes."""
     return {
         "retrieved_text": retrieved_text,
-        "conversation_history": _conversation_history(state),
+        "conversation_history": _conversation_history(state, max_chars=SearchConfig.DATA_HISTORY_MESSAGE_CHARS),
         "current_query": state["query"],
         "intent": intent,
         "has_data": has_data,
@@ -248,7 +261,9 @@ def make_execute_text_to_sql_node(
                 "citations": citations,
                 "tool_calls": [*state.get("tool_calls", []), _tool_call("text_to_sql", result)],
             }
-        return await _run_node(state, "execute_text_to_sql", operation, timeout_seconds=45)
+        return await _run_node(
+            state, "execute_text_to_sql", operation, timeout_seconds=SQL_NODE_TIMEOUT_SECONDS
+        )
     return node
 
 
@@ -340,7 +355,9 @@ def make_execute_hybrid_node(
                 "citations": citations,
                 "tool_calls": [*state.get("tool_calls", []), *calls],
             }
-        return await _run_node(state, "execute_hybrid", operation, timeout_seconds=50)
+        return await _run_node(
+            state, "execute_hybrid", operation, timeout_seconds=HYBRID_NODE_TIMEOUT_SECONDS
+        )
     return node
 
 
