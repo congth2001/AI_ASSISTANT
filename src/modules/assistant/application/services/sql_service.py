@@ -141,11 +141,14 @@ _TOKEN = re.compile(
     | (?P<ident>"(?:[^"]|"")+"(?:\s*\.\s*"(?:[^"]|"")+"|\s*\.\s*[a-z_][a-z0-9_$]*)*
                |[a-z_][a-z0-9_$]*(?:\s*\.\s*(?:"(?:[^"]|"")+"|[a-z_][a-z0-9_$]*))*)
     | (?P<punct>[(),])
+    | (?P<op>[<>=!+\-*/%^|&~@\#:]+)
     """,
     re.IGNORECASE | re.VERBOSE,
 )
+# Operators are kept as tokens so `col >= (SELECT ...)` or `amount * (1 - x)` is not
+# read as a call `col(`: no operator can stand between a function name and "(".
 _CTE_NAME = re.compile(
-    r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([a-z_][a-z0-9_]*)\s*(?:\([^()]*\)\s*)?AS\s+(?:NOT\s+)?(?:MATERIALIZED\s+)?\(",
+    r"(?:\bWITH\s+(?:RECURSIVE\s+)?|,\s*)([a-z_][a-z0-9_]*)\s*(?:\([^()]*\)\s*)?\bAS\s*(?:NOT\s+)?(?:MATERIALIZED\s*)?\(",
     re.IGNORECASE,
 )
 _FROM_ITEM_PREFIXES = frozenset({"lateral", "only"})

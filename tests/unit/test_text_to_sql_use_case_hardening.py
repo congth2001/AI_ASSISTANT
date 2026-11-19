@@ -197,3 +197,93 @@ def test_number_formatting_keeps_decimals(value, expected):
 def test_long_and_multiline_cells_are_bounded():
     cell = _fmt_cell("a\nb " + "z" * 500)
     assert "\n" not in cell and len(cell) <= module._MAX_CELL_CHARS
+
+
+@pytest.mark.asyncio
+async def test_plans_and_repairs_run_concurrently_and_keep_plan_order():
+    """Sequential plans/repairs made business-analysis questions exceed the node timeout."""
+    import asyncio
+
+    in_flight = 0
+    peak = 0
+
+    async def slow(result):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.05)
+        in_flight -= 1
+        return result
+
+    executor = AsyncMock()
+    async def run(sql):
+        return await slow(([(len(sql),)], ["do_dai"]))
+
+    async def repair(plan, error, schema):
+        return await slow(SQLQueryPlan(plan.intent, GOOD_SQL))
+
+    executor.execute_sql.side_effect = run
+    service = AsyncMock()
+    service.generate.return_value = [
+        SQLQueryPlan("mot", GOOD_SQL),
+        SQLQueryPlan("hai", "SELECT * FROM sales_invoices"),
+        SQLQueryPlan("ba", "SELECT * FROM customers"),
+    ]
+    service.validate_all = SQLService(None).validate_all
+    service.repair.side_effect = repair
+
+    queries, content, ok, has_data, code = await make_use_case(executor, service).execute(analyzed())
+
+    assert ok and has_data and code is None
+    assert peak >= 2
+    assert content.index("[mot]") < content.index("[hai]") < content.index("[ba]")
+    assert len(queries) == 3
+
+
+# ── Compact data block for the answering LLM ─────────────────────────────
+
+ID_A = "6b890030-fb67-4882-8a22-a32e1e0e9307"
+ID_B = "33e56eba-6bc3-4de5-ad17-ed5698becdd7"
+CUSTOMER_COLS = ["ma_khach_hang", "ten_khach_hang", "doanh_thu"]
+
+
+def _query(text):
+    return QueryAnalyzer().analyze(text)
+
+
+def test_rows_are_compact_without_padding_or_separator_line():
+    rows = [("Xi măng", Decimal("1000")), ("Gạch đỏ loại một", Decimal("25"))]
+    content = TextToSQLUseCase._format_results([("sp", rows, ["ten_san_pham", "doanh_thu"])], analyzed())
+    lines = content.splitlines()
+    assert "ten_san_pham | doanh_thu" in lines
+    assert "Xi măng | 1000" in lines and "Gạch đỏ loại một | 25" in lines
+    assert not any(set(line.strip()) <= set("-+") and line.strip() for line in lines)
+
+
+def test_uuid_column_is_hidden_when_names_identify_every_row():
+    import uuid
+
+    rows = [(uuid.UUID(ID_A), "Tuấn Anh", Decimal("485")), (ID_B, "Anh Luy", Decimal("416"))]
+    content = TextToSQLUseCase._format_results([("top", rows, CUSTOMER_COLS)], _query("Top khách hàng năm 2026"))
+    assert ID_A not in content and ID_B not in content and "ma_khach_hang" not in content
+    assert "Tuấn Anh | 485" in content
+
+
+def test_uuid_column_is_kept_when_one_name_belongs_to_two_customers():
+    rows = [(ID_A, "Anh Minh", Decimal("5")), (ID_B, "Anh Minh", Decimal("3"))]
+    content = TextToSQLUseCase._format_results([("top", rows, CUSTOMER_COLS)], _query("Top khách hàng năm 2026"))
+    assert ID_A in content and ID_B in content
+
+
+def test_uuid_column_is_kept_when_the_question_asks_for_the_code():
+    rows = [(ID_A, "Tuấn Anh", Decimal("485"))]
+    content = TextToSQLUseCase._format_results(
+        [("ma", rows, CUSTOMER_COLS)], _query("Mã khách hàng của Tuấn Anh là gì?")
+    )
+    assert ID_A in content
+
+
+def test_uuid_column_is_kept_without_a_name_column():
+    rows = [(ID_A, Decimal("485"))]
+    content = TextToSQLUseCase._format_results([("q", rows, ["ma_khach_hang", "doanh_thu"])], analyzed())
+    assert ID_A in content

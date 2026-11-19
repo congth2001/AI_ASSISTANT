@@ -101,3 +101,36 @@ def test_offset_then_limit_is_kept_and_capped():
 def test_order_by_is_untouched_when_limit_is_appended():
     sql = validate("SELECT i.invoice_id FROM sales_invoices i ORDER BY i.issued_at DESC")
     assert sql == "SELECT i.invoice_id FROM sales_invoices i ORDER BY i.issued_at DESC\nLIMIT 1000"
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        # An operator before "(" is not a call: these were rejected as `i.issued_at()`.
+        "WITH params AS (SELECT DATE '2026-07-21' AS tu_ngay) SELECT COUNT(i.invoice_id) AS so_hoa_don "
+        "FROM sales_invoices i WHERE i.deleted_at IS NULL AND i.issued_at >= (SELECT p.tu_ngay FROM params p)",
+        "SELECT COUNT(d.customer_id) AS so_but_toan FROM customer_debt_transactions d "
+        "WHERE d.deleted_at IS NULL AND d.occurred_at < (SELECT MAX(x.occurred_at) FROM customer_debt_transactions x)",
+        "SELECT i.invoice_total_amount * (1 - 0.1) AS gia_tri FROM sales_invoices i WHERE i.deleted_at IS NULL",
+        "SELECT i.invoice_total_amount::numeric(18, 2) AS gia_tri FROM sales_invoices i WHERE i.deleted_at IS NULL",
+        # CTE written without a space before "(".
+        "WITH ban_ky_truoc AS(SELECT COUNT(i.invoice_id) AS so_hoa_don FROM sales_invoices i "
+        "WHERE i.deleted_at IS NULL) SELECT b.so_hoa_don FROM ban_ky_truoc b",
+    ],
+)
+def test_accepts_operators_before_parentheses_and_compact_ctes(sql):
+    validate(sql)
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT 1 AS x WHERE 1 = pg_sleep(1) IS NULL",
+        "SELECT i.invoice_id FROM sales_invoices i WHERE i.issued_at >= (SELECT pg_sleep(1))",
+        "WITH alias AS(SELECT u.email FROM users u) SELECT a.email FROM alias a",
+        "SELECT i.invoice_id FROM sales_invoices i, alias(1) a",
+    ],
+)
+def test_operator_tokens_do_not_hide_calls_or_tables(sql):
+    with pytest.raises(SQLValidationError):
+        validate(sql)

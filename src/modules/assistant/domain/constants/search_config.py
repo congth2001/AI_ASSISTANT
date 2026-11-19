@@ -24,3 +24,6 @@ class SearchConfig:
     DEFAULT_EF = 100
 
     HISTORY_WINDOW = 5  # số lượng turn gần nhất để contextualize query
+    # Câu trả lời dựa trên dữ liệu (SQL/RAG/hybrid) đã có số liệu mới và câu hỏi đã được
+    # làm rõ, nên mỗi tin lịch sử chỉ cần ý chính; tin dài (bảng Markdown) bị cắt.
+    DATA_HISTORY_MESSAGE_CHARS = 500

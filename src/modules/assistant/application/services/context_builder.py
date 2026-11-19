@@ -3,6 +3,16 @@ from typing import List, Dict, Any, Optional
 from src.modules.conversations.domain.entities.message import Message
 from src.modules.assistant.domain.entities.search_documents_result import SearchDocumentsResult
 from src.modules.assistant.domain.entities.time_filter import TimeFilter
+from src.modules.assistant.domain.constants.search_config import SearchConfig
+
+_HISTORY_TRUNCATION_NOTE = " …(đã rút gọn)"
+
+
+def shorten_history_message(content: str, max_chars: int | None) -> str:
+    """Cut one history message to ``max_chars``; ``None`` keeps it whole."""
+    if max_chars is None or len(content) <= max_chars:
+        return content
+    return content[:max_chars].rstrip() + _HISTORY_TRUNCATION_NOTE
 
 
 class ContextBuilder:
@@ -176,7 +186,9 @@ class ContextBuilder:
         return [
             {
                 "role"     : msg.role,
-                "content"  : msg.content,
+                "content"  : shorten_history_message(
+                    msg.content, SearchConfig.DATA_HISTORY_MESSAGE_CHARS
+                ),
                 "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
             }
             for msg in recent
