@@ -3,9 +3,7 @@
 import base64
 import binascii
 import json
-from dataclasses import replace
-from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 from uuid import UUID
 
 from src.modules.analytics.domain.models.dashboard import (
@@ -32,6 +30,10 @@ from src.modules.analytics.domain.models.orders import (
 from src.modules.analytics.domain.repositories.i_dashboard_analytics_repository import (
     IDashboardAnalyticsRepository,
 )
+from src.modules.analytics.domain.services.period_comparison import (
+    align_period_series,
+    summarize_periods,
+)
 from src.modules.analytics.domain.errors import (
     CursorPaginationConflictError,
     InvalidCursorValuesError,
@@ -55,62 +57,15 @@ class DashboardAnalyticsUseCase:
     async def get_time_series_comparison(
         self, filters: DashboardFilters, grain: TimeGrain,
     ) -> list[ComparedTimeSeriesPoint]:
-        """Align equal-length periods by day offset, then bucket by current dates.
-
-        Calendar months/weeks may have different lengths and boundaries. Bucketing
-        both periods independently would compare different numbers of days.
-        """
-        current = {p.period_start: p for p in await self._repository.get_time_series(filters, TimeGrain.DAY)}
-        previous_filters = filters.previous_period()
-        previous = {p.period_start: p for p in await self._repository.get_time_series(previous_filters, TimeGrain.DAY)}
-        buckets: dict[date, ComparedTimeSeriesPoint] = {}
-        for offset in range(filters.day_count):
-            day = filters.date_from + timedelta(days=offset)
-            previous_day = previous_filters.date_from + timedelta(days=offset)
-            if grain == TimeGrain.WEEK:
-                key = day - timedelta(days=day.weekday())
-            elif grain == TimeGrain.MONTH:
-                key = day.replace(day=1)
-            elif grain == TimeGrain.QUARTER:
-                key = day.replace(month=((day.month - 1) // 3) * 3 + 1, day=1)
-            elif grain == TimeGrain.YEAR:
-                key = day.replace(month=1, day=1)
-            else:
-                key = day
-            if key not in buckets:
-                buckets[key] = ComparedTimeSeriesPoint(
-                    day, day, previous_day, previous_day, Decimal(0), Decimal(0), 0, 0,
-                )
-            bucket = buckets[key]
-            current_point, previous_point = current.get(day), previous.get(previous_day)
-            buckets[key] = replace(
-                bucket,
-                period_end=day + timedelta(days=1),
-                previous_period_end=previous_day + timedelta(days=1),
-                revenue=bucket.revenue + (current_point.revenue if current_point else Decimal(0)),
-                previous_revenue=bucket.previous_revenue + (previous_point.revenue if previous_point else Decimal(0)),
-                invoice_count=bucket.invoice_count + (current_point.invoice_count if current_point else 0),
-                previous_invoice_count=bucket.previous_invoice_count + (previous_point.invoice_count if previous_point else 0),
-            )
-        return list(buckets.values())
+        """Two equal-length periods aligned by day offset (see ``align_period_series``)."""
+        current = await self._repository.get_time_series(filters, TimeGrain.DAY)
+        previous = await self._repository.get_time_series(filters.previous_period(), TimeGrain.DAY)
+        return align_period_series(filters, grain, current, previous)
 
     async def get_summary(self, filters: DashboardFilters) -> DashboardSummary:
         current = await self._repository.get_metric_snapshot(filters)
-        previous = await self._repository.get_metric_snapshot(
-            filters.previous_period()
-        )
-        change = current.total_revenue - previous.total_revenue
-        growth = None
-        if previous.total_revenue != 0:
-            growth = (
-                change * Decimal("100") / previous.total_revenue
-            ).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        return DashboardSummary(
-            current=current,
-            previous_revenue=previous.total_revenue,
-            revenue_change=change,
-            revenue_growth_percent=growth,
-        )
+        previous = await self._repository.get_metric_snapshot(filters.previous_period())
+        return summarize_periods(current, previous)
 
     async def get_time_series(
         self, filters: DashboardFilters, grain: TimeGrain

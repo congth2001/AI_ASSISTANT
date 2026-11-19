@@ -23,6 +23,7 @@ class Container(containers.DeclarativeContainer):
         customer_repo=sales.customer_repo,
         sales_invoice_line_repo=sales.sales_invoice_line_repo,
         conversation_repo=conversations.conversation_repo,
+        dashboard_analytics_repository=analytics.dashboard_analytics_repository,
     )
 
     # Provider aliases keep CLI entry points and dependency overrides stable.

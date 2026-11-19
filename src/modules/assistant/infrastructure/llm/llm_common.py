@@ -47,6 +47,8 @@ def build_system_prompt(context: Optional[Dict[str, Any]]) -> str:
         f"{retrieved}\n\n"
         "Trả lời câu hỏi của người dùng chỉ dựa trên ngữ cảnh trên."
     )
+    if context.get("response_mode") == "overview_report":
+        system_message += "\n\n" + ResponsePrompt.OVERVIEW_REPORT
     verification_feedback = context.get("verification_feedback")
     if verification_feedback:
         system_message += f"\n\nYêu cầu kiểm tra lại: {verification_feedback}"

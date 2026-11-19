@@ -87,7 +87,7 @@ Trong mỗi module:
 
 Các nhóm lỗi dùng chung nằm trong `src/common/errors/`: `not_found`, `not_permission`, `unauthorized`, `validation`, `conflict`, cấu hình, timeout và lỗi dịch vụ/nội bộ. Mỗi module gom mã lỗi và mẫu thông điệp riêng trong `domain/errors.py`; nơi gọi khởi tạo lỗi có tên kèm tham số có tên. Ánh xạ sang HTTP status nằm tại `src/common/presentation/error_handlers.py`, giữ nguyên response `{"detail": ...}` và contract SSE. Lỗi domain không phụ thuộc framework. Xem `src/common/errors/README.md`.
 
-Application có thể dùng domain contract của module khác: assistant sử dụng IConversationRepository và repository contract của sales. Các HTTP adapter dùng dependency xác thực từ auth và ownership guard từ conversations.
+Application có thể dùng domain contract của module khác: assistant sử dụng IConversationRepository, repository contract của sales và IDashboardAnalyticsRepository cùng domain service `period_comparison` của analytics (câu hỏi có sẵn của Tổng quan được trả lời từ đúng số liệu dashboard). Repository analytics được inject vào assistant tại config/container.py. Các HTTP adapter dùng dependency xác thực từ auth và ownership guard từ conversations.
 
 Hai dependency hạ tầng phục vụ đọc được cho phép rõ ràng: analytics query các ORM model của sales để tổng hợp báo cáo; conversation repository join UserModel của auth để hiển thị chủ hội thoại. Không cho application/domain truy cập các ORM model này. Nếu tách database/service trong tương lai, thay các read adapter này bằng projection hoặc API port; chưa có tính độc lập về triển khai/database.
 
