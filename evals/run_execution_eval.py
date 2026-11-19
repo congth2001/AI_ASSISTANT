@@ -18,10 +18,12 @@ if str(BACKEND_DIR) not in sys.path:
 
 from evals.execution_eval import (  # noqa: E402
     QueryResult,
+    accepted_query_results,
     canonical_result,
     expected_query_result,
     load_jsonl,
     results_equal,
+    results_match,
     summary_metrics,
     validate_case_set,
 )
@@ -65,6 +67,14 @@ def parse_args() -> argparse.Namespace:
         "--compare-columns",
         action="store_true",
         help="Yêu cầu alias cột của prediction khớp ground truth.",
+    )
+    parser.add_argument(
+        "--exact-columns",
+        action="store_true",
+        help=(
+            "Yêu cầu đúng số cột và thứ tự cột như SQL tham chiếu. Mặc định chấp nhận "
+            "cột thừa/đổi thứ tự cột nếu một nhóm cột tái tạo đúng kết quả."
+        ),
     )
     return parser.parse_args()
 
@@ -135,6 +145,7 @@ def evaluate(
     *,
     timeout_ms: int,
     compare_columns: bool,
+    allow_extra_columns: bool = True,
 ) -> list[dict[str, Any]]:
     details: list[dict[str, Any]] = []
     validator = SQLService(None)
@@ -162,17 +173,28 @@ def evaluate(
             continue
 
         reference, _ = execute_read_only(connection, case["reference_sql"], timeout_ms)
-        correct = results_equal(
-            predicted,
-            reference,
-            ordered=case["ordered"],
-            compare_columns=compare_columns,
-        )
+        match = None
+        for label, answer in (("reference", reference), *(
+            (f"accepted_{index}", alternative)
+            for index, alternative in enumerate(accepted_query_results(case), start=1)
+        )):
+            if results_equal(predicted, answer, ordered=case["ordered"], compare_columns=compare_columns):
+                match = label
+                break
+            if results_match(
+                predicted, answer, ordered=case["ordered"],
+                compare_columns=compare_columns, allow_extra_columns=allow_extra_columns,
+            ):
+                match = f"{label}_column_subset"
+                break
+        correct = match is not None
         detail: dict[str, Any] = {
             "case_id": case_id,
             "status": "correct" if correct else "wrong_result",
             "latency_ms": latency_ms,
         }
+        if match:
+            detail["match"] = match
         if not correct:
             detail["expected"] = canonical_result(
                 reference,
@@ -223,6 +245,7 @@ def main() -> int:
                 predictions,
                 timeout_ms=args.timeout_ms,
                 compare_columns=args.compare_columns,
+                allow_extra_columns=not args.exact_columns,
             )
     except Exception as exc:
         print(f"Benchmark thất bại: {exc}", file=sys.stderr)
@@ -233,6 +256,10 @@ def main() -> int:
     report = {
         "benchmark": args.dataset.stem,
         "ground_truth_verified": True,
+        "scoring": {
+            "compare_columns": args.compare_columns,
+            "allow_extra_columns": not args.exact_columns,
+        },
         "metrics": metrics,
         "details": details,
     }
