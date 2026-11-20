@@ -1,12 +1,17 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import (
+    BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
+    Date,
     DateTime,
     ForeignKey,
+    Identity,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     Numeric,
     String,
     Text,
@@ -326,4 +331,105 @@ class CustomerDebtTransaction(Base):
             name="ck_debt_transactions_source_type",
         ),
         {"comment": "Signed receivable ledger: positive increases debt; negative decreases debt."},
+    )
+
+
+DEBT_CHANGE_TYPES = ("updated", "deleted", "restored", "backdated_insert")
+
+
+class EtlSyncRun(Base):
+    """One successful business-data sync; written in the same transaction as its data."""
+
+    __tablename__ = "etl_sync_runs"
+
+    run_id = Column(postgresql.UUID(as_uuid=False), primary_key=True)
+    started_at = Column(DateTime(timezone=True), nullable=False)
+    finished_at = Column(DateTime(timezone=True), nullable=False)
+    entrypoint = Column(String(64), nullable=False)
+    allow_shrink = Column(Boolean, nullable=False)
+    debt_synced = Column(Boolean, nullable=False)
+    is_baseline = Column(Boolean, nullable=False)
+    # Latest transaction date of the active ledger before the run (Vietnam local date).
+    ledger_frontier_date = Column(Date, nullable=True)
+    debt_inserted = Column(Integer, nullable=False, server_default=text("0"))
+    debt_updated = Column(Integer, nullable=False, server_default=text("0"))
+    debt_deleted = Column(Integer, nullable=False, server_default=text("0"))
+    debt_restored = Column(Integer, nullable=False, server_default=text("0"))
+    debt_backdated = Column(Integer, nullable=False, server_default=text("0"))
+
+    __table_args__ = (
+        Index("ix_etl_sync_runs_started_at", "started_at"),
+        {"comment": "Audit: successful sales syncs; failed runs roll back and leave no row."},
+    )
+
+
+class CustomerDebtTransactionChange(Base):
+    """Retroactive change to one debt-ledger row made by an ETL run."""
+
+    __tablename__ = "customer_debt_transaction_changes"
+
+    change_id = Column(BigInteger, Identity(always=False), primary_key=True)
+    run_id = Column(
+        postgresql.UUID(as_uuid=False),
+        ForeignKey("etl_sync_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    debt_transaction_id = Column(
+        String(36),
+        ForeignKey("customer_debt_transactions.debt_transaction_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    customer_id = Column(
+        postgresql.UUID(as_uuid=False),
+        ForeignKey("customers.customer_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    previous_customer_id = Column(postgresql.UUID(as_uuid=False), nullable=True)
+    change_type = Column(String(24), nullable=False)
+    source_type = Column(String(32), nullable=False)
+    source_id = Column(String(100), nullable=False)
+    # Naive Vietnam local time, same convention as customer_debt_transactions.occurred_at.
+    old_occurred_at = Column(DateTime, nullable=True)
+    new_occurred_at = Column(DateTime, nullable=True)
+    old_amount = Column(Numeric(18, 2), nullable=True)
+    new_amount = Column(Numeric(18, 2), nullable=True)
+    balance_delta = Column(Numeric(18, 2), nullable=False)
+
+    __table_args__ = (
+        Index("ix_debt_changes_customer_run", "customer_id", "run_id"),
+        Index("ix_debt_changes_run_id", "run_id"),
+        Index("ix_debt_changes_debt_transaction_id", "debt_transaction_id"),
+        CheckConstraint(
+            "change_type IN ('updated', 'deleted', 'restored', 'backdated_insert')",
+            name="ck_debt_changes_change_type",
+        ),
+        {"comment": "Audit: per-row retroactive debt changes; balance_delta = new - old effective amount."},
+    )
+
+
+class CustomerDebtRevision(Base):
+    """Per-customer summary of the retroactive debt changes of one ETL run."""
+
+    __tablename__ = "customer_debt_revisions"
+
+    run_id = Column(
+        postgresql.UUID(as_uuid=False),
+        ForeignKey("etl_sync_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    customer_id = Column(
+        postgresql.UUID(as_uuid=False),
+        ForeignKey("customers.customer_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    balance_before = Column(Numeric(18, 2), nullable=False)
+    balance_after = Column(Numeric(18, 2), nullable=False)
+    balance_delta = Column(Numeric(18, 2), nullable=False)
+    earliest_affected_at = Column(DateTime, nullable=False)
+    change_count = Column(Integer, nullable=False)
+
+    __table_args__ = (
+        PrimaryKeyConstraint("run_id", "customer_id", name="pk_customer_debt_revisions"),
+        Index("ix_debt_revisions_customer_id", "customer_id"),
+        {"comment": "Audit: balance_before/after are whole-ledger balances; balance_delta is the retroactive part."},
     )

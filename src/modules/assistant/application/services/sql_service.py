@@ -82,6 +82,10 @@ RESTRICTED_SQL_TABLES = frozenset({
     "conversations",
     "messages",
     "alembic_version",
+    # ETL audit trail (operational data, see docs/customer-debt-history.md).
+    "etl_sync_runs",
+    "customer_debt_transaction_changes",
+    "customer_debt_revisions",
 })
 _ALLOWED_SCHEMA = "public"
 _ALLOWED_TABLE_FUNCTIONS = frozenset({"generate_series", "unnest"})

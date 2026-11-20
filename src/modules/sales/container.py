@@ -9,6 +9,9 @@ from src.modules.sales.infrastructure.repositories.customer_repository import Cu
 from src.modules.sales.infrastructure.repositories.customer_debt_transaction_repository import (
     CustomerDebtTransactionRepository,
 )
+from src.modules.sales.infrastructure.repositories.debt_revision_repository import (
+    DebtRevisionRepository,
+)
 from src.modules.sales.infrastructure.repositories.sales_invoice_repository import (
     SalesInvoiceRepository,
 )
@@ -38,6 +41,8 @@ class SalesContainer(containers.DeclarativeContainer):
 
     sales_return_repo = Singleton(SalesReturnRepository, session_factory=session_factory)
 
+    debt_revision_repo = Singleton(DebtRevisionRepository, session_factory=session_factory)
+
     unit_of_work = Singleton(SqlAlchemyUnitOfWork, session_factory=session_factory)
 
     sync_business_data_use_case = Singleton(
@@ -48,4 +53,5 @@ class SalesContainer(containers.DeclarativeContainer):
         customer_debt_transaction_repository=customer_debt_transaction_repo,
         sales_return_repository=sales_return_repo,
         unit_of_work=unit_of_work,
+        debt_revision_repository=debt_revision_repo,
     )
