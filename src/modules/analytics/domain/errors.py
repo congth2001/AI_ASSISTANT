@@ -73,3 +73,23 @@ class CustomerNotFoundError(NotFoundError):
 class OrderNotFoundError(NotFoundError):
     code = 'order_not_found'
     message_template = 'Order not found'
+
+
+class InvalidDebtHistoryDateRangeError(ValidationError):
+    code = 'invalid_debt_history_date_range'
+    message_template = 'date_from must be before or equal to date_to'
+
+
+class DebtHistoryTooManyPointsError(ValidationError):
+    code = 'debt_history_too_many_points'
+    message_template = 'The balance series would have more than {max_points} points; choose a larger grain or a shorter range'
+
+
+class DebtLedgerTooLargeError(ValidationError):
+    code = 'debt_ledger_too_large'
+    message_template = 'The customer ledger exceeds {max_entries} entries up to date_to; choose an earlier date_to'
+
+
+class InvalidDebtHistoryCursorError(ValidationError):
+    code = 'invalid_debt_history_cursor'
+    message_template = 'Invalid debt history cursor'

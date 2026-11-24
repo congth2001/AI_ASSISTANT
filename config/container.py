@@ -46,6 +46,7 @@ class Container(containers.DeclarativeContainer):
     export_customer_debt_use_case = analytics.export_customer_debt_use_case
     order_ledger_workbook_exporter = analytics.order_ledger_workbook_exporter
     export_order_ledger_use_case = analytics.export_order_ledger_use_case
+    customer_debt_history_use_case = analytics.customer_debt_history_use_case
     milvus_client = assistant.milvus_client
     llm_service = assistant.llm_service
     embedding_service = assistant.embedding_service
