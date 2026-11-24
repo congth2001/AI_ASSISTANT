@@ -181,7 +181,7 @@ Response `OrderPageResponse`: `items[]` (`invoice_id`, `invoice_number`, `issued
 
 ### 3.11 `GET /analytics/orders/{invoice_id}`
 
-Path `invoice_id` dài 1-200 ký tự. Response `OrderDetailResponse`: `invoice_id`, `invoice_number`, `issued_at`, `customer_name`, `customer_address_detail`, `customer_ward_name`, `customer_village_name`, `invoice_total_amount`, `lines[]` (`line_number`, `product_name`, `product_category_name`, `unit_name`, `unit_price`, `quantity`, `line_amount`; sắp xếp theo `line_number`). Không thấy hóa đơn: 404 `order_not_found`.
+Path `invoice_id` dài 1-200 ký tự. Response `OrderDetailResponse`: `invoice_id`, `invoice_number`, `issued_at`, `customer_name`, `customer_address_detail`, `customer_ward_name`, `customer_village_name`, `invoice_total_amount`, `customer_id` (khách hiện tại của hóa đơn, có thể null; frontend dùng để mở trang lịch sử công nợ), `lines[]` (`line_number`, `product_name`, `product_category_name`, `unit_name`, `unit_price`, `quantity`, `line_amount`; sắp xếp theo `line_number`). Không thấy hóa đơn: 404 `order_not_found`.
 
 ### 3.12 `GET /analytics/orders/export`
 
