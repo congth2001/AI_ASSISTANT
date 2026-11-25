@@ -69,6 +69,7 @@ auth:
     jwt_issuer: business-chatbot
     jwt_audience: business-chatbot-web
     access_token_minutes: 15
+    guest_token_minutes: 60 # stateless guest access token (no refresh token, no users row)
     refresh_token_days: 30
     refresh_reuse_grace_seconds: 30 # tolerates concurrent refresh from several tabs sharing one token; 0 = strict replay detection.
 

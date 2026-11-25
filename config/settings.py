@@ -204,6 +204,8 @@ class AuthSettings(ConfigModel):
     # 0 (default) treats any replay as theft and revokes all of the user's refresh tokens;
     # set a few seconds if several browser tabs may refresh with the same token concurrently.
     refresh_reuse_grace_seconds: int = Field(default=30, ge=0, le=60)
+    # Lifetime of a stateless guest access token (no refresh token, no users row).
+    guest_token_minutes: int = Field(default=60, gt=0, le=24 * 60)
 
     @field_validator("jwt_secret")
     @classmethod

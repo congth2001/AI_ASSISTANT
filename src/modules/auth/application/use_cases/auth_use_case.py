@@ -29,6 +29,7 @@ class AuthUseCase:
         access_token_minutes: int,
         refresh_token_days: int,
         refresh_reuse_grace_seconds: int = 30,
+        guest_token_minutes: int = 60,
     ):
         self.repository = auth_repository
         self.password_hasher = password_hasher
@@ -36,6 +37,7 @@ class AuthUseCase:
         self.access_token_minutes = access_token_minutes
         self.refresh_token_days = refresh_token_days
         self.refresh_reuse_grace_seconds = 30 if refresh_reuse_grace_seconds is None else int(refresh_reuse_grace_seconds)
+        self.guest_token_minutes = 60 if guest_token_minutes is None else int(guest_token_minutes)
 
     async def create_staff(
         self, email: str, display_name: str, password: str, actor: Dict[str, Any]
@@ -49,10 +51,38 @@ class AuthUseCase:
         )
 
     async def create_guest_session(self) -> Dict[str, Any]:
-        guest = await self.repository.create_user(
-            None, "Khách", None, UserRole.GUEST.value
-        )
-        return await self._issue_token_pair(guest)
+        """Stateless guest session: a self-contained access token, no users row, no refresh token.
+
+        Guests may only chat one stateless question at a time, so nothing has to be looked up or
+        revoked server-side. When the token expires the client simply asks for a new session.
+        """
+        now = datetime.now(timezone.utc)
+        guest = self._guest_user(str(uuid4()), now)
+        access_token = self.token_service.encode({
+            "sub": guest["id"],
+            "role": UserRole.GUEST.value,
+            "iat": now,
+            "type": "access",
+            "exp": now + timedelta(minutes=self.guest_token_minutes),
+        })
+        return {
+            "access_token": access_token,
+            "refresh_token": None,
+            "token_type": "bearer",
+            "expires_in": self.guest_token_minutes * 60,
+            "user": guest,
+        }
+
+    @staticmethod
+    def _guest_user(guest_id: str, created_at: datetime) -> Dict[str, Any]:
+        return {
+            "id": guest_id,
+            "email": None,
+            "display_name": "Khách",
+            "role": UserRole.GUEST.value,
+            "is_active": True,
+            "created_at": created_at,
+        }
 
     async def bootstrap_admin(self, email: str, display_name: str, password: str) -> Dict[str, Any]:
         """Create an initial admin. This method is intended for the local CLI only."""
@@ -84,6 +114,9 @@ class AuthUseCase:
 
     async def refresh(self, refresh_token: str) -> Dict[str, Any]:
         payload = self._decode(refresh_token, expected_type="refresh")
+        if payload.get("role") == UserRole.GUEST.value:
+            # Guest sessions are stateless now; tokens issued before still fail cleanly.
+            raise InvalidRefreshTokenError()
         user_id = payload["sub"]
         user = await self.repository.get_user_by_id(user_id)
         if not user or not user["is_active"]:
@@ -105,6 +138,9 @@ class AuthUseCase:
 
     async def authenticate_access_token(self, access_token: str) -> Dict[str, Any]:
         payload = self._decode(access_token, expected_type="access")
+        if payload.get("role") == UserRole.GUEST.value:
+            issued_at = datetime.fromtimestamp(int(payload["iat"]), tz=timezone.utc)
+            return self._guest_user(str(payload["sub"]), issued_at)
         user = await self.repository.get_user_by_id(payload["sub"])
         if not user or not user["is_active"]:
             raise AccountUnavailableError()
