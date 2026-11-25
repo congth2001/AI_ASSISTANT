@@ -239,7 +239,7 @@ def make_execute_text_to_sql_node(
     async def node(state: AgentState) -> dict:
         async def operation():
             resolved = await contextualizer.resolve(state["query"], state["messages"])
-            analyzed = query_analyzer.analyze(resolved)
+            analyzed = await query_analyzer.analyze_async(resolved)
             result = await tool.run(analyzed=analyzed)
             sql_queries = result.metadata.get("sql_queries", [])
             citations = _sql_citations(sql_queries)
@@ -278,7 +278,7 @@ def make_execute_rag_node(
                 analyzed = state["analyzed"]
             else:
                 resolved = await contextualizer.resolve(state["query"], state["messages"])
-                analyzed = query_analyzer.analyze(resolved)
+                analyzed = await query_analyzer.analyze_async(resolved)
             result = await tool.run(
                 analyzed=analyzed,
                 messages=state["messages"],
@@ -313,7 +313,7 @@ def make_execute_hybrid_node(
     async def node(state: AgentState) -> dict:
         async def operation():
             resolved = await contextualizer.resolve(state["query"], state["messages"])
-            analyzed = query_analyzer.analyze(resolved)
+            analyzed = await query_analyzer.analyze_async(resolved)
 
             sql_result, rag_result = await asyncio.gather(
                 sql_tool.run(analyzed=analyzed),
