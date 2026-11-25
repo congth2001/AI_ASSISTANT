@@ -67,14 +67,21 @@ khoản phù hợp) để thời gian phản hồi không lộ email có tồn t
 
 Rate limit (cửa sổ trượt trong bộ nhớ, cấu hình ở `rate_limit.*`, trả `429` + `Retry-After`):
 `/auth/login` theo IP (10/phút) và theo email (5/phút), `/auth/guest` theo IP (10/phút),
-`/auth/refresh` theo IP (30/phút). Hàm dùng chung: `rate_limit(...)` / `enforce_rate_limit(...)`
+`/auth/refresh` theo IP (30/phút), `/chat` và `/chat/stream` theo người dùng (20/phút, scope
+`chat_user`) và riêng guest thêm theo IP (10/phút, scope `chat_guest_ip`, vì mỗi phiên guest có id
+mới). Hàm dùng chung: `rate_limit(...)` / `enforce_rate_limit(...)`
 trong `src/common/presentation/rate_limit.py`.
 
-Mỗi lần gọi `POST /auth/guest` tạo một người dùng có vai trò `guest` trong cơ sở dữ liệu, không
-có email và mật khẩu, để khách có thể giữ một cặp token. Khách không có hội thoại: mỗi tin nhắn
-của khách được trả lời độc lập và không có gì được lưu. Endpoint này không yêu cầu xác thực và
-bị giới hạn tần suất theo IP, nhưng vẫn thêm một dòng vào `users` cho mỗi lần gọi thành công. Dọn
-guest cũ và refresh token hết hạn bằng CLI (mặc định chỉ báo cáo, không xóa):
+Phiên guest là stateless: `POST /auth/guest` không ghi gì vào cơ sở dữ liệu, chỉ trả một access
+token JWT tự chứa (`role=guest`, `sub` là UUID ngẫu nhiên, sống `auth.guest_token_minutes`, mặc định
+60 phút) với `refresh_token: null`. `authenticate_access_token` dựng lại user guest từ token, không
+tra bảng `users`; token staff/admin vẫn được đối chiếu với tài khoản còn hoạt động. Hết hạn thì
+frontend tự gọi lại `/auth/guest` (`authorizedFetch` khi nhận `401`). Refresh token guest phát hành
+trước thay đổi này bị `/auth/refresh` từ chối (`401`). Khách không có hội thoại: mỗi tin nhắn được
+trả lời độc lập và không có gì được lưu.
+
+Dòng `users` guest cũ (tạo trước khi phiên guest thành stateless) và refresh token hết hạn được
+dọn bằng CLI (mặc định chỉ báo cáo, không xóa):
 
 ```powershell
 .\env\Scripts\python.exe cleanup_auth_data.py --guest-days 30            # dry-run

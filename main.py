@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from config.config_manager import get_settings
 from config.container import container
 from config.settings import APISettings, normalize_origin
+from src.bootstrap.logging_setup import configure_logging
 from src.bootstrap.router import ROUTER_MODULES, router
 from src.common.application.rate_limiter import SlidingWindowRateLimiter
 from src.common.presentation.error_handlers import register_error_handlers
@@ -74,6 +75,15 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     """Create and configure FastAPI application"""
     settings = get_settings()
+    # Here rather than under __main__: with api.debug (reload) uvicorn builds the app
+    # in a child process that never runs the __main__ block.
+    if settings.logging.enabled:
+        configure_logging(
+            level=settings.logging.level,
+            file=settings.logging.file_path(),
+            max_bytes=settings.logging.max_bytes,
+            backup_count=settings.logging.backup_count,
+        )
 
     container.config.from_dict(settings.to_container_config())
 

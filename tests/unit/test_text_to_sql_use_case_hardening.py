@@ -30,6 +30,7 @@ def make_use_case(executor, service=None):
     if service is None:
         service = AsyncMock()
         service.validate_all = SQLService(None).validate_all
+        service.validate = SQLService(None).validate
     return TextToSQLUseCase(executor, SchemaLinker(), service)
 
 
@@ -44,6 +45,7 @@ async def test_infrastructure_error_is_logged_not_repaired_nor_retried(caplog):
     service = AsyncMock()
     service.generate.return_value = [SQLQueryPlan("kpi", GOOD_SQL)]
     service.validate_all = SQLService(None).validate_all
+    service.validate = SQLService(None).validate
 
     with caplog.at_level(logging.WARNING):
         queries, content, ok, has_data, code = await make_use_case(executor, service).execute(
@@ -52,7 +54,7 @@ async def test_infrastructure_error_is_logged_not_repaired_nor_retried(caplog):
 
     assert (ok, has_data, code) == (False, False, SQLExecutionFailedError.code)
     assert executor.execute_sql.await_count == 1
-    service.repair.assert_not_called()
+    service.draft_repair.assert_not_called()
     assert "10.0.0.5" not in content
     assert any(r.exc_info for r in caplog.records)
 
@@ -67,16 +69,17 @@ async def test_sql_error_is_repaired_with_sanitized_message_only():
     service = AsyncMock()
     service.generate.return_value = [SQLQueryPlan("kpi", "SELECT i.bad FROM sales_invoices i")]
     service.validate_all = SQLService(None).validate_all
-    service.repair.return_value = SQLQueryPlan("kpi", GOOD_SQL)
+    service.validate = SQLService(None).validate
+    service.draft_repair.return_value = SQLQueryPlan("kpi", GOOD_SQL)
 
     queries, content, ok, has_data, code = await make_use_case(executor, service).execute(
         analyzed()
     )
 
     assert ok and has_data and code is None
-    error_sent = service.repair.await_args.args[1]
+    error_sent = service.draft_repair.await_args.args[1]
     assert "\n" not in error_sent and len(error_sent) <= module._MAX_REPAIR_ERROR_CHARS
-    assert queries == [GOOD_SQL]
+    assert queries == [SQLService(None).validate(GOOD_SQL)]
 
 
 @pytest.mark.asyncio
@@ -99,7 +102,8 @@ async def test_one_invalid_plan_does_not_fail_the_whole_turn():
         SQLQueryPlan("xau", "SELECT u.email FROM users u"),
     ]
     service.validate_all = SQLService(None).validate_all
-    service.repair.side_effect = SQLRepairFailedError()
+    service.validate = SQLService(None).validate
+    service.draft_repair.side_effect = SQLRepairFailedError()
 
     queries, content, ok, has_data, code = await make_use_case(executor, service).execute(
         analyzed()
@@ -109,7 +113,7 @@ async def test_one_invalid_plan_does_not_fail_the_whole_turn():
     assert len(queries) == 1
     assert executor.execute_sql.await_count == 1
     # The validator's message, not the raw exception, is what the repair prompt gets.
-    assert "bảng ngoài phạm vi" in service.repair.await_args.args[1]
+    assert "bảng ngoài phạm vi" in service.draft_repair.await_args.args[1]
     assert "[xau]" in content and SQLPlanValidationFailedError().message in content
 
 
@@ -120,11 +124,12 @@ async def test_invalid_plan_can_be_repaired_with_validator_message():
     service = AsyncMock()
     service.generate.return_value = [SQLQueryPlan("kpi", "SELECT * FROM sales_invoices")]
     service.validate_all = SQLService(None).validate_all
-    service.repair.return_value = SQLQueryPlan("kpi", GOOD_SQL)
+    service.validate = SQLService(None).validate
+    service.draft_repair.return_value = SQLQueryPlan("kpi", GOOD_SQL)
 
     queries, _, ok, _, _ = await make_use_case(executor, service).execute(analyzed())
 
-    assert ok and queries == [GOOD_SQL]
+    assert ok and queries == [SQLService(None).validate(GOOD_SQL)]
 
 
 @pytest.mark.asyncio
@@ -132,7 +137,8 @@ async def test_all_plans_invalid_returns_validation_failure():
     service = AsyncMock()
     service.generate.return_value = [SQLQueryPlan("xau", "DELETE FROM customers")]
     service.validate_all = SQLService(None).validate_all
-    service.repair.side_effect = SQLRepairFailedError()
+    service.validate = SQLService(None).validate
+    service.draft_repair.side_effect = SQLRepairFailedError()
     result = await make_use_case(AsyncMock(), service).execute(analyzed())
     assert result[0] == [] and result[4] == SQLPlanValidationFailedError.code
 
@@ -230,7 +236,8 @@ async def test_plans_and_repairs_run_concurrently_and_keep_plan_order():
         SQLQueryPlan("ba", "SELECT * FROM customers"),
     ]
     service.validate_all = SQLService(None).validate_all
-    service.repair.side_effect = repair
+    service.validate = SQLService(None).validate
+    service.draft_repair.side_effect = repair
 
     queries, content, ok, has_data, code = await make_use_case(executor, service).execute(analyzed())
 

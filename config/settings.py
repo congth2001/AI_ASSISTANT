@@ -1,4 +1,5 @@
 """Validated application settings and Pydantic source precedence."""
+import re
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -68,7 +69,8 @@ class VectorDBSettings(ConfigModel):
     host: NonEmpty = "localhost"
     port: Port = 19530
     vector_dimension: int = Field(default=1024, gt=0)
-    metric_type: Literal["L2", "IP", "COSINE"] = "L2"
+    # Used when the collection (and its index) is created; searches follow the existing index.
+    metric_type: Literal["L2", "IP", "COSINE"] = "COSINE"
 
     @field_validator("metric_type", mode="before")
     @classmethod
@@ -90,6 +92,9 @@ class DatabaseSettings(ConfigModel):
     echo: bool = False
     # Driver query options may carry credentials (e.g. sslpassword): keep them out of repr().
     query: dict[str, str | tuple[str, ...]] = Field(default_factory=dict, repr=False)
+    # NOLOGIN role (SELECT on the sales tables only) that LLM-generated SQL runs under via
+    # SET LOCAL ROLE; created by Alembic. Empty/null disables the switch (not recommended).
+    sql_reader_role: str | None = "sales_sql_reader"
 
     @model_validator(mode="before")
     @classmethod
@@ -100,6 +105,15 @@ class DatabaseSettings(ConfigModel):
     @classmethod
     def accept_url_query(cls, value):
         return dict(value) if isinstance(value, tuple) else value
+
+    @field_validator("sql_reader_role", mode="before")
+    @classmethod
+    def validate_sql_reader_role(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value.strip()):
+            raise ValueError("sql_reader_role must be a lower-case PostgreSQL identifier")
+        return value.strip()
 
     @property
     def sqlalchemy_url(self) -> URL:
@@ -161,13 +175,17 @@ class APISettings(ConfigModel):
 
 
 class RateLimitSettings(ConfigModel):
-    """In-memory, per-process sliding-window limits for unauthenticated endpoints."""
+    """In-memory, per-process sliding-window limits for auth and chat endpoints."""
     enabled: bool = True
     window_seconds: int = Field(default=60, gt=0)
     login_per_ip: int = Field(default=10, gt=0)
     login_per_email: int = Field(default=5, gt=0)
     guest_per_ip: int = Field(default=10, gt=0)
     refresh_per_ip: int = Field(default=30, gt=0)
+    # /chat and /chat/stream: each request may run several LLM calls and SQL queries.
+    chat_per_user: int = Field(default=20, gt=0)
+    # Guest sessions are free to create, so guests are also limited per client IP.
+    chat_guest_per_ip: int = Field(default=10, gt=0)
     # Read the client IP from the right-most X-Forwarded-For entry. Enable only behind one
     # trusted reverse proxy (ngrok, Cloudflare tunnel); otherwise clients could spoof it.
     trust_forwarded_for: bool = False
@@ -178,6 +196,8 @@ class RateLimitSettings(ConfigModel):
             "login_email": self.login_per_email,
             "guest_ip": self.guest_per_ip,
             "refresh_ip": self.refresh_per_ip,
+            "chat_user": self.chat_per_user,
+            "chat_guest_ip": self.chat_guest_per_ip,
         }
 
 
@@ -191,6 +211,8 @@ class AuthSettings(ConfigModel):
     # 0 (default) treats any replay as theft and revokes all of the user's refresh tokens;
     # set a few seconds if several browser tabs may refresh with the same token concurrently.
     refresh_reuse_grace_seconds: int = Field(default=30, ge=0, le=60)
+    # Lifetime of a stateless guest access token (no refresh token, no users row).
+    guest_token_minutes: int = Field(default=60, gt=0, le=24 * 60)
 
     @field_validator("jwt_secret")
     @classmethod
@@ -222,6 +244,26 @@ class ETLSettings(ConfigModel):
     def validate_date(cls, value: str) -> str:
         date.fromisoformat(value)
         return value
+
+
+class LoggingSettings(ConfigModel):
+    """Logs of the application (``src.*`` and ``main``); uvicorn keeps its own console logs.
+
+    Third-party libraries stay at Python's default (WARNING and above), so per-request
+    INFO lines from HTTP clients do not flood the file.
+    """
+    enabled: bool = True
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Relative paths are resolved from backend/. Empty string: console only.
+    file: str = "logs/ai_assistant.log"
+    max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    backup_count: int = Field(default=5, ge=0)
+
+    def file_path(self) -> Path | None:
+        if not self.file.strip():
+            return None
+        path = Path(self.file.strip())
+        return path if path.is_absolute() else BACKEND_DIR / path
 
 
 class SourceSettings(BaseSettings):
@@ -278,6 +320,7 @@ class Settings(SourceSettings):
     api: APISettings = Field(default_factory=APISettings)
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     etl: ETLSettings = Field(default_factory=ETLSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     def to_container_config(self) -> dict[str, Any]:
         """Unwrap secrets only at the DI boundary; model_dump/repr remain redacted.

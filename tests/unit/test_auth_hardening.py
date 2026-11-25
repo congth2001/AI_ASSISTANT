@@ -260,12 +260,13 @@ async def test_other_users_tokens_are_never_revoked_by_a_replay(session_factory)
     use_case = build_use_case(session_factory)
     await use_case.bootstrap_admin("a@b.co", "Admin", "password123")
     admin = await use_case.login("a@b.co", "password123")
-    guest = await use_case.create_guest_session()
+    await use_case.create_staff("s@b.co", "Staff", "password123", admin["user"])
+    staff = await use_case.login("s@b.co", "password123")
     await use_case.refresh(admin["refresh_token"])
     with pytest.raises(InvalidRefreshTokenError):
         await use_case.refresh(admin["refresh_token"])
-    assert await active_tokens(session_factory, guest["user"]["id"]) == 1
-    assert (await use_case.refresh(guest["refresh_token"]))["user"]["id"] == guest["user"]["id"]
+    assert await active_tokens(session_factory, staff["user"]["id"]) == 1
+    assert (await use_case.refresh(staff["refresh_token"]))["user"]["id"] == staff["user"]["id"]
 
 
 @pytest.mark.asyncio

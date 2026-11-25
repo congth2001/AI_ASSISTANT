@@ -16,6 +16,7 @@ from src.modules.assistant.domain.errors import (
     EmptySQLQueryError,
     MultipleSQLStatementsError,
     SQLCommentsForbiddenError,
+    SQLFunctionNotAllowedError,
     SQLKeywordForbiddenError,
     SQLLegacyTableError,
     SQLMetadataForbiddenError,
@@ -25,6 +26,7 @@ from src.modules.assistant.domain.errors import (
     SQLRepairFailedError,
     SQLSelectStarForbiddenError,
     SQLTableNotAllowedError,
+    SQLUndefinedRelationError,
     SQLValidationError,
     SQLWriteOrLockForbiddenError,
 )
@@ -37,7 +39,8 @@ class SQLQueryPlan:
 
 
 _BLOCKED = re.compile(
-    r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|REPLACE|EXEC|CALL|"
+    # No REPLACE: CREATE OR REPLACE is caught by CREATE, and replace() is a text function.
+    r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|CREATE|EXEC|CALL|"
     r"COPY|GRANT|REVOKE|PRAGMA|ATTACH|VACUUM|ANALYZE)\b",
     re.IGNORECASE,
 )
@@ -109,11 +112,15 @@ _ALLOWED_FUNCTIONS = frozenset({
     "sqrt", "sign", "exp", "ln", "log", "log10",
     # date/time
     "date_trunc", "date_part", "extract", "age", "make_date", "make_interval",
-    "to_char", "to_date", "now", "timezone",
+    "to_char", "to_date", "now", "timezone", "to_timestamp", "to_number",
+    "make_timestamp", "date_bin", "justify_days", "justify_interval",
     # text
     "lower", "upper", "length", "char_length", "trim", "ltrim", "rtrim", "btrim",
     "substring", "substr", "concat", "concat_ws", "left", "right", "position",
-    "strpos", "split_part", "initcap", "lpad", "rpad", "overlay",
+    "strpos", "split_part", "initcap", "lpad", "rpad", "overlay", "replace",
+    "translate", "reverse", "regexp_replace",
+    # arrays (array_agg results)
+    "array_length", "cardinality", "array_to_string",
     # row sources already used by generated queries
     *_ALLOWED_TABLE_FUNCTIONS,
 })
@@ -207,6 +214,19 @@ def _tokenize(sql: str) -> list[tuple[str, str]]:
     return tokens
 
 
+def _without_literals(sql: str) -> str:
+    """SQL text with single-quoted literals removed, for the keyword checks.
+
+    Built from the same tokenizer as the table checks, so a quote inside a
+    double-quoted identifier cannot hide code. Malformed quoting keeps the raw
+    text; ``check_allowed_tables`` rejects that SQL afterwards anyway.
+    """
+    try:
+        return " ".join(value for _, value in _tokenize(sql))
+    except SQLValidationError:
+        return sql
+
+
 def _matching_paren(tokens: list[tuple[str, str]], start: int) -> int:
     depth = 0
     for index in range(start, len(tokens)):
@@ -226,8 +246,15 @@ def _check_table_reference(identifier: str, cte_names: set[str]) -> None:
     if len(parts) != 1:
         raise SQLTableNotAllowedError(table=identifier)
     name = parts[0]
-    if name not in ALLOWED_SQL_TABLES and name not in cte_names:
+    if name in ALLOWED_SQL_TABLES or name in cte_names:
+        return
+    if name in RESTRICTED_SQL_TABLES:
         raise SQLTableNotAllowedError(table=identifier)
+    # Usually a CTE the model referenced but did not define (or dropped while
+    # repairing); say so, so the repair round can fix it instead of guessing.
+    raise SQLUndefinedRelationError(
+        table=identifier, allowed=", ".join(sorted(ALLOWED_SQL_TABLES))
+    )
 
 
 def _check_from_items(
@@ -313,7 +340,7 @@ def _check_function_calls(tokens: list[tuple[str, str]], alias_lists: set[int]) 
         # `AS name(` is a column alias list, never a call.
         if index > 0 and tokens[index - 1][1].lower() == "as" and not value.startswith('"'):
             continue
-        raise SQLKeywordForbiddenError(blocked=f"{value}()")
+        raise SQLFunctionNotAllowedError(function=value)
 
 
 def check_allowed_tables(sql: str) -> None:
@@ -402,6 +429,17 @@ class SQLService:
         error: str,
         schema_context: str = "",
     ) -> SQLQueryPlan:
+        repaired = await self.draft_repair(plan, error, schema_context)
+        repaired.sql = self.validate(repaired.sql)
+        return repaired
+
+    async def draft_repair(
+        self,
+        plan: SQLQueryPlan,
+        error: str,
+        schema_context: str = "",
+    ) -> SQLQueryPlan:
+        """Ask the LLM for a fixed plan without validating it (the caller validates)."""
         raw = await self.llm_service.generate_response(
             SQLPrompt.repair_prompt(
                 plan.sql,
@@ -415,7 +453,6 @@ class SQLService:
 
         repaired = plans[0]
         repaired.intent = plan.intent
-        repaired.sql = self.validate(repaired.sql)
         return repaired
 
     def validate_all(self, plans: list[SQLQueryPlan]) -> list[SQLQueryPlan]:
@@ -436,16 +473,16 @@ class SQLService:
             raise SQLCommentsForbiddenError()
         if not re.match(r"^(SELECT|WITH)\b", sql, re.IGNORECASE):
             raise SQLReadOnlyRequiredError(query_prefix=sql[:30])
-        if _BLOCKED.search(sql):
-            blocked = _BLOCKED.search(sql).group(0).upper()
-            raise SQLKeywordForbiddenError(blocked=blocked)
-        if _SYSTEM_OBJECTS.search(sql):
+        # Keywords inside string literals ('%Giấy copy%', 'pg_test') are data, not SQL.
+        code = _without_literals(sql)
+        if blocked := _BLOCKED.search(code):
+            raise SQLKeywordForbiddenError(blocked=blocked.group(0).upper())
+        if _SYSTEM_OBJECTS.search(code):
             raise SQLMetadataForbiddenError()
-        if _LOCKING.search(sql):
+        if _LOCKING.search(code):
             raise SQLWriteOrLockForbiddenError()
-        if _LEGACY_TABLES.search(sql):
-            legacy = _LEGACY_TABLES.search(sql).group(0)
-            raise SQLLegacyTableError(legacy=legacy)
+        if legacy := _LEGACY_TABLES.search(code):
+            raise SQLLegacyTableError(legacy=legacy.group(0))
         check_allowed_tables(sql)
         if _SELECT_STAR.search(sql):
             raise SQLSelectStarForbiddenError()

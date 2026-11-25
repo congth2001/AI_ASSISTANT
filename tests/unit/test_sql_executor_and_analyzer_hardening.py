@@ -29,18 +29,34 @@ def adapted_error(driver_error: Exception) -> DBAPIError:
     raise AssertionError("unmapped error")
 
 
-def make_engine(result=None, error: Exception | None = None):
+def make_stream_result(rows, keys):
+    """AsyncResult double: async fetchmany/close, sync keys()."""
+    result = MagicMock()
+    result.fetchmany = AsyncMock(return_value=rows)
+    result.close = AsyncMock()
+    result.keys.return_value = keys
+    return result
+
+
+def make_engine(result=None, error: Exception | None = None, set_error: Exception | None = None):
     statements: list[str] = []
     conn = MagicMock()
 
     async def execute(statement):
         text = str(statement)
         statements.append(text)
-        if error is not None and not text.startswith("SET"):
+        if set_error is not None and "ROLE" in text:
+            raise set_error
+        return None
+
+    async def stream(statement):
+        statements.append(str(statement))
+        if error is not None:
             raise error
         return result
 
     conn.execute = execute
+    conn.stream = stream
 
     @asynccontextmanager
     async def begin():
@@ -59,16 +75,16 @@ def make_engine(result=None, error: Exception | None = None):
 
 @pytest.mark.asyncio
 async def test_executor_sets_timeouts_and_reads_at_most_max_rows():
-    result = MagicMock()
-    result.fetchmany.return_value = [(1,)]
-    result.keys.return_value = ["n"]
+    result = make_stream_result([(1,)], ["n"])
     engine, statements = make_engine(result=result)
 
     rows, cols = await PostgresSQLExecutor(engine).execute_sql("SELECT 1")
 
     assert (rows, cols) == ([(1,)], ["n"])
-    result.fetchmany.assert_called_once_with(PostgresSQLExecutor.MAX_ROWS)
+    result.fetchmany.assert_awaited_once_with(PostgresSQLExecutor.MAX_ROWS)
     result.fetchall.assert_not_called()
+    result.close.assert_awaited_once()
+    assert not any("ROLE" in statement for statement in statements)
     joined = "\n".join(statements)
     assert "SET TRANSACTION READ ONLY" in statements[0]
     for setting in ("statement_timeout", "lock_timeout", "idle_in_transaction_session_timeout"):

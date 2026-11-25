@@ -280,3 +280,61 @@ def test_default_client_has_timeout_and_retries(monkeypatch):
     assert captured == {"api_key": "k", "timeout": 60.0, "max_retries": 2}
     OpenAIAdapter(api_key="k", timeout=5, max_retries=0)
     assert captured["timeout"] == 5 and captured["max_retries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_response_logs_cached_and_reasoning_tokens(caplog):
+    usage = SimpleNamespace(
+        prompt_tokens=7365,
+        completion_tokens=202,
+        total_tokens=7567,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=6912),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=64),
+    )
+    adapter = OpenAIAdapter(model="gpt-5-mini", client=make_client(make_response("ok", usage)))
+
+    with caplog.at_level("INFO"):
+        await adapter.generate_response("Doanh thu?")
+
+    record = next(r for r in caplog.records if r.getMessage().startswith("LLM usage"))
+    message = record.getMessage()
+    assert "[generate]" in message and "cached=6912 (94%)" in message
+    assert "prompt=7365" in message and "reasoning=64" in message
+    assert record.cached_tokens == 6912 and record.total_tokens == 7567
+
+
+@pytest.mark.asyncio
+async def test_usage_without_details_logs_zero_cached_tokens(caplog):
+    usage = SimpleNamespace(prompt_tokens=500, completion_tokens=20, total_tokens=520)
+    adapter = OpenAIAdapter(client=make_client(make_response("ok", usage)))
+
+    with caplog.at_level("INFO"):
+        await adapter.generate_response("Doanh thu?")
+
+    message = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("LLM usage"))
+    assert "cached=0 (0%)" in message
+
+
+@pytest.mark.asyncio
+async def test_classify_route_logs_usage(caplog):
+    usage = SimpleNamespace(
+        prompt_tokens=1200, completion_tokens=8, total_tokens=1208,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=1024),
+    )
+    adapter = OpenAIAdapter(client=make_client(make_response('{"route": "text_to_sql"}', usage)))
+
+    with caplog.at_level("INFO"):
+        assert await adapter.classify_route("Doanh thu tháng 3?") == "text_to_sql"
+
+    assert any("[classify_route]" in r.getMessage() and "cached=1024" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_generate_response_sends_a_prompt_cache_key():
+    client = make_client()
+    adapter = OpenAIAdapter(client=client)
+
+    await adapter.generate_response("Doanh thu?")
+
+    kwargs = client.chat.completions.create.await_args.kwargs
+    assert kwargs["prompt_cache_key"] == adapter._prompt_cache_key(kwargs["messages"])

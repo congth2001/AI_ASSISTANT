@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 from config.config_manager import ConfigManager
@@ -13,6 +19,32 @@ from etl_business.runtime import exclusive_etl_lock, invalidate_chat_response_ca
 from etl_business.shop_data_extractor.access import open_mdb_source, resolve_mdb_source
 from etl_business.shop_data_extractor.extractor import extract_all
 from etl_business.shop_data_extractor.reports import export_excel, export_manifest_csv
+
+
+@contextmanager
+def staged_snapshot_dir(snapshot_dir: str | Path) -> Iterator[Path]:
+    """Temporary directory next to ``snapshot_dir`` (same volume, so ``os.replace`` is atomic).
+
+    Snapshots are written here first and only promoted after PostgreSQL accepted them,
+    so a snapshot refused by the sync guard never overwrites the last good files.
+    """
+    destination = Path(snapshot_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".staging-", dir=destination))
+    try:
+        yield staging
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def promote_snapshots(staged: tuple[Path, ...], snapshot_dir: str | Path) -> tuple[Path, ...]:
+    destination = Path(snapshot_dir)
+    promoted = []
+    for path in staged:
+        target = destination / path.name
+        os.replace(path, target)
+        promoted.append(target)
+    return tuple(promoted)
 
 
 async def run_business_etl(config: dict, *, allow_shrink: bool = False) -> dict[str, Any]:
@@ -51,21 +83,24 @@ async def run_business_etl(config: dict, *, allow_shrink: bool = False) -> dict[
             ward_aliases,
             runtime["opening_balance_date"],
         )
-        customer_path, goods_path, debt_path, returns_path, return_lines_path = snapshots.write_excel(
-            runtime["snapshot_dir"]
-        )
-
         app_settings = ConfigManager(
             runtime["project_config_path"]
         ).get_settings()
         container.config.from_dict(app_settings.to_container_config())
-        try:
-            sync_result = await container.sync_business_data_use_case().sync_all(
-                **snapshots.sync_arguments(), allow_shrink=allow_shrink, entrypoint="etl_job"
-            )
-            await invalidate_chat_response_cache(container.cache_service)
-        finally:
-            await container.postgres_client().close()
+        with staged_snapshot_dir(runtime["snapshot_dir"]) as staging:
+            # Write before syncing so disk errors surface early, but keep the files staged
+            # until the sync (and its shrink guard) has committed.
+            staged = snapshots.write_excel(staging)
+            try:
+                sync_result = await container.sync_business_data_use_case().sync_all(
+                    **snapshots.sync_arguments(), allow_shrink=allow_shrink, entrypoint="etl_job"
+                )
+                await invalidate_chat_response_cache(container.cache_service)
+            finally:
+                await container.postgres_client().close()
+            (
+                customer_path, goods_path, debt_path, returns_path, return_lines_path
+            ) = promote_snapshots(staged, runtime["snapshot_dir"])
 
         return {
             "status": "SUCCESS",

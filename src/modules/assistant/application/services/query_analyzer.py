@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import unicodedata
+from dataclasses import dataclass
 from datetime import date, timedelta
 from uuid import UUID
 from src.common.domain.time import now_vietnam
@@ -18,6 +19,20 @@ from src.modules.sales.domain.repositories.i_sales_invoice_line_repository impor
 from rapidfuzz import fuzz
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _EntityIndex:
+    """Danh sách tên canonical và khóa so khớp, thay thế nguyên khối khi reload.
+
+    ``analyze`` chạy trong worker thread còn reload chạy trên event loop; đọc một snapshot duy nhất
+    bảo đảm chỉ số giữa ``*_names`` và ``*_keys`` luôn khớp nhau trong cả lượt phân tích.
+    """
+    customer_names: tuple[str, ...] = ()
+    customer_keys: tuple[str, ...] = ()
+    category_names: tuple[str, ...] = ()
+    norm_categories: tuple[str, ...] = ()
+    category_keys: tuple[str, ...] = ()
 
 
 class QueryAnalyzer:
@@ -133,7 +148,10 @@ class QueryAnalyzer:
                 c["customer_name"] for c in customers if c.get("customer_name")
             ]
             category_names = await self._good_repo.list_categories()
-            self._set_entity_lists(customer_names, category_names)
+            # Chuẩn hóa tới 50.000 tên là việc CPU: làm trong thread để không chặn event loop.
+            self._entities = await asyncio.to_thread(
+                self._build_entity_index, customer_names, category_names
+            )
             self._loaded_at = time.monotonic()
 
     def load_entities(
@@ -149,24 +167,47 @@ class QueryAnalyzer:
         customer_names: list[str],
         category_names: list[str],
     ) -> None:
-        self.customer_names = customer_names
-        self._norm_customers = [self._normalize_name(n) for n in customer_names]
-        self._customer_keys = [self._fold_text(n) for n in self._norm_customers]
-        self.category_names = sorted(
-            dict.fromkeys(category_names),
-            key=lambda name: self._fold_text(self._normalize_query_text(name)),
+        self._entities = self._build_entity_index(customer_names, category_names)
+
+    @classmethod
+    def _build_entity_index(
+        cls,
+        customer_names: list[str],
+        category_names: list[str],
+    ) -> _EntityIndex:
+        customer_keys = tuple(
+            cls._fold_text(cls._normalize_name(name)) for name in customer_names
         )
-        self._norm_categories = [
-            n.lower().strip() for n in self.category_names
-        ]
-        self._category_keys = [
-            self._fold_text(self._normalize_query_text(name))
-            for name in self.category_names
-        ]
+        sorted_categories = tuple(sorted(
+            dict.fromkeys(category_names),
+            key=lambda name: cls._fold_text(cls._normalize_query_text(name)),
+        ))
+        return _EntityIndex(
+            customer_names=tuple(customer_names),
+            customer_keys=customer_keys,
+            category_names=sorted_categories,
+            norm_categories=tuple(name.lower().strip() for name in sorted_categories),
+            category_keys=tuple(
+                cls._fold_text(cls._normalize_query_text(name)) for name in sorted_categories
+            ),
+        )
+
+    @property
+    def customer_names(self) -> list[str]:
+        return list(self._entities.customer_names)
+
+    @property
+    def category_names(self) -> list[str]:
+        return list(self._entities.category_names)
 
     # ─────────────────────────────
     # Public API
     # ─────────────────────────────
+
+    async def analyze_async(self, query: str) -> AnalyzedQuery:
+        """Phân tích trong worker thread: fuzzy matching trên tới 50.000 tên là việc CPU,
+        chạy thẳng trên event loop sẽ chặn mọi request khác (kể cả SSE đang stream)."""
+        return await asyncio.to_thread(self.analyze, query)
 
     def analyze(self, query: str) -> AnalyzedQuery:
         # Dashboard reference rows describe evidence, not requested entity filters.
@@ -181,9 +222,10 @@ class QueryAnalyzer:
             primary_intent=QueryIntent.UNKNOWN,
         )
 
+        entities = self._entities  # một snapshot cho cả lượt phân tích
         self._extract_intents(result)
-        self._extract_customer_name(result)
-        self._extract_category_name(result)
+        self._extract_customer_name(result, entities)
+        self._extract_category_name(result, entities)
         self._extract_time(result)
         self._extract_top_n(result)
         self._extract_invoice_id(result)
@@ -464,10 +506,12 @@ class QueryAnalyzer:
         )
         return without_marks.replace("đ", "d").replace("Đ", "D").lower()
 
-    def _customer_candidate_prefixes(self, query_text: str) -> list[str]:
+    def _customer_candidate_prefixes(
+        self, query_text: str, entities: _EntityIndex
+    ) -> list[str]:
         """Lấy các cụm đứng sau danh xưng/nhãn khách hàng, không lấy cả câu hỏi."""
         prefixes: list[str] = []
-        max_tokens = max((len(key.split()) for key in self._customer_keys), default=0)
+        max_tokens = max((len(key.split()) for key in entities.customer_keys), default=0)
         if not max_tokens:
             return prefixes
 
@@ -500,10 +544,11 @@ class QueryAnalyzer:
         self,
         query_key: str,
         cue_prefixes: list[str],
+        entities: _EntityIndex,
     ) -> list[int]:
         cue_keys = set(cue_prefixes)
         matched: list[int] = []
-        for index, key in enumerate(self._customer_keys):
+        for index, key in enumerate(entities.customer_keys):
             if not key:
                 continue
             key_tokens = set(key.split())
@@ -519,27 +564,27 @@ class QueryAnalyzer:
                 matched.append(index)
         return matched
 
-    def _extract_customer_name(self, result: AnalyzedQuery) -> None:
+    def _extract_customer_name(self, result: AnalyzedQuery, entities: _EntityIndex) -> None:
         """Nhận diện tên KH chính xác cao và chủ động từ chối khi mơ hồ."""
-        if not self._customer_keys:
+        if not entities.customer_keys:
             return
 
         query_norm = self._normalize_query_text(result.normalized)
         query_key = self._fold_text(query_norm)
         cue_prefixes = [
             self._fold_text(prefix)
-            for prefix in self._customer_candidate_prefixes(query_norm)
+            for prefix in self._customer_candidate_prefixes(query_norm, entities)
         ]
 
-        exact_indexes = self._exact_customer_indexes(query_key, cue_prefixes)
-        exact_keys = {self._customer_keys[index] for index in exact_indexes}
+        exact_indexes = self._exact_customer_indexes(query_key, cue_prefixes, entities)
+        exact_keys = {entities.customer_keys[index] for index in exact_indexes}
         # Một câu nhắc nhiều KH hoặc nhiều canonical name có cùng khóa thì không
         # thể biểu diễn an toàn bằng trường customer_name đơn hiện tại.
         if len(exact_keys) > 1:
             return
         if len(exact_indexes) == 1:
             index = exact_indexes[0]
-            result.customer_name = self.customer_names[index]
+            result.customer_name = entities.customer_names[index]
             result.customer_score = 100
             return
         if exact_indexes:
@@ -547,7 +592,7 @@ class QueryAnalyzer:
 
         # Fuzzy chỉ chạy trên cụm sau cue rõ ràng và chỉ dành cho tên >= 2 token.
         scores_by_index: dict[int, float] = {}
-        for index, key in enumerate(self._customer_keys):
+        for index, key in enumerate(entities.customer_keys):
             token_count = len(key.split())
             if token_count < 2:
                 continue
@@ -569,19 +614,19 @@ class QueryAnalyzer:
         if best_score - second_score < self.CUSTOMER_FUZZY_MIN_MARGIN:
             return
 
-        result.customer_name = self.customer_names[best_index]
+        result.customer_name = entities.customer_names[best_index]
         result.customer_score = int(round(best_score))
 
-    def _extract_category_name(self, result: AnalyzedQuery) -> None:
+    def _extract_category_name(self, result: AnalyzedQuery, entities: _EntityIndex) -> None:
         """Map cách gọi trong câu hỏi về đúng tên danh mục canonical từ DB."""
-        if not self._category_keys:
+        if not entities.category_keys:
             return
 
         query_norm = self._normalize_query_text(result.normalized)
         query_key = self._fold_text(query_norm)
         matches: list[tuple[int, str]] = []
         for index, (normalized, key) in enumerate(
-            zip(self._norm_categories, self._category_keys)
+            zip(entities.norm_categories, entities.category_keys)
         ):
             if not key:
                 continue
@@ -621,7 +666,7 @@ class QueryAnalyzer:
                     index for index, key in matches if key in selected_keys
                 )
             )
-            names = [self.category_names[index] for index in indexes]
+            names = [entities.category_names[index] for index in indexes]
             result.category_names = names
             if len(names) == 1:
                 result.category_name = names[0]
@@ -634,7 +679,7 @@ class QueryAnalyzer:
         tokens = query_key.split()
         max_size = min(
             len(tokens),
-            max((len(key.split()) for key in self._category_keys), default=0),
+            max((len(key.split()) for key in entities.category_keys), default=0),
         )
         family_candidates: list[tuple[int, str, tuple[int, ...]]] = []
         for size in range(2, max_size + 1):
@@ -647,7 +692,7 @@ class QueryAnalyzer:
                 phrase = " ".join(phrase_tokens)
                 indexes = tuple(
                     index
-                    for index, key in enumerate(self._category_keys)
+                    for index, key in enumerate(entities.category_keys)
                     if re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", key)
                 )
                 if indexes:
@@ -662,7 +707,7 @@ class QueryAnalyzer:
             return
 
         indexes = next(iter(distinct_index_sets))
-        names = [self.category_names[index] for index in indexes]
+        names = [entities.category_names[index] for index in indexes]
         result.category_names = names
         if len(names) == 1:
             result.category_name = names[0]

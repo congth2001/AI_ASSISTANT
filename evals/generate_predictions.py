@@ -1,8 +1,9 @@
 """Generate Text-to-SQL predictions for the benchmark with the real SQL pipeline.
 
 Each case goes through the same steps as ``TextToSQLUseCase``: QueryAnalyzer ->
-SchemaLinker -> SQLService.generate -> validation (one validator repair per rejected
-plan) -> execution with up to two repairs on database errors. Execution runs on the
+SchemaLinker -> SQLService.generate -> validation (up to two validator repairs per
+rejected plan, each seeing the previous draft) -> execution with up to two repairs on
+database errors. Execution runs on the
 benchmark fixture (temporary tables), so the repair loop sees the same kind of
 errors as production without touching business tables.
 
@@ -101,9 +102,28 @@ def fixture_catalogue(connection, timeout_ms: int) -> dict[str, list[str]]:
     }
 
 
-async def predict(case, *, sql_service, analyzer, linker, executor, semaphore, stats) -> str | None:
+async def _validate_or_repair(plan, sql_service, linked, stats) -> str | None:
+    """Like TextToSQLUseCase: up to SQL_MAX_RETRIES validator repairs, each seeing the last draft."""
+    from src.modules.assistant.application.services.sql_service import SQLQueryPlan
     from src.modules.assistant.domain.errors import SQLValidationError
 
+    candidate = SQLQueryPlan(plan.intent, plan.sql)
+    for attempt in range(SQL_MAX_RETRIES + 1):
+        try:
+            return sql_service.validate(candidate.sql)
+        except SQLValidationError as exc:
+            stats["validator_errors"].append(exc.code)
+            if attempt >= SQL_MAX_RETRIES:
+                return None
+            stats["repairs"] += 1
+            try:
+                candidate = await sql_service.draft_repair(candidate, exc.message, linked.schema_context)
+            except Exception:
+                return None
+    return None
+
+
+async def predict(case, *, sql_service, analyzer, linker, executor, semaphore, stats) -> str | None:
     async with semaphore:
         analyzed = analyzer.analyze(case["question"])
         linked = linker.link(analyzed)
@@ -114,14 +134,10 @@ async def predict(case, *, sql_service, analyzer, linker, executor, semaphore, s
             return None
         stats["plans"].append(len(plans))
         for plan in plans:
-            try:
-                sql = sql_service.validate(plan.sql)
-            except SQLValidationError as exc:
-                stats["repairs"] += 1
-                try:
-                    sql = (await sql_service.repair(plan, exc.message, linked.schema_context)).sql
-                except Exception:
-                    continue
+            sql = await _validate_or_repair(plan, sql_service, linked, stats)
+            if sql is None:
+                stats["validator_rejected"] += 1
+                continue
             for attempt in range(SQL_MAX_RETRIES + 1):
                 error = await executor.run(sql)
                 if error is None:
@@ -156,7 +172,10 @@ async def main_async(args: argparse.Namespace) -> int:
         executor = FixtureExecutor(connection, args.timeout_ms)
         semaphore = asyncio.Semaphore(args.concurrency)
         for run in range(1, args.runs + 1):
-            stats: dict[str, Any] = {"plans": [], "repairs": 0, "generation_failures": 0}
+            stats: dict[str, Any] = {
+                "plans": [], "repairs": 0, "generation_failures": 0,
+                "validator_errors": [], "validator_rejected": 0,
+            }
             started = time.perf_counter()
             sqls = await asyncio.gather(*(
                 predict(case, sql_service=sql_service, analyzer=analyzer, linker=linker,
@@ -174,6 +193,12 @@ async def main_async(args: argparse.Namespace) -> int:
                 "cases": len(cases),
                 "repairs": stats["repairs"],
                 "generation_failures": stats["generation_failures"],
+                # Validator rejections by error code, and plans dropped after all repairs.
+                "validator_errors": {
+                    code: stats["validator_errors"].count(code)
+                    for code in sorted(set(stats["validator_errors"]))
+                },
+                "validator_rejected_plans": stats["validator_rejected"],
                 "multi_plan_cases": sum(count > 1 for count in stats["plans"]),
                 "seconds": round(time.perf_counter() - started, 1),
                 "file": str(path),

@@ -1,37 +1,36 @@
-# Business Chatbot Dockerfile
+# Backend image. Build from backend/:  docker build -f deploy/Dockerfile -t ai-assistant-backend .
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    curl \
-    build-essential \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
 COPY requirements.txt .
-
-# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
 COPY . .
 
-# Create data and logs directories
-RUN mkdir -p /app/data /app/logs
+# Run as an unprivileged user; data/logs are the only writable paths.
+RUN useradd --create-home --uid 10001 app \
+    && mkdir -p /app/data/documents /app/data/etl /app/logs \
+    && chown -R app:app /app/data /app/logs
+USER app
 
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Ho_Chi_Minh \
+    # The app binds 127.0.0.1 by default; inside a container it must listen on all interfaces.
+    API__HOST=0.0.0.0 \
+    API__PORT=8000
 
-# Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD curl -fsS http://localhost:8000/health || exit 1
 
-# Run the application
+# Configuration comes from environment variables and/or a YAML file mounted at runtime
+# (AI_ASSISTANT_CONFIG_FILE). Run `python -m alembic upgrade head` as a one-off before starting.
 CMD ["python", "main.py"]

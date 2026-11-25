@@ -32,6 +32,7 @@ database:
     password: "" # Set here or through DATABASE__PASSWORD; no built-in DB password.
     db_name: ai_assistant
     echo: false
+    sql_reader_role: sales_sql_reader # Text-to-SQL runs under this SELECT-only role (Alembic creates it); empty disables
 
 # Cache Configuration
 cache:
@@ -52,7 +53,7 @@ api:
         - http://127.0.0.1:5173
     public_frontend_origins: [] # Deployed frontend origins (also: env PUBLIC_FRONTEND_ORIGINS, comma separated).
 
-# Rate limit for /auth/login, /auth/guest and /auth/refresh (in-memory, per process)
+# Rate limit for /auth/login, /auth/guest, /auth/refresh and /chat* (in-memory, per process)
 rate_limit:
     enabled: true
     window_seconds: 60
@@ -60,6 +61,8 @@ rate_limit:
     login_per_email: 5
     guest_per_ip: 10
     refresh_per_ip: 30
+    chat_per_user: 20 # /chat and /chat/stream per user
+    chat_guest_per_ip: 10 # guests additionally per client IP (each guest session is a new user)
     trust_forwarded_for: false # true only behind one trusted proxy (ngrok/Cloudflare); else per-IP limits are bypassable.
 
 # Authentication (generate a strong random secret for every environment)
@@ -68,8 +71,17 @@ auth:
     jwt_issuer: business-chatbot
     jwt_audience: business-chatbot-web
     access_token_minutes: 15
+    guest_token_minutes: 60 # stateless guest access token (no refresh token, no users row)
     refresh_token_days: 30
     refresh_reuse_grace_seconds: 30 # tolerates concurrent refresh from several tabs sharing one token; 0 = strict replay detection.
+
+# Application logs (src.* and main). Console + rotating file; relative paths are from backend/.
+logging:
+    enabled: true
+    level: INFO # DEBUG also logs SQL rejected by the validator (may contain customer names).
+    file: logs/ai_assistant.log # Empty string: console only.
+    max_bytes: 10485760
+    backup_count: 5
 
 # Business ETL Configuration (Microsoft Access/iShopman)
 etl:

@@ -28,6 +28,9 @@ ETL không cập nhật Milvus hay cache Redis.
 nợ/trả hàng rỗng hoặc giảm quá 30% so với dữ liệu đang hoạt động (tránh export
 lỗi xóa mềm toàn bộ dữ liệu). Chỉ khi chắc chắn mới thêm `--allow-shrink` cho
 `run_business_etl.py`, `sync_business_data.py` hoặc `shop_data_extractor.cli run`.
+`run_business_etl.py` ghi 5 file snapshot vào thư mục tạm `.staging-*` trong
+`snapshot_dir` và chỉ thay file thật (`os.replace`) sau khi đồng bộ PostgreSQL thành
+công; snapshot bị guard từ chối không ghi đè bộ file tốt gần nhất.
 `sync_business_data.py` dùng cùng file khóa `etl.lock_path`, nên không chạy chồng
 với job cron. Use case nhận tên cột canonical tiếng Anh; header tiếng Việt của
 file Excel được ánh xạ tại `snapshot_columns.py`. Lỗi xóa cache Redis chỉ được log.

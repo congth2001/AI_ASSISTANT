@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
@@ -99,7 +99,8 @@ async def test_register_login_and_authenticate_access_token():
 @pytest.mark.asyncio
 async def test_refresh_token_is_rotated_and_cannot_be_reused():
     use_case = build_use_case()
-    session = await use_case.create_guest_session()
+    await use_case.bootstrap_admin("test@example.com", "Test User", "password123")
+    session = await use_case.login("test@example.com", "password123")
 
     refreshed = await use_case.refresh(session["refresh_token"])
     assert refreshed["refresh_token"] != session["refresh_token"]
@@ -140,3 +141,44 @@ async def test_guest_account_cannot_login():
     guest_session = await use_case.create_guest_session()
     assert guest_session["user"]["role"] == "guest"
     assert guest_session["user"]["email"] is None
+
+
+@pytest.mark.asyncio
+async def test_guest_session_is_stateless():
+    use_case = build_use_case()
+    session = await use_case.create_guest_session()
+
+    # No users row and no refresh token: nothing to clean up or revoke later.
+    assert use_case.repository.users == {}
+    assert use_case.repository.refresh_tokens == {}
+    assert session["refresh_token"] is None
+    assert session["expires_in"] == use_case.guest_token_minutes * 60
+
+    current = await use_case.authenticate_access_token(session["access_token"])
+    assert current["id"] == session["user"]["id"]
+    assert current["role"] == "guest"
+    assert current["email"] is None
+
+
+@pytest.mark.asyncio
+async def test_legacy_guest_refresh_token_is_rejected_without_a_lookup():
+    use_case = build_use_case()
+    now = datetime.now(timezone.utc)
+    legacy = use_case.token_service.encode({
+        "sub": str(uuid4()), "role": "guest", "iat": now, "type": "refresh",
+        "jti": str(uuid4()), "exp": now + timedelta(days=1),
+    })
+
+    with pytest.raises(AuthenticationError):
+        await use_case.refresh(legacy)
+
+
+@pytest.mark.asyncio
+async def test_staff_token_still_requires_an_active_account():
+    use_case = build_use_case()
+    admin = await use_case.bootstrap_admin("test@example.com", "Test User", "password123")
+    session = await use_case.login("test@example.com", "password123")
+    use_case.repository.users[admin["id"]]["is_active"] = False
+
+    with pytest.raises(AuthenticationError):
+        await use_case.authenticate_access_token(session["access_token"])

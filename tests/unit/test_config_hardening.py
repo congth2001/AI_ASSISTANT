@@ -83,6 +83,7 @@ def test_api_defaults_are_safe_for_local_development(yaml_config):
     assert settings.rate_limit.enabled is True
     assert settings.rate_limit.limits() == {
         "login_ip": 10, "login_email": 5, "guest_ip": 10, "refresh_ip": 30,
+        "chat_user": 20, "chat_guest_ip": 10,
     }
     assert settings.auth.refresh_reuse_grace_seconds == 30
 

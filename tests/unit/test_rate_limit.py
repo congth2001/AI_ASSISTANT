@@ -211,3 +211,39 @@ def test_refresh_endpoint_is_limited_per_ip():
                     for _ in range(31)]
     assert statuses[:30] == [401] * 30
     assert statuses[30] == 429
+
+
+class FakeChat:
+    async def execute_guest(self, message):
+        return {"conversation_id": None, "response": "ok", "intent": "conversation",
+                "timestamp": "2026-01-01T00:00:00+00:00", "metadata": {}}
+
+
+def chat_statuses(user: dict, count: int, limits: dict[str, int]) -> list[int]:
+    from src.modules.auth.presentation.router import get_current_user
+
+    app = create_app()
+    app.state.rate_limit_config = RateLimitConfig(limits=limits)
+    app.dependency_overrides[get_current_user] = lambda: user
+    with container.chat_use_case.override(providers.Object(FakeChat())), TestClient(app) as client:
+        return [client.post("/api/v1/chat", json={"message": "hi"}).status_code for _ in range(count)]
+
+
+def test_chat_is_limited_per_user():
+    statuses = chat_statuses({"id": "g1", "role": "guest"}, 4, {"chat_user": 3, "chat_guest_ip": 100})
+    assert statuses == [200, 200, 200, 429]
+
+
+def test_guest_chat_is_also_limited_per_ip_across_sessions():
+    # A new guest session gets a new user id, so the per-IP bucket is what bounds a client.
+    from itertools import count
+
+    from src.modules.auth.presentation.router import get_current_user
+
+    ids = count()
+    app = create_app()
+    app.state.rate_limit_config = RateLimitConfig(limits={"chat_user": 100, "chat_guest_ip": 2})
+    app.dependency_overrides[get_current_user] = lambda: {"id": f"g{next(ids)}", "role": "guest"}
+    with container.chat_use_case.override(providers.Object(FakeChat())), TestClient(app) as client:
+        statuses = [client.post("/api/v1/chat", json={"message": "hi"}).status_code for _ in range(3)]
+    assert statuses == [200, 200, 429]

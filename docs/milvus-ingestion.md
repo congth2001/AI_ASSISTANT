@@ -48,10 +48,10 @@ Test: `tests/unit/test_milvus_ingestion_and_cache.py`.
 
 Do `MilvusClient._create_collection` tự tạo khi collection chưa tồn tại (lần truy cập vector đầu tiên). Bảng trường, kiểu và index nằm ở mục "Schema collection" trong [HYBRID_SEARCH.md](HYBRID_SEARCH.md); điểm cần nhớ cho việc nạp: khóa chính `doc_id` VARCHAR(128), `embedding` có `dim = vector_db.vector_dimension`, `year` INT16, `month` INT8.
 
-## Metric COSINE hard-code và dimension
+## Metric và dimension
 
-- Index tạo với `metric_type="COSINE"`, HNSW (`M=16`, `efConstruction=200`) cố định trong code; search mặc định cũng dùng COSINE (`search_similar`, `hybrid_search`).
-- `vector_db.metric_type` trong config (`L2`/`IP`/`COSINE`, default settings là `L2`, `local.example` là `Cosine`) được truyền vào `MilvusClient` và lưu ở thuộc tính nhưng không dùng khi tạo index hay search. Đặt `L2` trong config không đổi metric thực tế.
+- Index HNSW (`M=16`, `efConstruction=200`) tạo với `vector_db.metric_type` (`L2`/`IP`/`COSINE`, mặc định `COSINE`, không phân biệt hoa thường).
+- Collection đã có: `MilvusClient` đọc metric của index `embedding` khi kết nối và dùng nó cho `search_similar`/`hybrid_search`, log cảnh báo nếu khác config. Collection `business_data` hiện tại được tạo với COSINE.
 - Default `vector_dimension` đã thống nhất là 1024 ở `VectorDBSettings`, `local.example`, `MilvusClient` và `MilvusIngestionRepository`. Collection đã tạo trước đó với dimension khác vẫn giữ dimension cũ; nếu collection cũ là 512 thì phải đặt tường minh `vector_dimension: 512` hoặc tạo lại collection. Dimension của collection đã tạo không tự đổi; vector nạp phải đúng dimension của collection. Cùng giá trị này cũng được truyền cho `OpenAIEmbedding` (`vector_dimension=config.vector_db.vector_dimension`).
 - Đổi dimension hoặc metric cần xóa và tạo lại collection (`MilvusClient.drop_collection()` tồn tại nhưng không có caller).
 
@@ -72,6 +72,5 @@ Các mục dưới đây là gợi ý, không phải hành vi hiện có.
 
 - Thêm CLI (`ingest_documents.py` cạnh `sync_business_data.py`) và một use case ở `assistant/application/use_cases/` dựng `DocumentChunk` từ PostgreSQL (hóa đơn, khách, tổng hợp kỳ), gọi sau ETL; ETL hiện không kích hoạt nạp Milvus.
 - Chia `text` dài thành nhiều chunk thay vì cắt.
-- Đọc `vector_db.metric_type` khi tạo index và search, hoặc xóa trường config này.
 - Sau khi nạp Milvus, gọi `delete_prefix` của cache chat để câu trả lời RAG cũ không còn được phục vụ.
 - Bổ sung test tích hợp với Milvus thật (hiện chỉ có unit test với client giả).

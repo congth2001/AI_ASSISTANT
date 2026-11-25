@@ -313,11 +313,11 @@ Quy tắc so sánh (`sales/domain/services/debt_snapshot_diff.py`): khớp theo 
 | `ALLOWED_SQL_TABLES` (cho phép đọc) | `customers`, `sales_invoices`, `sales_invoice_lines`, `sales_returns`, `sales_return_lines`, `customer_debt_transactions` |
 | `RESTRICTED_SQL_TABLES` (từ chối ở mọi vị trí) | `users`, `refresh_tokens`, `conversations`, `messages`, `alembic_version`, `etl_sync_runs`, `customer_debt_transaction_changes`, `customer_debt_revisions` |
 
-Ngoài bảng được phép, validator chỉ chấp nhận CTE do chính câu query định nghĩa và hàm bảng `generate_series`, `unnest`. SQL vẫn chạy bằng DB role của ứng dụng nên allowlist là lớp chặn duy nhất ở tầng ứng dụng.
+Ngoài bảng được phép, validator chỉ chấp nhận CTE do chính câu query định nghĩa và hàm bảng `generate_series`, `unnest`. Ở tầng database, `PostgresSQLExecutor` chạy câu SQL trong transaction `READ ONLY` sau `SET LOCAL ROLE sales_sql_reader` (`database.sql_reader_role`): role NOLOGIN chỉ có `SELECT` trên đúng 6 bảng ở trên (migration `a91c3e7d5b20`), nên PostgreSQL tự từ chối bảng khác và hàm đặc quyền (`pg_read_file`...) dù validator bỏ sót. Thêm bảng vào `ALLOWED_SQL_TABLES` phải kèm migration GRANT SELECT và khai báo trong `SQL_READER_TABLES` (`tests/unit/test_sql_reader_role.py` kiểm tra).
 
 ## 7. Chuỗi migration
 
-Chuỗi tuyến tính (cũ đến mới), head hiện tại là `8008434c9371`:
+Chuỗi tuyến tính (cũ đến mới), head hiện tại là `a91c3e7d5b20`:
 
 | # | Revision | Nội dung |
 | --- | --- | --- |
@@ -336,7 +336,8 @@ Chuỗi tuyến tính (cũ đến mới), head hiện tại là `8008434c9371`:
 | 13 | `c6d8e1f4a2b7` | Thêm `sales_returns`, `sales_return_lines` |
 | 14 | `d1e5b7a93c28` | `created_at`/`deleted_at` của `sales_invoices` và `sales_invoice_lines` chuyển sang `timestamptz` |
 | 15 | `e7b3c5a19f42` | Thêm `ix_messages_conversation_id_created_at`, `ix_debt_transactions_customer_occurred`; bỏ các index thừa `ix_sales_invoices_issued_at`, `ix_sales_invoice_lines_invoice_id`, `ix_sales_return_lines_return_id`, `ix_debt_transactions_customer_id` |
-| 16 | `8008434c9371` | Thêm `etl_sync_runs`, `customer_debt_transaction_changes`, `customer_debt_revisions` (lưu vết điều chỉnh công nợ; chỉ tạo bảng mới) (head) |
+| 16 | `8008434c9371` | Thêm `etl_sync_runs`, `customer_debt_transaction_changes`, `customer_debt_revisions` (lưu vết điều chỉnh công nợ; chỉ tạo bảng mới) |
+| 17 | `a91c3e7d5b20` | Tạo role NOLOGIN `sales_sql_reader` chỉ có SELECT trên 6 bảng bán hàng, cấp cho user chạy migration; downgrade chỉ DROP ROLE khi không database nào khác còn dùng (head) |
 
 Kiểm tra: `.\env\Scripts\python.exe -m alembic heads` (chạy từ `backend/`).
 

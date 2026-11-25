@@ -39,6 +39,12 @@ def client_ip(request: Request, *, trust_forwarded_for: bool = False) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def request_client_ip(request: Request) -> str:
+    """Client IP honouring ``trust_forwarded_for`` from the app's rate-limit config."""
+    _, config = _state(request)
+    return client_ip(request, trust_forwarded_for=config.trust_forwarded_for)
+
+
 def _state(request: Request) -> tuple[SlidingWindowRateLimiter | None, RateLimitConfig]:
     state = request.app.state
     return getattr(state, "rate_limiter", None), getattr(state, "rate_limit_config", None) or RateLimitConfig()
