@@ -134,6 +134,11 @@ class InvalidSQLReaderRoleError(ConfigurationError, ValueError):
     message_template = 'database.sql_reader_role must be a lower-case PostgreSQL identifier'
 
 
+class UnsupportedVectorMetricError(ConfigurationError, ValueError):
+    code = 'unsupported_vector_metric'
+    message_template = 'Unsupported Milvus metric_type {metric_type}; use L2, IP or COSINE'
+
+
 class AnthropicRequestError(ExternalServiceError):
     code = 'anthropic_request'
     message_template = 'Anthropic API error'

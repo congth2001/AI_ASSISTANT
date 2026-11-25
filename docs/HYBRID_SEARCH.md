@@ -39,7 +39,7 @@ Tạo tự động nếu chưa có (`MilvusClient._create_collection`), không d
 | `co_no` | BOOL | Tài liệu về công nợ |
 | `doanh_thu` | DOUBLE | Giá trị tham khảo |
 
-Index: HNSW (`M=16`, `efConstruction=200`), metric **COSINE**. Metric được hard-code trong code; giá trị `vector_db.metric_type` trong config hiện không được dùng khi tạo index hay khi search. Đổi dimension hoặc metric cần xóa và tạo lại collection.
+Index: HNSW (`M=16`, `efConstruction=200`), metric lấy từ `vector_db.metric_type` (mặc định **COSINE**) khi tạo collection. Với collection đã tồn tại, `MilvusClient` đọc metric của index `embedding` lúc kết nối và search theo metric đó (log cảnh báo nếu khác config), vì search phải dùng đúng metric đã build index. Đổi dimension hoặc metric cần xóa và tạo lại collection.
 
 ## Thuật toán
 

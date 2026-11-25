@@ -69,7 +69,8 @@ class VectorDBSettings(ConfigModel):
     host: NonEmpty = "localhost"
     port: Port = 19530
     vector_dimension: int = Field(default=1024, gt=0)
-    metric_type: Literal["L2", "IP", "COSINE"] = "L2"
+    # Used when the collection (and its index) is created; searches follow the existing index.
+    metric_type: Literal["L2", "IP", "COSINE"] = "COSINE"
 
     @field_validator("metric_type", mode="before")
     @classmethod

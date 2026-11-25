@@ -2,13 +2,15 @@ import logging
 from threading import Lock
 from typing import List, Optional, Dict, Any
 from pymilvus import MilvusClient as PyMilvusClient, DataType
-from src.modules.assistant.domain.errors import VectorStoreQueryError
+from src.modules.assistant.domain.errors import UnsupportedVectorMetricError, VectorStoreQueryError
 from src.modules.assistant.domain.ports.i_vector_db import IVectorDB
 
 logger = logging.getLogger(__name__)
 
 _OUTPUT_FIELDS = ["doc_id", "doc_type", "text", "year", "month", "customer_id", "co_no", "doanh_thu"]
 _RRF_K = 60  # RRF constant — higher = less penalty for lower ranks
+_METRIC_TYPES = frozenset({"L2", "IP", "COSINE"})
+_EMBEDDING_FIELD = "embedding"
 
 # keyword_search KHÔNG dùng index: kéo tối đa chừng này bản ghi (mỗi bản ghi tới 4KB `text`)
 # về Python để chấm điểm. Khi chạm trần, các bản ghi ngoài trần bị bỏ qua (thứ tự do Milvus quyết định)
@@ -47,8 +49,13 @@ class MilvusClient(IVectorDB):
         vector_dimension: int = 1024,
         metric_type: str = "COSINE"
     ):
+        metric_type = str(metric_type).upper()
+        if metric_type not in _METRIC_TYPES:
+            raise UnsupportedVectorMetricError(metric_type=metric_type)
         self.collection_name = collection_name
         self.vector_dimension = vector_dimension
+        # Configured metric for new collections; replaced by the existing index's metric on
+        # connect, because a search must use the metric the index was built with.
         self.metric_type = metric_type
 
         # SQL-only and conversational requests must not require a live vector DB.
@@ -76,13 +83,32 @@ class MilvusClient(IVectorDB):
             logger.info(f"Created new collection: {self.collection_name}")
         else:
             logger.info(f"Using existing collection: {self.collection_name}")
+            self._adopt_index_metric(client)
+
+    def _adopt_index_metric(self, client) -> None:
+        try:
+            index = client.describe_index(self.collection_name, _EMBEDDING_FIELD) or {}
+        except Exception:
+            logger.warning(
+                "Could not read the metric of index %r on %s; using configured %s",
+                _EMBEDDING_FIELD, self.collection_name, self.metric_type, exc_info=True,
+            )
+            return
+        actual = str(index.get("metric_type") or "").upper()
+        if actual in _METRIC_TYPES and actual != self.metric_type:
+            logger.warning(
+                "Collection %s was indexed with %s but vector_db.metric_type is %s; searching "
+                "with %s. Recreate the collection to change the metric.",
+                self.collection_name, actual, self.metric_type, actual,
+            )
+            self.metric_type = actual
 
     def _create_collection(self, client):
         schema = PyMilvusClient.create_schema(auto_id=False, enable_dynamic_field=False)
         schema.add_field("doc_id",      DataType.VARCHAR,      is_primary=True, max_length=128)
         schema.add_field("doc_type",    DataType.VARCHAR,      max_length=32)
         schema.add_field("text",        DataType.VARCHAR,      max_length=4096)
-        schema.add_field("embedding",   DataType.FLOAT_VECTOR, dim=self.vector_dimension)
+        schema.add_field(_EMBEDDING_FIELD, DataType.FLOAT_VECTOR, dim=self.vector_dimension)
         schema.add_field("year",        DataType.INT16)
         schema.add_field("month",       DataType.INT8)
         schema.add_field("customer_id", DataType.VARCHAR,      max_length=128)
@@ -91,8 +117,8 @@ class MilvusClient(IVectorDB):
 
         index_params = PyMilvusClient.prepare_index_params()
         index_params.add_index(
-            field_name  = "embedding",
-            metric_type = "COSINE",
+            field_name  = _EMBEDDING_FIELD,
+            metric_type = self.metric_type,
             index_type  = "HNSW",
             params      = {"M": 16, "efConstruction": 200},
         )
@@ -208,13 +234,15 @@ class MilvusClient(IVectorDB):
         filter        : str = "",
         output_fields : Optional[List[str]] = None,
         search_params : Optional[Dict[str, Any]] = None,
+        ef            : int = 100,
     ) -> List[Dict[str, Any]]:
         try:
-            sp = search_params or {"metric_type": "COSINE", "params": {"ef": 100}}
-            results = self._client.search(
+            client = self._client  # connecting also settles self.metric_type
+            sp = search_params or {"metric_type": self.metric_type, "params": {"ef": ef}}
+            results = client.search(
                 collection_name = self.collection_name,
                 data            = [query_vector],
-                anns_field      = "embedding",
+                anns_field      = _EMBEDDING_FIELD,
                 search_params   = sp,
                 limit           = top_k,
                 filter          = filter or None,
@@ -321,8 +349,9 @@ class MilvusClient(IVectorDB):
         ef controls HNSW recall quality for the vector branch.
         """
         # Lỗi Milvus (VectorStoreQueryError) được để lan ra: rỗng nghĩa là "không có kết quả", không phải "lỗi".
-        sp = {"metric_type": "COSINE", "params": {"ef": ef}}
-        vector_results  = self.search_similar(query_vector, top_k * 2, filter=filter, search_params=sp)
+        vector_results  = self.search_similar(
+            query_vector, top_k * 2, filter=filter, search_params=None, ef=ef
+        )
         keyword_results = self.keyword_search(query_text,   top_k * 2, filter=filter)
         merged = self._rrf_merge(vector_results, keyword_results, top_k, vector_weight, keyword_weight)
         logger.info(f"Hybrid search found {len(merged)} results (v={len(vector_results)}, k={len(keyword_results)})")

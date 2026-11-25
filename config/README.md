@@ -44,6 +44,7 @@ Danh sách/object dùng JSON trong biến môi trường. Chuỗi như mật kh�
 - `auth.refresh_reuse_grace_seconds` (mặc định `30`): dùng lại refresh token đã bị xoay vòng quá khoảng này sẽ thu hồi toàn bộ refresh token của user và trả `401`; trong khoảng này (nhiều tab refresh cùng lúc bằng cùng một token) chỉ trả `401` cho request đến sau. Đặt `0` để phát hiện replay nghiêm ngặt. Logout xóa hẳn token nên token đã logout bị gửi lại chỉ nhận `401`, không thu hồi các phiên khác.
 - `auth.guest_token_minutes` (mặc định `60`): thời hạn access token của phiên guest stateless (không có refresh token, không ghi bảng `users`).
 - `database.sql_reader_role` (mặc định `sales_sql_reader`): role NOLOGIN chỉ có quyền SELECT trên 6 bảng bán hàng, do migration `a91c3e7d5b20` tạo và cấp cho user chạy Alembic. `PostgresSQLExecutor` chạy SQL do LLM sinh sau `SET LOCAL ROLE`. Nếu app kết nối bằng user khác user chạy migration thì cần `GRANT sales_sql_reader TO <app_user>`. Để trống thì tắt (không khuyến nghị; backend log cảnh báo).
+- `vector_db.metric_type` (mặc định `COSINE`): metric khi tạo collection/index Milvus mới. Với collection đã có, client đọc metric thật của index và search theo đó (log cảnh báo nếu khác config); đổi metric phải tạo lại collection.
 - `database.username` không còn mặc định theo tên cá nhân (mặc định `postgres`); `DatabaseSettings.url` và `Settings.to_container_config()` chứa secret rõ, không log/in chúng.
 
 ## Cấu hình bắt buộc và secrets
