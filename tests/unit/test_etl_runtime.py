@@ -136,3 +136,25 @@ async def test_run_sync_passes_allow_shrink_and_tolerates_cache_failure(monkeypa
         "customer_df": "c", "allow_shrink": True, "entrypoint": "sync_business_data",
     }
     assert FakeClient.closed
+
+
+def test_refused_snapshot_never_overwrites_the_last_good_files(tmp_path):
+    from etl_business.job import promote_snapshots, staged_snapshot_dir
+
+    live = tmp_path / "Cong_no.xlsx"
+    live.write_text("last good", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        with staged_snapshot_dir(tmp_path) as staging:
+            (staging / "Cong_no.xlsx").write_text("truncated", encoding="utf-8")
+            raise RuntimeError("sync refused the snapshot")
+
+    assert live.read_text(encoding="utf-8") == "last good"
+    assert [path.name for path in tmp_path.iterdir()] == ["Cong_no.xlsx"]  # staging removed
+
+    with staged_snapshot_dir(tmp_path) as staging:
+        staged = staging / "Cong_no.xlsx"
+        staged.write_text("new", encoding="utf-8")
+        assert promote_snapshots((staged,), tmp_path) == (live,)
+    assert live.read_text(encoding="utf-8") == "new"
+    assert [path.name for path in tmp_path.iterdir()] == ["Cong_no.xlsx"]
