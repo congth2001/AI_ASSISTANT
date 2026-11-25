@@ -1,4 +1,5 @@
 """Validated application settings and Pydantic source precedence."""
+import re
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -90,6 +91,9 @@ class DatabaseSettings(ConfigModel):
     echo: bool = False
     # Driver query options may carry credentials (e.g. sslpassword): keep them out of repr().
     query: dict[str, str | tuple[str, ...]] = Field(default_factory=dict, repr=False)
+    # NOLOGIN role (SELECT on the sales tables only) that LLM-generated SQL runs under via
+    # SET LOCAL ROLE; created by Alembic. Empty/null disables the switch (not recommended).
+    sql_reader_role: str | None = "sales_sql_reader"
 
     @model_validator(mode="before")
     @classmethod
@@ -100,6 +104,15 @@ class DatabaseSettings(ConfigModel):
     @classmethod
     def accept_url_query(cls, value):
         return dict(value) if isinstance(value, tuple) else value
+
+    @field_validator("sql_reader_role", mode="before")
+    @classmethod
+    def validate_sql_reader_role(cls, value):
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return None
+        if not isinstance(value, str) or not re.fullmatch(r"[a-z_][a-z0-9_]{0,62}", value.strip()):
+            raise ValueError("sql_reader_role must be a lower-case PostgreSQL identifier")
+        return value.strip()
 
     @property
     def sqlalchemy_url(self) -> URL:

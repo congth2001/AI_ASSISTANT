@@ -32,6 +32,7 @@ database:
     password: "" # Set here or through DATABASE__PASSWORD; no built-in DB password.
     db_name: ai_assistant
     echo: false
+    sql_reader_role: sales_sql_reader # Text-to-SQL runs under this SELECT-only role (Alembic creates it); empty disables
 
 # Cache Configuration
 cache:

@@ -129,6 +129,11 @@ class QueryAnalyzerRequiredError(ConfigurationError, ValueError):
     message_template = 'query_analyzer is required when execute() receives a string'
 
 
+class InvalidSQLReaderRoleError(ConfigurationError, ValueError):
+    code = 'invalid_sql_reader_role'
+    message_template = 'database.sql_reader_role must be a lower-case PostgreSQL identifier'
+
+
 class AnthropicRequestError(ExternalServiceError):
     code = 'anthropic_request'
     message_template = 'Anthropic API error'

@@ -100,6 +100,7 @@ class AssistantContainer(containers.DeclarativeContainer):
     sql_executor = Singleton(
         PostgresSQLExecutor,
         engine=engine,
+        reader_role=config.database.sql_reader_role,
     )
 
     schema_linker = Singleton(SchemaLinker)
