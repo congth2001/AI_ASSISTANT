@@ -246,6 +246,26 @@ class ETLSettings(ConfigModel):
         return value
 
 
+class LoggingSettings(ConfigModel):
+    """Logs of the application (``src.*`` and ``main``); uvicorn keeps its own console logs.
+
+    Third-party libraries stay at Python's default (WARNING and above), so per-request
+    INFO lines from HTTP clients do not flood the file.
+    """
+    enabled: bool = True
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
+    # Relative paths are resolved from backend/. Empty string: console only.
+    file: str = "logs/ai_assistant.log"
+    max_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    backup_count: int = Field(default=5, ge=0)
+
+    def file_path(self) -> Path | None:
+        if not self.file.strip():
+            return None
+        path = Path(self.file.strip())
+        return path if path.is_absolute() else BACKEND_DIR / path
+
+
 class SourceSettings(BaseSettings):
     model_config = SettingsConfigDict(
         env_nested_delimiter="__",
@@ -300,6 +320,7 @@ class Settings(SourceSettings):
     api: APISettings = Field(default_factory=APISettings)
     rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
     etl: ETLSettings = Field(default_factory=ETLSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     def to_container_config(self) -> dict[str, Any]:
         """Unwrap secrets only at the DI boundary; model_dump/repr remain redacted.

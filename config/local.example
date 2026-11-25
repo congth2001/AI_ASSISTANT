@@ -75,6 +75,14 @@ auth:
     refresh_token_days: 30
     refresh_reuse_grace_seconds: 30 # tolerates concurrent refresh from several tabs sharing one token; 0 = strict replay detection.
 
+# Application logs (src.* and main). Console + rotating file; relative paths are from backend/.
+logging:
+    enabled: true
+    level: INFO # DEBUG also logs SQL rejected by the validator (may contain customer names).
+    file: logs/ai_assistant.log # Empty string: console only.
+    max_bytes: 10485760
+    backup_count: 5
+
 # Business ETL Configuration (Microsoft Access/iShopman)
 etl:
     source_path: D:\Backup
