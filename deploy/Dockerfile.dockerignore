@@ -1,0 +1,37 @@
+# Build context is backend/ (see deploy/README.md). BuildKit reads this file because it sits
+# next to deploy/Dockerfile; a .dockerignore inside deploy/ would be ignored.
+
+# Secrets and local configuration: mount config at runtime instead.
+config/*.yml
+config/*.yaml
+.env
+*.env
+env.*
+
+# Customer data, ETL artifacts, logs and backups never go into the image.
+data/
+logs/
+backups/
+*.log
+
+# Virtual environments and caches
+env/
+venv/
+ENV/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Development-only content
+tests/
+evals/
+docs/
+*.ipynb
+.git/
+.gitignore
+.vscode/
+.idea/
+deploy/

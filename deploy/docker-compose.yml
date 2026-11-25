@@ -96,6 +96,35 @@ services:
       timeout: 20s
       retries: 3
 
+  # Opt-in: `--profile app up -d` also builds and runs the API. Without the profile only the
+  # infrastructure starts and the API keeps running on the host (`python main.py`).
+  backend:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ai-assistant-backend:local
+    environment:
+      AI_ASSISTANT_CONFIG_FILE: /app/config/local.yml
+      # Service names replace the localhost addresses of config/local.yml.
+      DATABASE__HOST: postgres
+      DATABASE__PORT: "5432"
+      CACHE__HOST: redis
+      CACHE__PORT: "6379"
+      VECTOR_DB__HOST: milvus-standalone
+      VECTOR_DB__PORT: "19530"
+      PUBLIC_FRONTEND_ORIGINS: ${PUBLIC_FRONTEND_ORIGINS:-}
+    volumes:
+      - ../config/local.yml:/app/config/local.yml:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   milvus_data:
   etcd_data:
