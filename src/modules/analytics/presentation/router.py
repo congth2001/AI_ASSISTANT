@@ -1,8 +1,8 @@
 """Authenticated deterministic analytics endpoints for dashboards."""
 
 from dataclasses import asdict
-from datetime import date, datetime
-from typing import Annotated
+from datetime import date, datetime, timedelta
+from typing import Annotated, Literal
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -10,6 +10,10 @@ from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, Path, Query, Response, status
 
 from config.container import Container
+from src.common.domain.time import now_vietnam
+from src.modules.analytics.application.use_cases.customer_debt_history_use_case import (
+    CustomerDebtHistoryUseCase,
+)
 from src.modules.analytics.application.use_cases.dashboard_analytics_use_case import (
     DashboardAnalyticsUseCase,
 )
@@ -23,6 +27,12 @@ from src.modules.analytics.domain.models.customer_debt import (
     CustomerDebtExportFilters,
     CustomerDebtSheetMode,
 )
+from src.modules.analytics.domain.models.customer_debt_history import (
+    DebtHistoryEntryFilters,
+    DebtHistoryFilters,
+    DebtHistoryGrain,
+    DebtRevisionFilters,
+)
 from src.modules.analytics.domain.models.dashboard import (
     DashboardFilters,
     RankingDimension,
@@ -31,6 +41,12 @@ from src.modules.analytics.domain.models.dashboard import (
 from src.modules.analytics.domain.models.orders import OrderFilters
 from src.modules.analytics.domain.models.order_ledger import OrderLedgerExportFilters
 from src.modules.auth.presentation.router import require_role
+from src.modules.analytics.presentation.dto.customer_debt_history import (
+    CustomerDebtHistoryResponse,
+    CustomerDebtRevisionPageResponse,
+    DebtHistoryEntryPageResponse,
+    DebtRevisionListPageResponse,
+)
 from src.modules.analytics.presentation.dto.analytics import (
     AnalyticsFilterOptionsResponse,
     AnalyticsPeriodResponse,
@@ -434,3 +450,117 @@ async def get_filter_options(
         categories=list(options.categories),
         products=list(options.products),
     )
+
+
+# ---------------------------------------------------------------------------
+# Customer debt history (docs/customer-debt-history.md, section 5). Unlike the
+# dashboard filters above, every date range here is inclusive on both ends.
+# ---------------------------------------------------------------------------
+
+DebtSourceType = Literal["opening", "sale", "sales_return", "receipt"]
+
+
+def _yesterday_vietnam() -> date:
+    return now_vietnam().date() - timedelta(days=1)
+
+
+@router.get(
+    "/customers/{customer_id}/debt-history", response_model=CustomerDebtHistoryResponse
+)
+@inject
+async def get_customer_debt_history(
+    customer_id: UUID,
+    date_from: Annotated[
+        date | None, Query(description="Inclusive start day; omit for the whole ledger")
+    ] = None,
+    date_to: Annotated[
+        date | None, Query(description="Inclusive as-of day; defaults to yesterday (Vietnam)")
+    ] = None,
+    grain: Annotated[DebtHistoryGrain, Query()] = DebtHistoryGrain.MONTH,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: CustomerDebtHistoryUseCase = Depends(
+        Provide[Container.customer_debt_history_use_case]
+    ),
+) -> CustomerDebtHistoryResponse:
+    try:
+        filters = DebtHistoryFilters(
+            date_from=date_from, date_to=date_to or _yesterday_vietnam(), grain=grain
+        )
+    except ValueError as exc:
+        raise RequestValidationError(error=exc) from exc
+    history = await _execute_validated(use_case.get_history(str(customer_id), filters))
+    return CustomerDebtHistoryResponse.model_validate(history)
+
+
+@router.get(
+    "/customers/{customer_id}/debt-history/entries",
+    response_model=DebtHistoryEntryPageResponse,
+)
+@inject
+async def list_customer_debt_entries(
+    customer_id: UUID,
+    date_from: Annotated[date | None, Query(description="Inclusive start day")] = None,
+    date_to: Annotated[date | None, Query(description="Inclusive end day")] = None,
+    source_type: Annotated[list[DebtSourceType] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+    cursor: Annotated[str | None, Query(max_length=1000)] = None,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: CustomerDebtHistoryUseCase = Depends(
+        Provide[Container.customer_debt_history_use_case]
+    ),
+) -> DebtHistoryEntryPageResponse:
+    try:
+        filters = DebtHistoryEntryFilters(
+            date_from=date_from,
+            date_to=date_to,
+            source_types=tuple(dict.fromkeys(source_type or ())),
+        )
+    except ValueError as exc:
+        raise RequestValidationError(error=exc) from exc
+    page = await _execute_validated(
+        use_case.list_entries(str(customer_id), filters, cursor, limit)
+    )
+    return DebtHistoryEntryPageResponse.model_validate(page)
+
+
+@router.get(
+    "/customers/{customer_id}/debt-revisions",
+    response_model=CustomerDebtRevisionPageResponse,
+)
+@inject
+async def list_customer_debt_revisions(
+    customer_id: UUID,
+    limit: Annotated[int, Query(ge=1, le=50)] = 20,
+    cursor: Annotated[str | None, Query(max_length=1000)] = None,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: CustomerDebtHistoryUseCase = Depends(
+        Provide[Container.customer_debt_history_use_case]
+    ),
+) -> CustomerDebtRevisionPageResponse:
+    page = await _execute_validated(
+        use_case.list_customer_revisions(str(customer_id), cursor, limit)
+    )
+    return CustomerDebtRevisionPageResponse.model_validate(page)
+
+
+@router.get("/debt-revisions", response_model=DebtRevisionListPageResponse)
+@inject
+async def list_debt_revisions(
+    date_from: Annotated[date | None, Query(description="Inclusive ETL run day (Vietnam)")] = None,
+    date_to: Annotated[date | None, Query(description="Inclusive ETL run day (Vietnam)")] = None,
+    ward: Annotated[list[str] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    cursor: Annotated[str | None, Query(max_length=1000)] = None,
+    _current_user: dict = Depends(require_role("staff", "admin")),
+    use_case: CustomerDebtHistoryUseCase = Depends(
+        Provide[Container.customer_debt_history_use_case]
+    ),
+) -> DebtRevisionListPageResponse:
+    try:
+        filters = DebtRevisionFilters(
+            date_from=date_from, date_to=date_to, ward_names=_bounded_values(ward, "ward")
+        )
+    except ValueError as exc:
+        raise RequestValidationError(error=exc) from exc
+    page = await _execute_validated(use_case.list_revisions(filters, cursor, limit))
+    return DebtRevisionListPageResponse.model_validate(page)

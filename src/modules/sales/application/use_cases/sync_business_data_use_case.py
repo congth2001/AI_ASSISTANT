@@ -1,14 +1,26 @@
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Dict
+from uuid import uuid4
 
 import pandas as pd
 
 from src.modules.sales.domain.repositories.i_customer_repository import ICustomerRepository
+from src.modules.sales.domain.models.debt_ledger import (
+    DebtSnapshotDiff,
+    EtlSyncRun,
+    IncomingDebtRow,
+)
 from src.modules.sales.domain.repositories.i_customer_debt_transaction_repository import (
     ICustomerDebtTransactionRepository,
 )
+from src.modules.sales.domain.repositories.i_debt_revision_repository import (
+    IDebtRevisionRepository,
+)
+from src.modules.sales.domain.services.debt_snapshot_diff import diff_debt_snapshot
 from src.modules.sales.domain.repositories.i_sales_invoice_line_repository import (
     ISalesInvoiceLineRepository,
 )
@@ -147,6 +159,8 @@ class SyncBusinessDataUseCase:
         sales_return_repository: ISalesReturnRepository | None = None,
         unit_of_work: IUnitOfWork | None = None,
         max_shrink_ratio: Decimal = DEFAULT_MAX_SNAPSHOT_SHRINK_RATIO,
+        debt_revision_repository: IDebtRevisionRepository | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
     ):
         self._customer_repository = customer_repository
         self._sales_invoice_repository = sales_invoice_repository
@@ -155,6 +169,8 @@ class SyncBusinessDataUseCase:
         self._sales_return_repository = sales_return_repository
         self._unit_of_work = unit_of_work or NullUnitOfWork()
         self._max_shrink_ratio = max_shrink_ratio
+        self._debt_revision_repository = debt_revision_repository
+        self._clock = clock
 
     async def sync_all(
         self,
@@ -165,7 +181,14 @@ class SyncBusinessDataUseCase:
         return_lines_df: pd.DataFrame | None = None,
         *,
         allow_shrink: bool = False,
+        entrypoint: str = "unknown",
     ) -> Dict[str, Any]:
+        """Validate every snapshot, then write them all in one transaction.
+
+        ``entrypoint`` names the caller in the ``etl_sync_runs`` audit row (written
+        when a debt revision repository is configured).
+        """
+        started_at = self._clock()
         if debt_df is not None and self._customer_debt_transaction_repository is None:
             raise DebtRepositoryRequiredError()
         if returns_df is not None:
@@ -209,10 +232,18 @@ class SyncBusinessDataUseCase:
                 "lines": line_result["lines"],
                 "line_invoices": line_result["invoices"],
             }
+            debt_diff: DebtSnapshotDiff | None = None
             if prepared.debt_rows is not None:
-                result["debt_transactions"] = await self._write_debt(
-                    prepared.debt_rows, customer_ids
-                )
+                debt_diff = await self._write_debt(prepared.debt_rows, customer_ids)
+                result["debt_transactions"] = {
+                    "synced": len(prepared.debt_rows),
+                    "deleted": len(debt_diff.deletes),
+                    "inserted": len(debt_diff.inserts),
+                    "updated": len(debt_diff.updates),
+                    "restored": len(debt_diff.restores),
+                    "unchanged": debt_diff.unchanged,
+                    "backdated": debt_diff.backdated_count,
+                }
             if prepared.return_rows is not None:
                 result["sales_returns"] = await self._write_returns(
                     prepared.return_rows, prepared.return_line_rows or [], customer_ids
@@ -220,6 +251,10 @@ class SyncBusinessDataUseCase:
             if prepared.debt_rows is not None or prepared.return_rows is not None:
                 result["customers_deleted"] = (
                     await self._customer_repository.soft_delete_unreferenced()
+                )
+            if self._debt_revision_repository is not None:
+                result["sync_run"] = await self._record_run(
+                    debt_diff, started_at, entrypoint, allow_shrink
                 )
         return result
 
@@ -529,20 +564,60 @@ class SyncBusinessDataUseCase:
 
     async def _write_debt(
         self, debt_rows: list[Dict[str, Any]], customer_ids: Dict[str, str]
-    ) -> Dict[str, int]:
-        ledger_rows = []
+    ) -> DebtSnapshotDiff:
+        incoming = []
         for row in debt_rows:
             identity_key = row["customer_identity_key"]
             customer_id = customer_ids.get(identity_key)
             if customer_id is None:
                 raise CustomerIdentityMissingError(identity_key=identity_key)
-            ledger_rows.append(
-                {
-                    **{k: v for k, v in row.items() if k != "customer_identity_key"},
-                    "customer_id": customer_id,
-                }
+            incoming.append(
+                IncomingDebtRow(
+                    source_type=row["source_type"],
+                    source_id=row["source_id"],
+                    customer_id=customer_id,
+                    occurred_at=row["occurred_at"],
+                    amount=row["amount"],
+                )
             )
-        return await self._customer_debt_transaction_repository.sync_snapshot(ledger_rows)
+        repository = self._customer_debt_transaction_repository
+        diff = diff_debt_snapshot(await repository.load_ledger_state(), incoming)
+        await repository.apply_diff(diff)
+        return diff
+
+    async def _record_run(
+        self,
+        diff: DebtSnapshotDiff | None,
+        started_at: datetime,
+        entrypoint: str,
+        allow_shrink: bool,
+    ) -> Dict[str, Any]:
+        run = EtlSyncRun(
+            run_id=str(uuid4()),
+            started_at=started_at,
+            finished_at=self._clock(),
+            entrypoint=entrypoint,
+            allow_shrink=allow_shrink,
+            debt_synced=diff is not None,
+            is_baseline=diff is not None and diff.is_baseline,
+            ledger_frontier_date=diff.frontier_date if diff else None,
+            debt_inserted=len(diff.inserts) if diff else 0,
+            debt_updated=len(diff.updates) if diff else 0,
+            debt_deleted=len(diff.deletes) if diff else 0,
+            debt_restored=len(diff.restores) if diff else 0,
+            debt_backdated=diff.backdated_count if diff else 0,
+        )
+        changes = diff.changes if diff else ()
+        revisions = diff.revisions if diff else ()
+        await self._debt_revision_repository.record_run(run, changes, revisions)
+        return {
+            "run_id": run.run_id,
+            "is_baseline": run.is_baseline,
+            "retroactive_customers": len(revisions),
+            "retroactive_changes": len(changes),
+            # str keeps the CLI's JSON output exact (no float).
+            "retroactive_delta": str(diff.retroactive_delta if diff else Decimal("0")),
+        }
 
     async def _write_returns(
         self,

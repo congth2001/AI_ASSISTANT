@@ -36,3 +36,15 @@ def test_index_tuning_migration_has_a_real_downgrade():
         "ix_sales_invoices_issued_at", "ix_debt_transactions_customer_id",
     ):
         assert f'"{index}"' in downgrade  # each dropped index is recreated on downgrade
+
+
+def test_debt_audit_migration_is_the_head_and_drops_its_tables_on_downgrade():
+    script = _script()
+    revision = script.get_revision("8008434c9371")
+    source = Path(revision.path).read_text(encoding="utf-8")
+    downgrade = source[source.index("def downgrade"):]
+
+    assert script.get_current_head() == "8008434c9371"
+    assert revision.down_revision == "e7b3c5a19f42"
+    for table in ("etl_sync_runs", "customer_debt_transaction_changes", "customer_debt_revisions"):
+        assert f'op.drop_table("{table}")' in downgrade

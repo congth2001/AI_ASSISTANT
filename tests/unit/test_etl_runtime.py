@@ -132,5 +132,7 @@ async def test_run_sync_passes_allow_shrink_and_tolerates_cache_failure(monkeypa
     result = await sync_business_data.run_sync({"customer_df": "c"}, allow_shrink=True)
 
     assert result == {"invoices": 1}
-    assert calls == {"customer_df": "c", "allow_shrink": True}
+    assert calls == {
+        "customer_df": "c", "allow_shrink": True, "entrypoint": "sync_business_data",
+    }
     assert FakeClient.closed

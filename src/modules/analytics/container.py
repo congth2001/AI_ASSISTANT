@@ -2,6 +2,9 @@
 from dependency_injector import containers
 from dependency_injector.providers import Dependency, Singleton
 
+from src.modules.analytics.application.use_cases.customer_debt_history_use_case import (
+    CustomerDebtHistoryUseCase,
+)
 from src.modules.analytics.application.use_cases.dashboard_analytics_use_case import (
     DashboardAnalyticsUseCase,
 )
@@ -53,4 +56,9 @@ class AnalyticsContainer(containers.DeclarativeContainer):
         ExportOrderLedgerUseCase,
         repository=dashboard_analytics_repository,
         workbook_exporter=order_ledger_workbook_exporter,
+    )
+
+    customer_debt_history_use_case = Singleton(
+        CustomerDebtHistoryUseCase,
+        repository=dashboard_analytics_repository,
     )

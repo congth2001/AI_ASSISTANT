@@ -54,6 +54,10 @@ Dùng cho `summary`, `time-series`, `time-series-comparison`, `rankings/{dimensi
 | GET | `/analytics/orders` | Danh sách hóa đơn. |
 | GET | `/analytics/orders/export` | Xuất Excel nhật ký giao dịch của một khách. |
 | GET | `/analytics/orders/{invoice_id}` | Chi tiết hóa đơn. |
+| GET | `/analytics/customers/{customer_id}/debt-history` | Tổng quan lịch sử công nợ của một khách: số dư đầu/cuối kỳ, chuỗi số dư, tuổi nợ. |
+| GET | `/analytics/customers/{customer_id}/debt-history/entries` | Sổ công nợ chi tiết của khách, mới nhất trước, kèm số dư sau từng bút toán. |
+| GET | `/analytics/customers/{customer_id}/debt-revisions` | Các lần ETL điều chỉnh hồi tố số liệu của khách. |
+| GET | `/analytics/debt-revisions` | Điều chỉnh hồi tố toàn hệ thống, kèm tóm tắt lần nạp gần nhất. |
 
 Router khai báo `/orders/export` trước `/orders/{invoice_id}` để đường dẫn `export` không bị hiểu là `invoice_id`.
 
@@ -177,7 +181,7 @@ Response `OrderPageResponse`: `items[]` (`invoice_id`, `invoice_number`, `issued
 
 ### 3.11 `GET /analytics/orders/{invoice_id}`
 
-Path `invoice_id` dài 1-200 ký tự. Response `OrderDetailResponse`: `invoice_id`, `invoice_number`, `issued_at`, `customer_name`, `customer_address_detail`, `customer_ward_name`, `customer_village_name`, `invoice_total_amount`, `lines[]` (`line_number`, `product_name`, `product_category_name`, `unit_name`, `unit_price`, `quantity`, `line_amount`; sắp xếp theo `line_number`). Không thấy hóa đơn: 404 `order_not_found`.
+Path `invoice_id` dài 1-200 ký tự. Response `OrderDetailResponse`: `invoice_id`, `invoice_number`, `issued_at`, `customer_name`, `customer_address_detail`, `customer_ward_name`, `customer_village_name`, `invoice_total_amount`, `customer_id` (khách hiện tại của hóa đơn, có thể null; frontend dùng để mở trang lịch sử công nợ), `lines[]` (`line_number`, `product_name`, `product_category_name`, `unit_name`, `unit_price`, `quantity`, `line_amount`; sắp xếp theo `line_number`). Không thấy hóa đơn: 404 `order_not_found`.
 
 ### 3.12 `GET /analytics/orders/export`
 
@@ -200,6 +204,65 @@ Trả `.xlsx`, tên `chi-tiet-giao-dich-cong-no-YYYYMMDD-HHMMSS.xlsx`. Giữ ngu
 - Bộ lọc địa bàn (chỉ khi không có `customer_id`) dùng địa bàn hiện tại của `customers`, đồng nhất cho mọi nguồn.
 
 Giới hạn tối đa 200.000 dòng (`order_ledger_row_limit`, 422); mỗi truy vấn con lấy tối đa 200.001 dòng nên file quá lớn bị từ chối trước khi dựng workbook.
+
+Quy tắc ghép bút toán với chứng từ nằm ở `infrastructure/repositories/ledger_document_matching.py` và được dùng chung với các endpoint lịch sử công nợ (3.13–3.16), nên cùng một bút toán luôn hiện cùng số phiếu.
+
+### 3.13 `GET /analytics/customers/{customer_id}/debt-history`
+
+Thiết kế nghiệp vụ: `docs/customer-debt-history.md` (thư mục gốc). **Mọi khoảng ngày của 3.13–3.16 đều bao gồm cả hai đầu**, khác với bộ lọc dashboard dùng chung (`date_to` loại trừ).
+
+| Tham số | Ghi chú |
+| --- | --- |
+| `customer_id` | UUID trong path. Khách không tồn tại hoặc đã xóa mềm: 404 `customer_not_found`. |
+| `date_from` | Tùy chọn; bỏ trống là từ đầu sổ. |
+| `date_to` | Tùy chọn; mặc định là **hôm qua theo giờ Việt Nam**. Đây là ngày chốt cho số dư cuối kỳ và tuổi nợ. |
+| `grain` | `day`, `week` (bắt đầu thứ Hai) hoặc `month` (mặc định). |
+
+Response `CustomerDebtHistoryResponse`:
+- `customer`: `customer_id`, `customer_name`, `address_detail`, `village_name`, `ward_name`.
+- `date_from`, `date_to`, `grain`, `timezone`.
+- `summary`:
+  - `opening_balance`, `closing_balance`, `current_balance` (toàn sổ, không phụ thuộc ngày).
+  - `increase_amount`, `receipt_amount`, `return_amount`, `other_decrease_amount`, luôn thỏa `closing = opening + increase - receipt - return - other_decrease`.
+  - `status` (`in_debt`/`credit`/`settled`), `debt_since`, `days_in_debt`, `last_receipt_at`, `last_receipt_amount`.
+  - `revision_count`, `last_revision_at`, `last_revision_delta`.
+- `aging`: 6 nhóm theo thứ tự `le_3m`, `3m_6m`, `6m_1y`, `1y_2y`, `2y_3y`, `over_3y`. Tính FIFO trên toàn sổ đến `date_to`; mốc là `date_to` trừ đi số tháng dương lịch.
+- `series`: `period_start`, `closing_balance`, `increase`, `decrease`. Có đủ mọi kỳ; kỳ đầu và kỳ cuối bị cắt theo khoảng ngày.
+
+Thứ tự bút toán: `occurred_at`, rồi `opening` → `sale` → `sales_return` → `receipt`, rồi `source_id`. Lỗi 422:
+- `invalid_debt_history_date_range`;
+- `debt_history_too_many_points` (chuỗi quá 400 điểm);
+- `debt_ledger_too_large` (sổ của khách quá 50.000 bút toán tính đến `date_to`).
+
+### 3.14 `GET /analytics/customers/{customer_id}/debt-history/entries`
+
+Tham số: `date_from`, `date_to` (đều tùy chọn), `source_type` (lặp được: `opening`, `sale`, `sales_return`, `receipt`), `limit` (1–200, mặc định 50), `cursor`.
+
+Mỗi item gồm:
+- `entry_id`, `occurred_at`, `source_type`, `source_id`, `amount` (có dấu).
+- `voucher_number`: số hóa đơn `XB…`, số phiếu trả `NT…`, mã thu nợ dạng `source_id-MMYY`, hoặc `source_id` khi không ghép được chứng từ.
+- `invoice_id`, `return_id`: dùng với `GET /analytics/orders/{invoice_id}`.
+- `balance_after`: tính bằng window `SUM` trên **toàn sổ** trước khi lọc, nên vẫn đúng khi đang lọc ngày hoặc loại.
+- `revised`, `last_revised_at`: bút toán từng bị ETL điều chỉnh.
+
+Phân trang keyset theo `(occurred_at, type_order, source_id)` giảm dần, nên không trùng hoặc sót dòng cùng thời điểm. Cursor hỏng trả 422 `invalid_debt_history_cursor`.
+
+### 3.15 `GET /analytics/customers/{customer_id}/debt-revisions`
+
+Tham số: `limit` (1–50, mặc định 20), `cursor`. Item gồm:
+- `run_id`, `run_at`, `entrypoint`;
+- `balance_before`, `balance_after`: số dư toàn sổ trước/sau lần nạp;
+- `balance_delta`: chỉ phần do điều chỉnh hồi tố;
+- `earliest_affected_at`, `change_count`;
+- `changes` (tối đa 50, kèm `has_more_changes`), mỗi dòng có `change_type`, `voucher_number`, giá trị cũ/mới, `balance_delta`, `previous_customer_id`. Gồm cả bút toán đã bị chuyển sang khách khác.
+
+### 3.16 `GET /analytics/debt-revisions`
+
+Tham số: `date_from`, `date_to` (ngày chạy ETL theo giờ Việt Nam, bao gồm hai đầu), `ward` (lặp được, theo địa bàn hiện tại của khách), `limit` (1–100, mặc định 25), `cursor`.
+
+Response:
+- `latest_run`: lần nạp mới nhất, không phụ thuộc bộ lọc; gồm `revised_customers`, `retroactive_delta`, `is_baseline`.
+- `items`: revision theo khách kèm tên và địa bàn, mới nhất trước.
 
 ## 4. Quy tắc tính
 

@@ -12,6 +12,10 @@ from src.modules.analytics.domain.models.order_ledger import (
     OrderLedgerExportFilters,
 )
 from src.modules.analytics.infrastructure.repositories.analytics_scope import CustomerScope
+from src.modules.analytics.infrastructure.repositories.ledger_document_matching import (
+    RETURN_VOUCHER_PATTERN,
+    SALE_VOUCHER_PATTERN,
+)
 from src.modules.analytics.infrastructure.repositories.order_ledger_builder import (
     CustomerProfile,
     DocumentLine,
@@ -123,7 +127,7 @@ class OrderLedgerQueriesMixin:
             ))
             .where(
                 SalesInvoice.deleted_at.is_(None),
-                SalesInvoice.invoice_number.ilike("XB%"),
+                SalesInvoice.invoice_number.ilike(SALE_VOUCHER_PATTERN),
                 scope.contains(SalesInvoice.customer_id),
                 *in_range(SalesInvoice.issued_at),
             )
@@ -153,7 +157,7 @@ class OrderLedgerQueriesMixin:
             ))
             .where(
                 SalesReturn.deleted_at.is_(None),
-                SalesReturn.return_number.ilike("NT%"),
+                SalesReturn.return_number.ilike(RETURN_VOUCHER_PATTERN),
                 scope.contains(SalesReturn.customer_id),
                 *in_range(SalesReturn.returned_at),
             )

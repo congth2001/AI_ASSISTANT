@@ -4,27 +4,29 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from src.modules.assistant.domain.errors import InvalidReportPeriodError
+from src.modules.assistant.domain.errors import InvalidReportPeriodError, ReportCustomerRequiredError
 from src.modules.assistant.domain.entities.overview_report import (
+    MAX_REPORT_DAYS,
     OverviewReportScope,
     OverviewReportTopic,
 )
 
 MAX_CHAT_MESSAGE_LENGTH = 4000
-MAX_REPORT_DAYS = 3660
 
 
 class ReportContextRequest(BaseModel):
-    """Overview-dashboard filters for a preset "Hỏi AI" question.
+    """Filters of the screen behind a preset "Hỏi AI" question.
 
     When present, the answer is built from the dashboard's own numbers instead of
     LLM-generated SQL. Dates follow the analytics API: ``date_to`` is exclusive.
+    Overview topics need ``date_from``. ``customer_debt_history`` needs ``customer_id``,
+    accepts no ``date_from`` (whole ledger) and ignores ``ward``/``village``.
     """
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     topic: OverviewReportTopic
-    date_from: date
+    date_from: Optional[date] = None
     date_to: date = Field(description="Exclusive end date, like the analytics API")
     customer_id: Optional[UUID] = None
     ward: Optional[str] = Field(default=None, max_length=200)
@@ -32,7 +34,13 @@ class ReportContextRequest(BaseModel):
 
     @model_validator(mode="after")
     def check_period(self) -> "ReportContextRequest":
-        if self.date_to <= self.date_from or (self.date_to - self.date_from).days > MAX_REPORT_DAYS:
+        debt_history = self.topic is OverviewReportTopic.CUSTOMER_DEBT_HISTORY
+        if debt_history and self.customer_id is None:
+            raise ReportCustomerRequiredError()
+        if self.date_from is None:
+            if not debt_history:
+                raise InvalidReportPeriodError(max_days=MAX_REPORT_DAYS)
+        elif self.date_to <= self.date_from or (self.date_to - self.date_from).days > MAX_REPORT_DAYS:
             raise InvalidReportPeriodError(max_days=MAX_REPORT_DAYS)
         return self
 

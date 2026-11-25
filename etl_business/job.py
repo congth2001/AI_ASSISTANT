@@ -61,7 +61,7 @@ async def run_business_etl(config: dict, *, allow_shrink: bool = False) -> dict[
         container.config.from_dict(app_settings.to_container_config())
         try:
             sync_result = await container.sync_business_data_use_case().sync_all(
-                **snapshots.sync_arguments(), allow_shrink=allow_shrink
+                **snapshots.sync_arguments(), allow_shrink=allow_shrink, entrypoint="etl_job"
             )
             await invalidate_chat_response_cache(container.cache_service)
         finally:

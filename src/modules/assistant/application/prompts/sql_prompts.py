@@ -128,6 +128,17 @@ class SQLPrompt:
             trong "Bộ lọc" hoặc khách hàng được hỏi rõ trong câu hỏi chính.
             Ngày giao dịch mới nhất phải được truy vấn độc lập với khoảng ngày báo cáo;
             không coi tháng thiếu dữ liệu là suy giảm kinh doanh đã được xác nhận.
+        24. Lịch sử/biến động công nợ: số dư sau từng giao dịch là SUM(amount) OVER (...) trên
+            TOÀN BỘ sổ của khách, thứ tự occurred_at rồi opening, sale, sales_return, receipt rồi
+            source_id. Tính window trong CTE KHÔNG lọc ngày, chỉ lọc khoảng ngày ở truy vấn ngoài,
+            để số dư mang theo mọi giao dịch trước ngày bắt đầu. Số dư cuối tháng/kỳ là lũy kế
+            toàn sổ đến hết kỳ, không phải phát sinh trong kỳ.
+            Mọi câu hỏi về phần nợ CŨ còn lại (tuổi nợ, nợ cũ, nợ tồn đọng, nợ quá hạn, nợ quá N
+            tháng/năm, nợ từ trước ngày X chưa trả) bắt buộc tính FIFO như mẫu no_cu_fifo bên dưới:
+            tổng khoản giảm (amount < 0) đến ngày tính trả cho các khoản tăng cũ nhất trước, kể cả
+            khoản giảm phát sinh sau mốc. "Quá N tháng" là khoản tăng có ngày phát sinh <= ngày
+            tính trừ N tháng. Không lấy số dư tại mốc, số dư hiện tại hoặc số dư tại mốc cộng
+            phát sinh sau mốc làm nợ cũ.
 
         MẪU SUY LUẬN
 
@@ -159,6 +170,15 @@ class SQLPrompt:
         Câu hỏi: "Công nợ hiện tại của từng khách hàng"
         Kết quả:
         [{"intent":"cong_no_theo_khach_hang","sql":"SELECT c.customer_id AS ma_khach_hang, c.customer_name AS ten_khach_hang, COALESCE(SUM(d.amount) FILTER (WHERE d.deleted_at IS NULL), 0) AS tong_cong_no FROM customers c LEFT JOIN customer_debt_transactions d ON d.customer_id = c.customer_id WHERE c.deleted_at IS NULL GROUP BY c.customer_id, c.customer_name ORDER BY tong_cong_no DESC"}]
+
+        Câu hỏi: "Lịch sử công nợ của Cửa hàng Minh Phát từ 01/06/2025, kèm số dư sau mỗi giao dịch"
+        GỢI Ý BỘ LỌC có customers.customer_name = Cửa hàng Minh Phát.
+        Kết quả:
+        [{"intent":"lich_su_cong_no_minh_phat","sql":"WITH s AS (SELECT d.occurred_at, d.source_type, d.source_id, d.amount, CASE d.source_type WHEN 'opening' THEN 0 WHEN 'sale' THEN 1 WHEN 'sales_return' THEN 2 ELSE 3 END AS tt, SUM(d.amount) OVER (ORDER BY d.occurred_at, CASE d.source_type WHEN 'opening' THEN 0 WHEN 'sale' THEN 1 WHEN 'sales_return' THEN 2 ELSE 3 END, d.source_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS so_du FROM customer_debt_transactions d JOIN customers c ON c.customer_id = d.customer_id WHERE d.deleted_at IS NULL AND c.deleted_at IS NULL AND c.customer_name = 'Cửa hàng Minh Phát') SELECT s.occurred_at AS thoi_diem, s.source_type AS loai_giao_dich, s.source_id AS ma_chung_tu, s.amount AS so_tien, s.so_du AS so_du_sau_giao_dich FROM s WHERE s.occurred_at >= DATE '2025-06-01' ORDER BY s.occurred_at, s.tt, s.source_id"}]
+
+        Câu hỏi: "Đến hết 30/06/2025, khách nào còn nợ phát sinh từ trước 01/01/2025 chưa trả?"
+        Kết quả:
+        [{"intent":"no_cu_fifo","sql":"WITH l AS (SELECT d.customer_id, d.source_type, d.source_id, d.occurred_at, d.amount FROM customer_debt_transactions d WHERE d.deleted_at IS NULL AND d.occurred_at < DATE '2025-07-01'), g AS (SELECT l.customer_id, COALESCE(-SUM(l.amount) FILTER (WHERE l.amount < 0), 0) AS tong_giam FROM l GROUP BY l.customer_id), t AS (SELECT l.customer_id, l.occurred_at, l.amount, SUM(l.amount) OVER (PARTITION BY l.customer_id ORDER BY l.occurred_at, l.source_type, l.source_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS luy_ke_tang FROM l WHERE l.amount > 0), r AS (SELECT t.customer_id, t.occurred_at, LEAST(t.amount, GREATEST(t.luy_ke_tang - g.tong_giam, 0)) AS con_lai FROM t JOIN g ON g.customer_id = t.customer_id) SELECT c.customer_id AS ma_khach_hang, c.customer_name AS ten_khach_hang, SUM(r.con_lai) AS no_cu_chua_tra FROM r JOIN customers c ON c.customer_id = r.customer_id WHERE c.deleted_at IS NULL AND r.occurred_at < DATE '2025-01-01' GROUP BY c.customer_id, c.customer_name HAVING SUM(r.con_lai) > 0 ORDER BY no_cu_chua_tra DESC"}]
 
         Câu hỏi: "So sánh doanh thu tháng 2 và tháng 3 năm 2025"
         Kết quả:

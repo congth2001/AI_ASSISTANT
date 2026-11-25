@@ -47,8 +47,9 @@ def test_all_orm_mappings_and_foreign_keys_share_one_metadata_registry():
         "users", "refresh_tokens", "conversations", "messages", "customers",
         "sales_invoices", "sales_invoice_lines", "customer_debt_transactions",
         "sales_returns", "sales_return_lines",
+        "etl_sync_runs", "customer_debt_transaction_changes", "customer_debt_revisions",
     }
     for table in Base.metadata.tables.values():
         for foreign_key in table.foreign_keys:
             assert foreign_key.column.table.metadata is Base.metadata
-    assert len(Base.metadata.sorted_tables) == 10
+    assert len(Base.metadata.sorted_tables) == 13

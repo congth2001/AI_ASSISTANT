@@ -116,6 +116,7 @@ class OrderQueriesMixin:
             SalesInvoice.customer_ward_name_snapshot.label("customer_ward_name"),
             SalesInvoice.customer_village_name_snapshot.label("customer_village_name"),
             SalesInvoice.invoice_total_amount,
+            SalesInvoice.customer_id,
         ).where(
             SalesInvoice.invoice_id == invoice_id,
             SalesInvoice.deleted_at.is_(None),
@@ -150,6 +151,7 @@ class OrderQueriesMixin:
             customer_ward_name=invoice.customer_ward_name,
             customer_village_name=invoice.customer_village_name,
             invoice_total_amount=Decimal(invoice.invoice_total_amount),
+            customer_id=str(invoice.customer_id) if invoice.customer_id else None,
             lines=tuple(
                 OrderLine(
                     line_number=int(row.line_number),

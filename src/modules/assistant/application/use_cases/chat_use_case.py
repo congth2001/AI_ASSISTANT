@@ -11,9 +11,10 @@ from src.common.cache_keys import CHAT_RESPONSE_CACHE_PREFIX  # re-exported for 
 from src.common.domain.time import now_vietnam
 from src.modules.assistant.application.agent.agent_service import AgentService
 from src.modules.assistant.application.services.context_builder import shorten_history_message
+from src.modules.assistant.application.services.customer_debt_report_builder import CustomerDebtReportBuilder
 from src.modules.assistant.application.services.overview_report_builder import OverviewReportBuilder
 from src.modules.assistant.domain.constants.search_config import SearchConfig
-from src.modules.assistant.domain.entities.overview_report import OverviewReportScope
+from src.modules.assistant.domain.entities.overview_report import OverviewReportScope, OverviewReportTopic
 from src.modules.assistant.domain.errors import (
     GuestBusinessDataForbiddenError,
     OverviewReportUnavailableError,
@@ -33,8 +34,9 @@ _CLARIFICATION_FALLBACK = "Bạn có thể nói rõ yêu cầu không?"
 # Tools whose answers come from the sales tables. The ETL refreshes those tables
 # and the cache key is scoped to one conversation plus its history, so a stored
 # answer is almost never reused and could silently show stale numbers when it is.
-_NON_CACHEABLE_TOOLS = frozenset({"text_to_sql", "hybrid", "overview_report"})
+_NON_CACHEABLE_TOOLS = frozenset({"text_to_sql", "hybrid", "overview_report", "customer_debt_report"})
 _OVERVIEW_REPORT_TOOL = "overview_report"
+_CUSTOMER_DEBT_REPORT_TOOL = "customer_debt_report"
 # Marker the Overview dashboard appends before its filter description; the report
 # path answers the question part and takes filters from the structured scope.
 _REPORT_CONTEXT_MARKER = "\nNgữ cảnh báo cáo đang xem:"
@@ -87,11 +89,13 @@ class ChatUseCase:
         conversation_repo: IConversationRepository,
         cache_service: ICacheService,
         overview_report_builder: Optional[OverviewReportBuilder] = None,
+        customer_debt_report_builder: Optional[CustomerDebtReportBuilder] = None,
     ):
         self.agent_service = agent_service
         self.conversation_repo = conversation_repo
         self.cache_service = cache_service
         self.overview_report_builder = overview_report_builder
+        self.customer_debt_report_builder = customer_debt_report_builder
         # Strong references so fire-and-forget persistence is not garbage collected.
         self._background_tasks: set[asyncio.Task] = set()
 
@@ -158,7 +162,7 @@ class ChatUseCase:
             return {
                 "conversation_id": str(conversation_id),
                 "response": response_content,
-                "intent": _OVERVIEW_REPORT_TOOL,
+                "intent": metadata["tool_used"],
                 "timestamp": assistant_msg.timestamp.isoformat(),
                 "metadata": metadata,
             }
@@ -295,7 +299,7 @@ class ChatUseCase:
     async def _stream_report(
         self, turn: _StreamTurn, conversation: Conversation, scope: OverviewReportScope
     ) -> AsyncGenerator[str, None]:
-        """Answer a preset Overview question from the dashboard's own numbers (no SQL)."""
+        """Answer a preset dashboard question from the dashboard's own numbers (no SQL)."""
         yield _sse({"type": "status", "step": "routing", "message": "Đang lấy số liệu báo cáo..."})
         question, context, metadata = await self._prepare_report(conversation, turn.user_message, scope)
         yield _sse({"type": "status", "step": "generating", "message": "Đang tạo câu trả lời..."})
@@ -314,7 +318,7 @@ class ChatUseCase:
         yield _sse({
             "type": "done",
             "conversation_id": str(turn.conversation_id),
-            "intent": _OVERVIEW_REPORT_TOOL,
+            "intent": metadata["tool_used"],
             "timestamp": assistant_msg.timestamp.isoformat(),
             "metadata": metadata,
         })
@@ -322,11 +326,15 @@ class ChatUseCase:
     async def _prepare_report(
         self, conversation: Conversation, user_message: str, scope: OverviewReportScope
     ) -> tuple[str, Dict[str, Any], Dict[str, Any]]:
-        """Question, LLM context and message metadata for an Overview report answer."""
-        if self.overview_report_builder is None:
+        """Question, LLM context and message metadata for a dashboard report answer."""
+        if scope.topic is OverviewReportTopic.CUSTOMER_DEBT_HISTORY:
+            builder, tool = self.customer_debt_report_builder, _CUSTOMER_DEBT_REPORT_TOOL
+        else:
+            builder, tool = self.overview_report_builder, _OVERVIEW_REPORT_TOOL
+        if builder is None:
             raise OverviewReportUnavailableError()
         async with asyncio.timeout(_REPORT_TIMEOUT_SECONDS):
-            report = await self.overview_report_builder.build(scope)
+            report = await builder.build(scope)
         question = user_message.partition(_REPORT_CONTEXT_MARKER)[0].strip() or user_message
         history = [
             {"role": m.role, "content": shorten_history_message(m.content, SearchConfig.DATA_HISTORY_MESSAGE_CHARS)}
@@ -336,24 +344,24 @@ class ChatUseCase:
             "retrieved_text": report.retrieved_text,
             "conversation_history": history,
             "current_query": question,
-            "intent": _OVERVIEW_REPORT_TOOL,
+            "intent": tool,
             "has_data": True,
             "used_fallback": False,
             "fallback_warning": None,
             "sources": report.citations,
-            "response_mode": _OVERVIEW_REPORT_TOOL,
+            "response_mode": tool,
         }
         metadata = {
             "has_data": True,
             "used_fallback": False,
             "fallback_warning": None,
-            "tool_used": _OVERVIEW_REPORT_TOOL,
+            "tool_used": tool,
             "tool_success": True,
             "tool_error_code": None,
             "sql_query": None,
             "trace_id": str(uuid4()),
             "node_metrics": [],
-            "tool_calls": [{"tool": _OVERVIEW_REPORT_TOOL, "success": True, "has_data": True, "error_code": None}],
+            "tool_calls": [{"tool": tool, "success": True, "has_data": True, "error_code": None}],
             "citations": report.citations,
             "evaluation": None,
             "needs_clarification": False,

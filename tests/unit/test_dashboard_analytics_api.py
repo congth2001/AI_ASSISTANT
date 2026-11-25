@@ -282,6 +282,7 @@ def test_order_list_and_detail_contract_for_staff(customer_geography):
                 customer_ward_name="Minh Khai",
                 customer_village_name="Thôn 1",
                 invoice_total_amount=Decimal("150000.00"),
+                customer_id="customer-a",
                 lines=(
                     OrderLine(
                         line_number=1,
@@ -327,6 +328,7 @@ def test_order_list_and_detail_contract_for_staff(customer_geography):
     assert detail_response.status_code == 200
     assert detail_response.json()["lines"][0]["product_name"] == "Sản phẩm A"
     assert detail_response.json()["lines"][0]["quantity"] == "3.000"
+    assert detail_response.json()["customer_id"] == "customer-a"
 
 
 def test_order_detail_returns_not_found():

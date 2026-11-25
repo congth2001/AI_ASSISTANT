@@ -22,6 +22,10 @@ from datetime import datetime
 from decimal import Decimal
 
 from src.modules.analytics.domain.models.order_ledger import OrderLedgerExportItem
+from src.modules.analytics.infrastructure.repositories.ledger_document_matching import (
+    first_invoice_by_sale_key,
+    receipt_voucher,
+)
 
 ZERO = Decimal("0")
 
@@ -74,11 +78,6 @@ class _Event:
     payment_amount: Decimal
     debt_amount: Decimal
     movement: Decimal
-
-
-def _receipt_voucher(source_id: str, occurred_at: datetime) -> str:
-    month_suffix = occurred_at.strftime("%m%y")
-    return source_id if source_id.endswith(f"-{month_suffix}") else f"{source_id}-{month_suffix}"
 
 
 def _document_events(
@@ -138,7 +137,7 @@ def build_ledger_events(
             events.append(_Event(
                 customer_id=entry.customer_id,
                 occurred_at=entry.occurred_at,
-                voucher_number=_receipt_voucher(entry.source_id, entry.occurred_at),
+                voucher_number=receipt_voucher(entry.source_id, entry.occurred_at),
                 reason="Thu nợ",
                 reason_order=3,
                 line_number=0,
@@ -152,9 +151,13 @@ def build_ledger_events(
             ))
 
     # Sales: attribute each (customer, timestamp) ledger amount to the first invoice there.
-    first_invoice_at_key: dict[tuple[str, datetime], str] = {}
-    for line in sorted(sale_lines, key=lambda row: (row.voucher_number, row.line_number or 0)):
-        first_invoice_at_key.setdefault((line.customer_id, line.occurred_at), line.document_id)
+    first_invoice_at_key = {
+        key: document_id
+        for key, (document_id, _) in first_invoice_by_sale_key(
+            (line.customer_id, line.occurred_at, line.voucher_number, line.document_id)
+            for line in sale_lines
+        ).items()
+    }
 
     def sale_movement(line: DocumentLine) -> Decimal:
         key = (line.customer_id, line.occurred_at)

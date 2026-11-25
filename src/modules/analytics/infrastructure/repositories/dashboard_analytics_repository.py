@@ -1,7 +1,7 @@
 """PostgreSQL implementation of deterministic dashboard analytics.
 
 This class owns the KPI/time-series/ranking/insight/filter-option queries. The order,
-order-ledger and customer-debt query groups live in their own modules and are mixed in
+order-ledger, customer-debt and customer debt-history query groups live in their own modules and are mixed in
 so the public repository interface stays unchanged. Every query takes its customer and
 line scope from ``analytics_scope``.
 """
@@ -26,6 +26,9 @@ from src.modules.analytics.domain.models.overview import (
     CustomerRevenueMovement, DataFreshness, DebtConcentrationItem,
     OverviewInsightSnapshot, WardRevenueMovement,
 )
+from src.modules.analytics.domain.repositories.i_customer_debt_history_repository import (
+    ICustomerDebtHistoryRepository,
+)
 from src.modules.analytics.domain.repositories.i_dashboard_analytics_repository import (
     IDashboardAnalyticsRepository,
 )
@@ -38,6 +41,9 @@ from src.modules.analytics.infrastructure.repositories.analytics_scope import (
     sales_line_conditions,
     sales_line_predicates,
     sales_lines_from,
+)
+from src.modules.analytics.infrastructure.repositories.customer_debt_history_queries import (
+    CustomerDebtHistoryQueriesMixin,
 )
 from src.modules.analytics.infrastructure.repositories.customer_debt_queries import (
     CustomerDebtQueriesMixin,
@@ -65,7 +71,9 @@ class DashboardAnalyticsRepository(
     OrderQueriesMixin,
     OrderLedgerQueriesMixin,
     CustomerDebtQueriesMixin,
+    CustomerDebtHistoryQueriesMixin,
     IDashboardAnalyticsRepository,
+    ICustomerDebtHistoryRepository,
 ):
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]):
         self._session_factory = session_factory

@@ -1,6 +1,6 @@
 # Mô hình dữ liệu PostgreSQL
 
-Tài liệu mô tả 10 bảng ORM hiện có, đối chiếu với code ngày 2026-11-17. Khi mâu thuẫn, ưu tiên code: model ORM tại `src/modules/*/infrastructure/models.py` và Alembic tại `migrations/versions/`. Alembic là nguồn sự thật của schema; không dùng `create_all` khi khởi động.
+Tài liệu mô tả 13 bảng ORM hiện có, đối chiếu với code ngày 2026-11-20. Khi mâu thuẫn, ưu tiên code: model ORM tại `src/modules/*/infrastructure/models.py` và Alembic tại `migrations/versions/`. Alembic là nguồn sự thật của schema; không dùng `create_all` khi khởi động.
 
 API đọc các bảng này được mô tả ở [analytics-api.md](analytics-api.md).
 
@@ -16,6 +16,10 @@ erDiagram
     customers ||--o{ customer_debt_transactions : "customer_id (RESTRICT)"
     sales_invoices ||--o{ sales_invoice_lines : "invoice_id (RESTRICT)"
     sales_returns ||--o{ sales_return_lines : "return_id (RESTRICT)"
+    etl_sync_runs ||--o{ customer_debt_transaction_changes : "run_id (CASCADE)"
+    etl_sync_runs ||--o{ customer_debt_revisions : "run_id (CASCADE)"
+    customer_debt_transactions ||--o{ customer_debt_transaction_changes : "debt_transaction_id (RESTRICT)"
+    customers ||--o{ customer_debt_revisions : "customer_id (RESTRICT)"
 
     users {
         string id PK
@@ -92,7 +96,7 @@ erDiagram
     }
 ```
 
-Chỉ có ba nhóm bảng độc lập: xác thực (`users`, `refresh_tokens`), hội thoại (`conversations`, `messages`) và dữ liệu bán hàng (6 bảng còn lại). Bảng `alembic_version` do Alembic quản lý, không có ORM model.
+Có bốn nhóm bảng: xác thực (`users`, `refresh_tokens`), hội thoại (`conversations`, `messages`), dữ liệu bán hàng (6 bảng) và lưu vết ETL (`etl_sync_runs`, `customer_debt_transaction_changes`, `customer_debt_revisions`, xem mục 4.1). Bảng `alembic_version` do Alembic quản lý, không có ORM model.
 
 ## 2. Nhóm xác thực (`src/modules/auth/infrastructure/models.py`)
 
@@ -265,6 +269,18 @@ Phiếu trả không tham chiếu hóa đơn gốc (`sales_return_lines.source_l
 - **Doanh thu của các hóa đơn có mặt hàng X** = `SUM(invoice_total_amount)` của các hóa đơn có X trong kỳ (lọc bằng `EXISTS`) + tổng `amount` `sales_return` trong cùng kỳ của chính các khách sở hữu các hóa đơn đó. Không lọc phiếu trả theo mặt hàng, không trừ phiếu trả của khách khác.
 - **Số lượng đã bán** mặc định là số lượng bán thuần: `SUM(sales_invoice_lines.quantity) - SUM(sales_return_lines.quantity)`, nhóm theo `product_name` + `unit_name`.
 
+### 4.1 Lưu vết điều chỉnh công nợ giữa các lần nạp
+
+Thiết kế đầy đủ: `docs/customer-debt-history.md` (thư mục gốc). Ba bảng do `SyncBusinessDataUseCase` ghi trong **cùng transaction** với dữ liệu, nên lần nạp lỗi không để lại dấu vết trong DB.
+
+| Bảng | Một dòng là | Cột chính |
+| --- | --- | --- |
+| `etl_sync_runs` | Một lần `sync_all` thành công | `run_id`, `started_at`/`finished_at` (`timestamptz`), `entrypoint` (`sync_business_data`, `etl_job`, `unknown`), `allow_shrink`, `debt_synced`, `is_baseline`, `ledger_frontier_date`, các bộ đếm `debt_inserted/updated/deleted/restored/backdated`. |
+| `customer_debt_transaction_changes` | Một bút toán bị đổi hồi tố trong một lần nạp | `change_type` (`updated`, `deleted`, `restored`, `backdated_insert`), `debt_transaction_id`, `customer_id`, `previous_customer_id`, `old_/new_occurred_at`, `old_/new_amount`, `balance_delta`. |
+| `customer_debt_revisions` | Tổng hợp theo khách trong một lần nạp có thay đổi | PK (`run_id`, `customer_id`), `balance_before`/`balance_after` (số dư toàn sổ trước/sau lần nạp, gồm cả phát sinh mới), `balance_delta` (chỉ phần do điều chỉnh hồi tố), `earliest_affected_at`, `change_count`. |
+
+Quy tắc so sánh (`sales/domain/services/debt_snapshot_diff.py`): khớp theo (`source_type`, `source_id`); `amount` so ở 2 chữ số, `occurred_at` so chính xác. Dòng mới chỉ được ghi là `backdated_insert` khi ngày `occurred_at` nhỏ hơn `ledger_frontier_date`, tức ngày giao dịch mới nhất của sổ đang hoạt động trước lần nạp. Lần nạp đầu tiên khi sổ còn trống là baseline (`is_baseline = true`) và không sinh dòng thay đổi. Lịch sử chỉ bắt đầu từ lần nạp đầu tiên sau migration `8008434c9371`.
+
 ## 5. Nguồn dữ liệu và ETL
 
 `backend/sync_business_data.py` đọc năm file Excel trong `backend/data/documents/` rồi gọi `SyncBusinessDataUseCase.sync_all` (`src/modules/sales/application/use_cases/sync_business_data_use_case.py`):
@@ -278,7 +294,7 @@ Phiếu trả không tham chiếu hóa đơn gốc (`sales_return_lines.source_l
 
 Đặc điểm:
 
-- Idempotent: hóa đơn upsert theo `invoice_number`; sổ công nợ upsert theo (`source_type`, `source_id`) và đặt lại `deleted_at = NULL`. Bản ghi không còn trong snapshot bị soft delete (`soft_delete_missing`, `stale` trong repository sổ công nợ). Khách không còn được tham chiếu bị soft delete (`soft_delete_unreferenced`).
+- Idempotent: hóa đơn upsert theo `invoice_number`. Sổ công nợ được so sánh với snapshot trước khi ghi (`load_ledger_state` + `diff_debt_snapshot` + `apply_diff`), nên chỉ dòng mới/đổi/khôi phục được ghi, còn dòng không đổi giữ nguyên `updated_at`. Bản ghi không còn trong snapshot bị soft delete (`soft_delete_missing` cho hóa đơn, `deletes` của diff cho sổ công nợ). Mọi thay đổi hồi tố được ghi vào các bảng ở mục 4.1. Khách không còn được tham chiếu bị soft delete (`soft_delete_unreferenced`).
 - Khách được định danh bằng `customer_identity_key` (xem `build_customer_identity_key`); trùng (`source_type`, `source_id`) trong file công nợ làm ETL báo lỗi.
 - Việc đổi dấu nằm ở bước ETL (`backend/etl_business/pipeline.py`: `events["amount"] = -pd.to_numeric(...)` cho các sự kiện thu nợ/trả hàng), không nằm ở `SyncBusinessDataUseCase`. Use case đồng bộ đọc nguyên `amount` từ `Cong_no.xlsx` đã được chuẩn hóa, nên dấu âm của `receipt`/`sales_return` phải có sẵn trong snapshot.
 - ETL chỉ cập nhật PostgreSQL, không nạp Milvus.
@@ -295,13 +311,13 @@ Phiếu trả không tham chiếu hóa đơn gốc (`sales_return_lines.source_l
 | Tập | Bảng |
 | --- | --- |
 | `ALLOWED_SQL_TABLES` (cho phép đọc) | `customers`, `sales_invoices`, `sales_invoice_lines`, `sales_returns`, `sales_return_lines`, `customer_debt_transactions` |
-| `RESTRICTED_SQL_TABLES` (từ chối ở mọi vị trí) | `users`, `refresh_tokens`, `conversations`, `messages`, `alembic_version` |
+| `RESTRICTED_SQL_TABLES` (từ chối ở mọi vị trí) | `users`, `refresh_tokens`, `conversations`, `messages`, `alembic_version`, `etl_sync_runs`, `customer_debt_transaction_changes`, `customer_debt_revisions` |
 
 Ngoài bảng được phép, validator chỉ chấp nhận CTE do chính câu query định nghĩa và hàm bảng `generate_series`, `unnest`. SQL vẫn chạy bằng DB role của ứng dụng nên allowlist là lớp chặn duy nhất ở tầng ứng dụng.
 
 ## 7. Chuỗi migration
 
-Chuỗi tuyến tính (cũ đến mới), head hiện tại là `e7b3c5a19f42`:
+Chuỗi tuyến tính (cũ đến mới), head hiện tại là `8008434c9371`:
 
 | # | Revision | Nội dung |
 | --- | --- | --- |
@@ -319,7 +335,8 @@ Chuỗi tuyến tính (cũ đến mới), head hiện tại là `e7b3c5a19f42`:
 | 12 | `a93d7c5e124b` | Suy ra phường/xã và thôn từ địa chỉ đầy đủ |
 | 13 | `c6d8e1f4a2b7` | Thêm `sales_returns`, `sales_return_lines` |
 | 14 | `d1e5b7a93c28` | `created_at`/`deleted_at` của `sales_invoices` và `sales_invoice_lines` chuyển sang `timestamptz` |
-| 15 | `e7b3c5a19f42` | Thêm `ix_messages_conversation_id_created_at`, `ix_debt_transactions_customer_occurred`; bỏ các index thừa `ix_sales_invoices_issued_at`, `ix_sales_invoice_lines_invoice_id`, `ix_sales_return_lines_return_id`, `ix_debt_transactions_customer_id` (head) |
+| 15 | `e7b3c5a19f42` | Thêm `ix_messages_conversation_id_created_at`, `ix_debt_transactions_customer_occurred`; bỏ các index thừa `ix_sales_invoices_issued_at`, `ix_sales_invoice_lines_invoice_id`, `ix_sales_return_lines_return_id`, `ix_debt_transactions_customer_id` |
+| 16 | `8008434c9371` | Thêm `etl_sync_runs`, `customer_debt_transaction_changes`, `customer_debt_revisions` (lưu vết điều chỉnh công nợ; chỉ tạo bảng mới) (head) |
 
 Kiểm tra: `.\env\Scripts\python.exe -m alembic heads` (chạy từ `backend/`).
 

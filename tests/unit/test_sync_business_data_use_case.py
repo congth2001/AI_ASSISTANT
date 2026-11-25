@@ -1,3 +1,5 @@
+from dataclasses import replace
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from contextlib import asynccontextmanager
@@ -89,15 +91,38 @@ class FakeSalesInvoiceLineRepository:
 
 
 class FakeDebtTransactionRepository:
-    def __init__(self):
-        self.rows = []
+    """In-memory ledger keyed by debt_transaction_id; soft deletes keep the row."""
 
-    async def sync_snapshot(self, rows):
-        self.rows = rows
-        return {"synced": len(rows), "deleted": 0}
+    def __init__(self):
+        self.ledger = {}
+
+    @property
+    def rows(self):
+        return [
+            {"source_type": r.source_type, "source_id": r.source_id, "customer_id": r.customer_id,
+             "occurred_at": r.occurred_at, "amount": r.amount}
+            for r in self.ledger.values() if not r.deleted
+        ]
+
+    async def load_ledger_state(self):
+        return list(self.ledger.values())
+
+    async def apply_diff(self, diff):
+        for debt_id in diff.deletes:
+            self.ledger[debt_id] = replace(self.ledger[debt_id], deleted=True)
+        for row in (*diff.updates, *diff.restores, *diff.inserts):
+            self.ledger[row.debt_transaction_id] = row
 
     async def count_active(self):
         return len(self.rows)
+
+
+class FakeDebtRevisionRepository:
+    def __init__(self):
+        self.runs = []
+
+    async def record_run(self, run, changes, revisions):
+        self.runs.append((run, list(changes), list(revisions)))
 
 
 class FakeSalesReturnRepository:
@@ -294,7 +319,10 @@ async def test_sync_persists_signed_debt_ledger():
         customer_snapshot(), line_snapshot(), debt_snapshot
     )
 
-    assert result["debt_transactions"] == {"synced": 2, "deleted": 0}
+    assert result["debt_transactions"] == {
+        "synced": 2, "deleted": 0, "inserted": 2, "updated": 0,
+        "restored": 0, "unchanged": 0, "backdated": 0,
+    }
     assert result["customers_deleted"] == 0
     assert [row["amount"] for row in debts.rows] == [Decimal("100"), Decimal("-40")]
     assert debts.rows[0]["customer_id"] == debts.rows[1]["customer_id"]
@@ -783,3 +811,104 @@ async def test_debt_only_customer_uses_latest_ledger_profile_regardless_of_row_o
 
     lan = customers.rows["chị lan|xã a|xóm 1"]
     assert lan["address_detail"] == "Mới"
+
+
+# ---------------------------------------------------------------------------
+# Audit trail of retroactive debt changes (docs/customer-debt-history.md)
+# ---------------------------------------------------------------------------
+
+
+def ledger_frame(rows):
+    return pd.DataFrame(
+        [
+            {"source_type": kind, "source_id": source_id, "occurred_at": when,
+             "customer_name": "Anh Tiệc", "village_name": "Xóm 3", "ward_name": "Thụy Hưng",
+             "amount": amount}
+            for kind, source_id, when, amount in rows
+        ]
+    )
+
+
+def audited_use_case():
+    debts = FakeDebtTransactionRepository()
+    revisions = FakeDebtRevisionRepository()
+    ticks = iter(datetime(2026, 11, 20, 15, minute, tzinfo=timezone.utc) for minute in range(60))
+    use_case = SyncBusinessDataUseCase(
+        FakeCustomerRepository(), FakeSalesInvoiceRepository(), FakeSalesInvoiceLineRepository(),
+        debts, debt_revision_repository=revisions, clock=lambda: next(ticks),
+    )
+    return use_case, debts, revisions
+
+
+@pytest.mark.asyncio
+async def test_first_debt_sync_is_recorded_as_a_baseline_run():
+    use_case, _, revisions = audited_use_case()
+
+    result = await use_case.sync_all(
+        customer_snapshot(), line_snapshot(),
+        ledger_frame([("sale", "1", "2025-03-01 08:00", 100)]), entrypoint="etl_job",
+    )
+
+    (run, changes, customer_revisions) = revisions.runs[0]
+    assert run.is_baseline and run.debt_synced and run.entrypoint == "etl_job"
+    assert run.ledger_frontier_date is None and run.debt_inserted == 1
+    assert run.started_at < run.finished_at
+    assert changes == [] and customer_revisions == []
+    assert result["sync_run"]["is_baseline"] is True
+    assert result["debt_transactions"]["inserted"] == 1
+
+
+@pytest.mark.asyncio
+async def test_retroactive_debt_changes_are_recorded_and_unchanged_rows_skipped():
+    use_case, debts, revisions = audited_use_case()
+    await use_case.sync_all(
+        customer_snapshot(), line_snapshot(),
+        ledger_frame([
+            ("sale", "1", "2025-03-01 08:00", 100),
+            ("receipt", "2", "2025-03-05 08:00", -40),
+            ("sale", "3", "2025-03-10 08:00", 30),
+        ]),
+    )
+
+    result = await use_case.sync_all(
+        customer_snapshot(), line_snapshot(),
+        ledger_frame([
+            ("sale", "1", "2025-03-01 08:00", 150),       # amount edited
+            ("sale", "3", "2025-03-10 08:00", 30),        # unchanged
+            ("sale", "4", "2025-02-01 08:00", 20),        # backdated insert
+            ("sale", "5", "2025-03-11 08:00", 5),         # ordinary new activity
+        ]),                                               # receipt 2 deleted
+        allow_shrink=True,
+    )
+
+    assert result["debt_transactions"] == {
+        "synced": 4, "deleted": 1, "inserted": 2, "updated": 1,
+        "restored": 0, "unchanged": 1, "backdated": 1,
+    }
+    run, changes, customer_revisions = revisions.runs[1]
+    assert not run.is_baseline and run.allow_shrink and run.entrypoint == "unknown"
+    assert run.ledger_frontier_date == date(2025, 3, 10)
+    assert (run.debt_updated, run.debt_deleted, run.debt_backdated) == (1, 1, 1)
+    assert sorted(c.change_type.value for c in changes) == ["backdated_insert", "deleted", "updated"]
+    (revision,) = customer_revisions
+    assert revision.balance_before == Decimal("90")
+    assert revision.balance_after == Decimal("205")
+    assert revision.balance_delta == Decimal("110")  # +50 edit, +40 deleted receipt, +20 backdated
+    assert revision.earliest_affected_at == datetime(2025, 2, 1, 8)
+    assert result["sync_run"]["retroactive_customers"] == 1
+    assert result["sync_run"]["retroactive_changes"] == 3
+    assert result["sync_run"]["retroactive_delta"] == "110.00"
+    assert sorted(row["amount"] for row in debts.rows) == [Decimal("5"), Decimal("20"), Decimal("30"), Decimal("150")]
+
+
+@pytest.mark.asyncio
+async def test_sync_without_debt_snapshot_still_records_the_run():
+    use_case, _, revisions = audited_use_case()
+
+    result = await use_case.sync_all(customer_snapshot(), line_snapshot())
+
+    (run, changes, customer_revisions) = revisions.runs[0]
+    assert not run.debt_synced and not run.is_baseline
+    assert changes == [] and customer_revisions == []
+    assert "debt_transactions" not in result
+    assert result["sync_run"]["retroactive_delta"] == "0"

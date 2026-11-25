@@ -32,7 +32,9 @@ async def run_sync(snapshots: dict, *, allow_shrink: bool = False) -> dict:
     """Sync once, then drop cached chat answers (best effort)."""
     use_case = container.sync_business_data_use_case()
     try:
-        result = await use_case.sync_all(**snapshots, allow_shrink=allow_shrink)
+        result = await use_case.sync_all(
+            **snapshots, allow_shrink=allow_shrink, entrypoint="sync_business_data"
+        )
         await invalidate_chat_response_cache(container.cache_service)
         return result
     finally:

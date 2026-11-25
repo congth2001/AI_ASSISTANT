@@ -251,3 +251,4 @@ class OrderDetailResponse(BaseModel):
     customer_village_name: str | None
     invoice_total_amount: Decimal
     lines: list[OrderLineResponse]
+    customer_id: str | None = None

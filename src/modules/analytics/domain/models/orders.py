@@ -56,6 +56,8 @@ class OrderDetail:
     customer_village_name: str | None
     invoice_total_amount: Decimal
     lines: tuple[OrderLine, ...]
+    # Current customer of the invoice (links to the debt-history page).
+    customer_id: str | None = None
 
 
 @dataclass(frozen=True)

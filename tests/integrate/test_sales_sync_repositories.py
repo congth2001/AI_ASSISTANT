@@ -9,6 +9,7 @@ or AI_ANALYTICS_LOCAL_DB_TEST=1 for the configured local PostgreSQL.
 """
 import os
 from contextlib import asynccontextmanager
+from datetime import date, datetime
 from decimal import Decimal
 
 import pandas as pd
@@ -25,7 +26,10 @@ from src.modules.sales.application.use_cases.sync_business_data_use_case import 
 from src.modules.sales.domain.errors import EmptySnapshotError, SnapshotShrinkError
 from src.modules.sales.infrastructure.models import (
     Customer,
+    CustomerDebtRevision,
     CustomerDebtTransaction,
+    CustomerDebtTransactionChange,
+    EtlSyncRun,
     SalesInvoice,
     SalesInvoiceLine,
     SalesReturn,
@@ -35,6 +39,9 @@ from src.modules.sales.infrastructure.repositories.customer_debt_transaction_rep
     CustomerDebtTransactionRepository,
 )
 from src.modules.sales.infrastructure.repositories.customer_repository import CustomerRepository
+from src.modules.sales.infrastructure.repositories.debt_revision_repository import (
+    DebtRevisionRepository,
+)
 from src.modules.sales.infrastructure.repositories.sales_invoice_line_repository import (
     SalesInvoiceLineRepository,
 )
@@ -49,6 +56,7 @@ from src.modules.sales.infrastructure.unit_of_work import SqlAlchemyUnitOfWork
 SALES_TABLES = [
     Customer.__table__, SalesInvoice.__table__, SalesInvoiceLine.__table__,
     SalesReturn.__table__, SalesReturnLine.__table__, CustomerDebtTransaction.__table__,
+    EtlSyncRun.__table__, CustomerDebtTransactionChange.__table__, CustomerDebtRevision.__table__,
 ]
 
 
@@ -100,12 +108,18 @@ async def world():
                 repositories["customers"], repositories["invoices"], repositories["lines"],
                 repositories["debts"], repositories["returns"],
                 unit_of_work=SqlAlchemyUnitOfWork(factory),
+                debt_revision_repository=DebtRevisionRepository(factory),
             )
 
             async def scalar(statement):
                 async with factory() as session:
                     return (await session.execute(statement)).scalar_one()
 
+            async def rows(statement):
+                async with factory() as session:
+                    return (await session.execute(statement)).all()
+
+            use_case.rows = rows
             yield use_case, scalar
             await outer.rollback()
     finally:
@@ -201,7 +215,13 @@ async def test_full_sync_is_idempotent_and_rounds_money(world):
     first = await full_sync(use_case, ["PX-1", "PX-2"], ["1", "2"])
     second = await full_sync(use_case, ["PX-1", "PX-2"], ["1", "2"])
 
-    assert first == second
+    volatile = {"debt_transactions", "sync_run"}
+    assert {k: v for k, v in first.items() if k not in volatile} == {
+        k: v for k, v in second.items() if k not in volatile
+    }
+    assert first["debt_transactions"]["inserted"] == 2
+    assert second["debt_transactions"]["unchanged"] == 2
+    assert second["sync_run"]["retroactive_changes"] == 0
     assert await scalar(count(SalesInvoice)) == 2
     assert await scalar(count(SalesInvoiceLine)) == 2
     assert await scalar(count(SalesReturn)) == 2
@@ -265,3 +285,113 @@ async def test_failure_midway_rolls_back_all_earlier_writes(world):
 
     assert await scalar(count(SalesInvoice)) == 1  # PX-NEW was written, then rolled back
     assert await scalar(count(CustomerDebtTransaction)) == 1
+    assert await scalar(select(func.count()).select_from(EtlSyncRun)) == 1  # failed run left no row
+
+
+def ledger(rows):
+    return pd.DataFrame(
+        [
+            {"source_type": kind, "source_id": source_id, "occurred_at": when,
+             "customer_name": name, "address_detail": None, "village_name": "Xóm 1",
+             "ward_name": "Xã A", "amount": amount}
+            for kind, source_id, when, name, amount in rows
+        ],
+        columns=["source_type", "source_id", "occurred_at", "customer_name", "address_detail",
+                 "village_name", "ward_name", "amount"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_retroactive_debt_changes_are_audited_in_the_sync_transaction(world):
+    use_case, scalar = world
+    base = [
+        ("sale", "d1", "2025-03-01 08:00", "Anh An", 100),
+        ("receipt", "d2", "2025-03-05 09:00", "Anh An", -40),
+        ("sale", "d3", "2025-03-10 10:00", "Anh An", 30),
+        ("sale", "d4", "2025-03-10 11:00", "Chị Bình", 70),
+    ]
+    await use_case.sync_all(invoices(["PX-1"]), goods(["PX-1"]), ledger(base), entrypoint="etl_job")
+
+    edited = [
+        ("sale", "d1", "2025-03-01 08:00", "Anh An", 150),       # amount edited
+        ("sale", "d3", "2025-03-10 10:00", "Anh An", 30),        # unchanged
+        ("sale", "d4", "2025-03-10 11:00", "Anh An", 70),        # moved to another customer
+        ("sale", "d5", "2025-02-20 08:00", "Anh An", 20),        # backdated insert
+        ("sale", "d6", "2025-03-11 08:00", "Anh An", 5),         # ordinary new activity
+    ]                                                            # d2 deleted
+    result = await use_case.sync_all(
+        invoices(["PX-1"]), goods(["PX-1"]), ledger(edited), entrypoint="sync_business_data"
+    )
+
+    runs = await use_case.rows(
+        select(EtlSyncRun.is_baseline, EtlSyncRun.entrypoint, EtlSyncRun.ledger_frontier_date,
+               EtlSyncRun.debt_inserted, EtlSyncRun.debt_updated, EtlSyncRun.debt_deleted,
+               EtlSyncRun.debt_backdated)
+        .order_by(EtlSyncRun.started_at)
+    )
+    assert [tuple(r) for r in runs] == [
+        (True, "etl_job", None, 4, 0, 0, 0),
+        (False, "sync_business_data", date(2025, 3, 10), 2, 2, 1, 1),
+    ]
+    changes = await use_case.rows(
+        select(CustomerDebtTransactionChange.source_id, CustomerDebtTransactionChange.change_type,
+               CustomerDebtTransactionChange.balance_delta,
+               CustomerDebtTransactionChange.previous_customer_id.is_not(None))
+        .order_by(CustomerDebtTransactionChange.source_id)
+    )
+    assert [tuple(r) for r in changes] == [
+        ("d1", "updated", Decimal("50.00"), False),
+        ("d2", "deleted", Decimal("40.00"), False),
+        ("d4", "updated", Decimal("0.00"), True),
+        ("d5", "backdated_insert", Decimal("20.00"), False),
+    ]
+    revisions = await use_case.rows(
+        select(Customer.customer_name, CustomerDebtRevision.balance_before,
+               CustomerDebtRevision.balance_after, CustomerDebtRevision.balance_delta,
+               CustomerDebtRevision.earliest_affected_at, CustomerDebtRevision.change_count)
+        .join(Customer, Customer.customer_id == CustomerDebtRevision.customer_id)
+        .order_by(Customer.customer_name)
+    )
+    assert [tuple(r) for r in revisions] == [
+        ("Anh An", Decimal("90.00"), Decimal("275.00"), Decimal("180.00"),
+         datetime(2025, 2, 20, 8), 4),
+        ("Chị Bình", Decimal("70.00"), Decimal("0.00"), Decimal("-70.00"),
+         datetime(2025, 3, 10, 11), 1),
+    ]
+    assert result["sync_run"]["retroactive_customers"] == 2
+    # Unchanged rows are not rewritten, so updated_at still means "last real change".
+    untouched = await scalar(
+        select(CustomerDebtTransaction.updated_at).where(CustomerDebtTransaction.source_id == "d3")
+    )
+    assert untouched is None
+    deleted = await scalar(
+        select(CustomerDebtTransaction.deleted_at.is_not(None))
+        .where(CustomerDebtTransaction.source_id == "d2")
+    )
+    assert deleted is True
+
+
+@pytest.mark.asyncio
+async def test_restored_debt_row_keeps_its_id_and_is_audited(world):
+    use_case, scalar = world
+    rows = [("sale", f"d{i}", "2025-03-01 08:00", "Anh An", 10) for i in range(4)]
+    await use_case.sync_all(invoices(["PX-1"]), goods(["PX-1"]), ledger(rows))
+    original_id = await scalar(
+        select(CustomerDebtTransaction.debt_transaction_id).where(CustomerDebtTransaction.source_id == "d3")
+    )
+    await use_case.sync_all(invoices(["PX-1"]), goods(["PX-1"]), ledger(rows[:3]))
+
+    await use_case.sync_all(invoices(["PX-1"]), goods(["PX-1"]), ledger(rows))
+
+    restored = await use_case.rows(
+        select(CustomerDebtTransaction.debt_transaction_id, CustomerDebtTransaction.deleted_at)
+        .where(CustomerDebtTransaction.source_id == "d3")
+    )
+    assert [(r.debt_transaction_id, r.deleted_at) for r in restored] == [(original_id, None)]
+    kinds = await use_case.rows(
+        select(CustomerDebtTransactionChange.change_type)
+        .where(CustomerDebtTransactionChange.debt_transaction_id == original_id)
+        .join(EtlSyncRun, EtlSyncRun.run_id == CustomerDebtTransactionChange.run_id)
+        .order_by(EtlSyncRun.started_at)
+    )
+    assert [r.change_type for r in kinds] == ["deleted", "restored"]
