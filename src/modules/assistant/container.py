@@ -12,6 +12,7 @@ from src.modules.assistant.application.services.context_builder import ContextBu
 from src.modules.assistant.application.services.schema_linker import SchemaLinker
 from src.modules.assistant.application.services.sql_service import SQLService
 from src.modules.assistant.application.services.overview_report_builder import OverviewReportBuilder
+from src.modules.assistant.application.services.customer_debt_report_builder import CustomerDebtReportBuilder
 from src.modules.assistant.application.agent.tools.text_to_sql_tool import TextToSQLTool
 from src.modules.assistant.application.agent.tools.rag_tool import RAGTool
 from src.modules.assistant.application.agent.agent_service import AgentService
@@ -144,10 +145,18 @@ class AssistantContainer(containers.DeclarativeContainer):
         repository=dashboard_analytics_repository,
     )
 
+    # The analytics repository implements both the dashboard and debt-history ports.
+    customer_debt_report_builder = Singleton(
+        CustomerDebtReportBuilder,
+        history_repository=dashboard_analytics_repository,
+        analytics_repository=dashboard_analytics_repository,
+    )
+
     chat_use_case = Singleton(
         ChatUseCase,
         agent_service=agent_service,
         conversation_repo=conversation_repo,
         cache_service=cache_service,
         overview_report_builder=overview_report_builder,
+        customer_debt_report_builder=customer_debt_report_builder,
     )

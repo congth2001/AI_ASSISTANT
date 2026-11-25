@@ -214,6 +214,11 @@ class OverviewReportUnavailableError(ConfigurationError):
     message_template = 'Overview report builder is not configured'
 
 
+class ReportCustomerRequiredError(ValidationError):
+    code = 'report_customer_required'
+    message_template = 'Câu hỏi lịch sử công nợ cần customer_id'
+
+
 class InvalidReportPeriodError(ValidationError):
     code = 'invalid_report_period'
     message_template = 'Khoảng ngày báo cáo không hợp lệ: date_to phải sau date_from và tối đa {max_days} ngày'

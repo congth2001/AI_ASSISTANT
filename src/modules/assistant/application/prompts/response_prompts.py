@@ -38,3 +38,14 @@ class ResponsePrompt:
         "Trích dẫn ID nguồn [report:...] tương ứng sau mỗi nhận định. Nếu phần độ phủ dữ liệu cho biết "
         "kỳ đang xem vượt quá ngày giao dịch mới nhất, nói rõ điều đó trước khi nhận xét biến động."
     )
+
+    # Appended when the data block holds one customer's debt-history page numbers.
+    CUSTOMER_DEBT_REPORT = (
+        "Khối dữ liệu là số liệu trang Lịch sử công nợ của đúng một khách hàng, hệ thống đã tính sẵn "
+        "theo kỳ người dùng đang xem, trùng với số trên màn hình. Dùng nguyên các số này, không tự cộng "
+        "lại sổ hay tính lại tuổi nợ; chỉ được so sánh đơn giản từ chính các số đã có. Mở đầu bằng kết "
+        "luận chính (đang nợ bao nhiêu, nợ liên tục từ khi nào, phần nợ cũ đáng chú ý), sau đó giải thích "
+        "biến động số dư, thu nợ gần nhất và các lần điều chỉnh hồi tố nếu có. Không suy đoán lý do khách "
+        "chưa trả. Trích dẫn ID nguồn [report:...] tương ứng sau mỗi nhận định. Nếu phần độ phủ dữ liệu "
+        "cho biết kỳ đang xem vượt quá ngày giao dịch mới nhất, nói rõ điều đó."
+    )

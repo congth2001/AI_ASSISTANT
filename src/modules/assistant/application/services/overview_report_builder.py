@@ -25,7 +25,9 @@ from src.modules.assistant.application.services.data_block import (
     format_cell,
     neutralize_delimiters,
 )
+from src.modules.assistant.domain.errors import InvalidReportPeriodError
 from src.modules.assistant.domain.entities.overview_report import (
+    MAX_REPORT_DAYS,
     OverviewReport,
     OverviewReportScope,
     OverviewReportTopic,
@@ -80,6 +82,8 @@ class OverviewReportBuilder:
         self._repository = repository
 
     async def build(self, scope: OverviewReportScope) -> OverviewReport:
+        if scope.date_from is None:  # the request DTO already rejects this for Overview topics
+            raise InvalidReportPeriodError(max_days=MAX_REPORT_DAYS)
         filters = DashboardFilters(
             date_from=scope.date_from,
             date_to=scope.date_to,
