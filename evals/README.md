@@ -1,6 +1,6 @@
 # Small Text-to-SQL Execution Benchmark
 
-Bộ benchmark nhỏ gồm 23 câu hỏi có ground truth xác định trên một PostgreSQL fixture cô lập. Mục tiêu chính là đo:
+Bộ benchmark nhỏ gồm 26 câu hỏi có ground truth xác định trên một PostgreSQL fixture cô lập. Mục tiêu chính là đo:
 
 ```text
 execution result accuracy = số case có kết quả SQL đúng / tổng số case
@@ -31,6 +31,8 @@ execution result accuracy = số case có kết quả SQL đúng / tổng số c
 | Mã hóa đơn người dùng thấy là `invoice_number` | inv_019 |
 | Ngữ cảnh báo cáo: giữ `customer_id`/kỳ đã chọn; tên khách tham chiếu không phải bộ lọc | ctx_022, ctx_023 |
 | Bình quân hóa đơn = `AVG(invoice_total_amount)`; đếm `customer_id` khác nhau; soft-delete | avg_012, cust_013, inv_002 |
+| Lịch sử công nợ: số dư sau từng giao dịch/cuối tháng là lũy kế toàn sổ (mang theo số dư trước ngày bắt đầu), thứ tự `occurred_at` rồi opening → sale → sales_return → receipt như trang `/customers/:id` | debthist_024, debthist_025 |
+| Tuổi nợ/nợ cũ theo FIFO đến ngày tính: mọi khoản giảm (kể cả sau mốc) trả khoản tăng cũ nhất trước; không dùng số dư tại mốc | debtage_026 |
 
 Fixture cố ý chứa:
 
