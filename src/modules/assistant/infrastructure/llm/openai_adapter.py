@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from openai import AsyncOpenAI
 from typing import AsyncGenerator, Optional, Dict, Any
@@ -14,6 +15,10 @@ from src.modules.assistant.infrastructure.llm.llm_common import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Characters of a request hashed into its prompt_cache_key. Well inside the static
+# part of the SQL prompts (GENERATION_RULES alone is ~19k characters).
+_CACHE_KEY_PREFIX_CHARS = 4000
 
 
 class OpenAIAdapter(ILLMService):
@@ -45,6 +50,59 @@ class OpenAIAdapter(ILLMService):
         requested = context.get("max_completion_tokens") or self.RESPONSE_COMPLETION_TOKENS
         return min(int(requested), self.RESPONSE_COMPLETION_TOKENS)
 
+    def _log_usage(self, call: str, usage: Any) -> None:
+        """Log token usage, including the prompt-cache hit OpenAI applies automatically.
+
+        Cached tokens are still counted as input in OpenAI's usage charts but are
+        billed at the cached-input rate. The numbers are in the message itself (not
+        only in ``extra``) so a plain-text formatter shows them.
+        """
+        if not usage:
+            return
+
+        def count(source: Any, name: str) -> int:
+            value = getattr(source, name, None)
+            return value if isinstance(value, int) else 0
+
+        prompt = count(usage, "prompt_tokens")
+        completion = count(usage, "completion_tokens")
+        cached = count(getattr(usage, "prompt_tokens_details", None), "cached_tokens")
+        reasoning = count(getattr(usage, "completion_tokens_details", None), "reasoning_tokens")
+        logger.info(
+            "LLM usage [%s] model=%s prompt=%d cached=%d (%.0f%%) completion=%d reasoning=%d",
+            call,
+            self.model,
+            prompt,
+            cached,
+            cached * 100 / prompt if prompt else 0,
+            completion,
+            reasoning,
+            extra={
+                "llm_call": call,
+                "model": self.model,
+                "prompt_tokens": prompt,
+                "cached_tokens": cached,
+                "completion_tokens": completion,
+                "reasoning_tokens": reasoning,
+                "total_tokens": count(usage, "total_tokens") or prompt + completion,
+            },
+        )
+
+    @staticmethod
+    def _prompt_cache_key(messages: list) -> str:
+        """Stable routing key shared by requests that start with the same static text.
+
+        OpenAI caches prompt prefixes automatically; on models before GPT-5.6 a
+        ``prompt_cache_key`` also routes requests with the same prefix to the same
+        cache. Hashing the first characters of the request (system message plus the
+        start of the first user message) groups e.g. every SQL generation call, which
+        all begin with SQLPrompt.GENERATION_RULES, without naming call sites. Only a
+        digest is sent, never prompt text.
+        """
+        head = "\x1f".join(str(message.get("content", "")) for message in messages[:2])
+        digest = hashlib.sha256(head[:_CACHE_KEY_PREFIX_CHARS].encode("utf-8")).hexdigest()
+        return f"ai-assistant-{digest[:16]}"
+
     def _build_messages(self, prompt: str, context: Optional[Dict[str, Any]]) -> list:
         messages = []
         if context and 'conversation_history' in context:
@@ -58,22 +116,14 @@ class OpenAIAdapter(ILLMService):
     async def generate_response(self, prompt: str, context: Optional[Dict[str, Any]] = None) -> str:
         """Generate response using OpenAI"""
         try:
+            messages = self._build_messages(prompt, context)
             response = await self._client.chat.completions.create(
                 model=self.model,
-                messages=self._build_messages(prompt, context),
+                messages=messages,
                 max_completion_tokens=self._response_token_budget(context),
+                prompt_cache_key=self._prompt_cache_key(messages),
             )
-            usage = response.usage
-            if usage:
-                logger.info(
-                    "LLM usage",
-                    extra={
-                        "model": self.model,
-                        "prompt_tokens": usage.prompt_tokens,
-                        "completion_tokens": usage.completion_tokens,
-                        "total_tokens": usage.total_tokens,
-                    },
-                )
+            self._log_usage("generate", getattr(response, "usage", None))
             choice = response.choices[0]
             if getattr(choice, "finish_reason", None) == "length" or not choice.message.content:
                 logger.warning("LLM returned incomplete or empty output", extra={"model": self.model})
@@ -95,24 +145,17 @@ class OpenAIAdapter(ILLMService):
         """
         emitted = False
         try:
+            messages = self._build_messages(prompt, context)
             stream = await self._client.chat.completions.create(
                 model=self.model,
-                messages=self._build_messages(prompt, context),
+                messages=messages,
                 max_completion_tokens=self._response_token_budget(context),
+                prompt_cache_key=self._prompt_cache_key(messages),
                 stream=True,
                 stream_options={"include_usage": True},
             )
             async for chunk in stream:
-                if chunk.usage:
-                    logger.info(
-                        "LLM streaming usage",
-                        extra={
-                            "model": self.model,
-                            "prompt_tokens": chunk.usage.prompt_tokens,
-                            "completion_tokens": chunk.usage.completion_tokens,
-                            "total_tokens": chunk.usage.total_tokens,
-                        },
-                    )
+                self._log_usage("stream", getattr(chunk, "usage", None))
                 if not chunk.choices:
                     continue
                 choice = chunk.choices[0]
@@ -156,6 +199,7 @@ class OpenAIAdapter(ILLMService):
                 messages=[{"role": "user", "content": prompt}],
                 max_completion_tokens=50,
             )
+            self._log_usage("analyze_intent", getattr(response, "usage", None))
 
             intent = response.choices[0].message.content.strip().lower()
             return intent
@@ -200,6 +244,7 @@ class OpenAIAdapter(ILLMService):
         except Exception as exc:
             logger.exception("OpenAI classify_route failed", extra={"model": self.model})
             raise OpenAIRequestError() from exc
+        self._log_usage("classify_route", getattr(response, "usage", None))
         return parse_route(response.choices[0].message.content)
 
     async def rewrite_query(self, prompt: str) -> str:
@@ -225,4 +270,5 @@ class OpenAIAdapter(ILLMService):
             ],
             max_completion_tokens=2048,
         )
+        self._log_usage("rewrite_query", getattr(response, "usage", None))
         return response.choices[0].message.content.strip()
