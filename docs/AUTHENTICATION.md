@@ -67,7 +67,9 @@ khoản phù hợp) để thời gian phản hồi không lộ email có tồn t
 
 Rate limit (cửa sổ trượt trong bộ nhớ, cấu hình ở `rate_limit.*`, trả `429` + `Retry-After`):
 `/auth/login` theo IP (10/phút) và theo email (5/phút), `/auth/guest` theo IP (10/phút),
-`/auth/refresh` theo IP (30/phút). Hàm dùng chung: `rate_limit(...)` / `enforce_rate_limit(...)`
+`/auth/refresh` theo IP (30/phút), `/chat` và `/chat/stream` theo người dùng (20/phút, scope
+`chat_user`) và riêng guest thêm theo IP (10/phút, scope `chat_guest_ip`, vì mỗi phiên guest có id
+mới). Hàm dùng chung: `rate_limit(...)` / `enforce_rate_limit(...)`
 trong `src/common/presentation/rate_limit.py`.
 
 Phiên guest là stateless: `POST /auth/guest` không ghi gì vào cơ sở dữ liệu, chỉ trả một access

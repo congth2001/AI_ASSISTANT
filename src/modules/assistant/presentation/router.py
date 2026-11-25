@@ -3,7 +3,7 @@ import json
 import logging
 from contextlib import aclosing
 from typing import AsyncIterator
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from dependency_injector.wiring import inject, Provide
 from uuid import UUID
@@ -29,6 +29,7 @@ from src.modules.assistant.domain.errors import (
 from src.common.errors import (
     ApplicationError,
 )
+from src.common.presentation.rate_limit import enforce_rate_limit, request_client_ip
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -45,6 +46,20 @@ def parse_conversation_id(value: str) -> UUID:
         return UUID(value)
     except ValueError as exc:
         raise InvalidConversationIdError() from exc
+
+
+async def rate_limited_chat_user(
+    request: Request, current_user: dict = Depends(get_current_user)
+) -> dict:
+    """Authenticated user of a chat request, after the per-user (and guest per-IP) limits."""
+    if current_user["role"] == "guest":
+        await enforce_rate_limit(
+            request, "chat_guest_ip", default_limit=10, key=request_client_ip(request)
+        )
+    await enforce_rate_limit(
+        request, "chat_user", default_limit=20, key=str(current_user["id"])
+    )
+    return current_user
 
 
 def _report_scope(request: ChatRequest, current_user: dict):
@@ -84,7 +99,7 @@ async def _guarded_events(events: AsyncIterator[str]) -> AsyncIterator[str]:
 @inject
 async def chat_endpoint(
     request: ChatRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(rate_limited_chat_user),
     chat_use_case: ChatUseCase = Depends(Provide[Container.chat_use_case]),
     conversation_use_case: ConversationUseCase = Depends(Provide[Container.conversation_use_case]),
 ) -> ChatResponse:
@@ -122,7 +137,7 @@ async def chat_endpoint(
 @inject
 async def chat_stream_endpoint(
     request: ChatRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(rate_limited_chat_user),
     chat_use_case: ChatUseCase = Depends(Provide[Container.chat_use_case]),
     conversation_use_case: ConversationUseCase = Depends(Provide[Container.conversation_use_case]),
 ) -> StreamingResponse:

@@ -174,13 +174,17 @@ class APISettings(ConfigModel):
 
 
 class RateLimitSettings(ConfigModel):
-    """In-memory, per-process sliding-window limits for unauthenticated endpoints."""
+    """In-memory, per-process sliding-window limits for auth and chat endpoints."""
     enabled: bool = True
     window_seconds: int = Field(default=60, gt=0)
     login_per_ip: int = Field(default=10, gt=0)
     login_per_email: int = Field(default=5, gt=0)
     guest_per_ip: int = Field(default=10, gt=0)
     refresh_per_ip: int = Field(default=30, gt=0)
+    # /chat and /chat/stream: each request may run several LLM calls and SQL queries.
+    chat_per_user: int = Field(default=20, gt=0)
+    # Guest sessions are free to create, so guests are also limited per client IP.
+    chat_guest_per_ip: int = Field(default=10, gt=0)
     # Read the client IP from the right-most X-Forwarded-For entry. Enable only behind one
     # trusted reverse proxy (ngrok, Cloudflare tunnel); otherwise clients could spoof it.
     trust_forwarded_for: bool = False
@@ -191,6 +195,8 @@ class RateLimitSettings(ConfigModel):
             "login_email": self.login_per_email,
             "guest_ip": self.guest_per_ip,
             "refresh_ip": self.refresh_per_ip,
+            "chat_user": self.chat_per_user,
+            "chat_guest_ip": self.chat_guest_per_ip,
         }
 
 
