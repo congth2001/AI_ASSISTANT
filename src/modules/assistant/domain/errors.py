@@ -109,6 +109,23 @@ class SQLTableNotAllowedError(SQLValidationError):
     message_template = 'SQL truy cập bảng ngoài phạm vi dữ liệu bán hàng: {table}'
 
 
+class SQLFunctionNotAllowedError(SQLKeywordForbiddenError):
+    code = 'sql_function_not_allowed'
+    message_template = (
+        'Hàm {function}() không được hỗ trợ. Không dùng hàm JSON/XML hay hàm hệ thống; '
+        'trả kết quả dạng bảng phẳng (mỗi chi tiết một dòng, tổng hợp bằng SUM/COUNT/'
+        'STRING_AGG) hoặc tách phần tổng và phần chi tiết thành hai query.'
+    )
+
+
+class SQLUndefinedRelationError(SQLTableNotAllowedError):
+    code = 'sql_undefined_relation'
+    message_template = (
+        '"{table}" không phải bảng được phép và chưa được khai báo là CTE. CTE phải được '
+        'định nghĩa trong WITH của cùng câu SQL; bảng chỉ được dùng: {allowed}.'
+    )
+
+
 class SQLSelectStarForbiddenError(SQLValidationError):
     code = 'sql_select_star_forbidden'
     message_template = 'Không cho phép SELECT *; phải liệt kê cột tường minh.'

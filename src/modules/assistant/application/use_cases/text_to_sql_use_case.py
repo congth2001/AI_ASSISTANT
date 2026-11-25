@@ -43,7 +43,7 @@ _SQL_MAX_RETRIES = 2
 # Limits for what is shown to the answering LLM (the executor may return up to 1000 rows).
 _MAX_PROMPT_ROWS_PER_PLAN = 50
 _MAX_PROMPT_CHARS = 24_000
-_MAX_REPAIR_ERROR_CHARS = 300
+_MAX_REPAIR_ERROR_CHARS = 500
 
 # Shared with the Overview report data block (see services/data_block.py).
 _DATA_BEGIN = DATA_BEGIN
@@ -128,7 +128,7 @@ class TextToSQLUseCase:
         plans: list[SQLQueryPlan],
         linked: LinkedSchema,
     ) -> tuple[list[SQLQueryPlan], list[str]]:
-        """Keep valid plans; try one repair (with the validator's message) per rejected plan."""
+        """Keep valid plans; repair each rejected plan with the validator's message."""
         if len(plans) > MAX_SQL_PLANS:
             logger.warning(
                 "LLM returned %d SQL plans; keeping the first %d", len(plans), MAX_SQL_PLANS
@@ -152,27 +152,45 @@ class TextToSQLUseCase:
         except SQLValidationError as exc:
             reason = exc.message
             logger.warning("SQL plan %r rejected by validator: %s", plan.intent, reason)
-        return await self._repair(plan, reason, linked)
+            logger.debug("Rejected SQL for %r: %s", plan.intent, plan.sql)
+        # A plan the validator rejected never ran, so it gets the same number of
+        # repair rounds as a plan the database rejected.
+        return await self._repair(plan, reason, linked, attempts=_SQL_MAX_RETRIES)
 
     async def _repair(
         self,
         plan: SQLQueryPlan,
         reason: str,
         linked: LinkedSchema,
+        attempts: int = 1,
     ) -> SQLQueryPlan | None:
-        """Ask the LLM for a fixed plan; ``None`` when it cannot be repaired."""
-        try:
-            repaired = await self.sql_service.repair(
-                plan, _clean_error(reason), linked.schema_context
-            )
-        except SQLValidationError as exc:
-            logger.warning("SQL repair for %r rejected: %s", plan.intent, exc.message)
-        except ExternalServiceError:
-            logger.warning("SQL repair for %r failed: LLM service error", plan.intent, exc_info=True)
-        except Exception:
-            logger.exception("SQL repair for %r failed unexpectedly", plan.intent)
-        else:
-            plan.sql = repaired.sql
+        """Ask the LLM for a fixed plan; ``None`` when it cannot be repaired.
+
+        When the validator rejects a repaired SQL, the next round sees that SQL and
+        the new reason, not the original query again.
+        """
+        failed = SQLQueryPlan(intent=plan.intent, sql=plan.sql)
+        for _ in range(attempts):
+            try:
+                draft = await self.sql_service.draft_repair(
+                    failed, _clean_error(reason), linked.schema_context
+                )
+            except SQLValidationError as exc:
+                logger.warning("SQL repair for %r rejected: %s", plan.intent, exc.message)
+                return None
+            except ExternalServiceError:
+                logger.warning("SQL repair for %r failed: LLM service error", plan.intent, exc_info=True)
+                return None
+            except Exception:
+                logger.exception("SQL repair for %r failed unexpectedly", plan.intent)
+                return None
+            try:
+                plan.sql = self.sql_service.validate(draft.sql)
+            except SQLValidationError as exc:
+                logger.warning("SQL repair for %r rejected: %s", plan.intent, exc.message)
+                logger.debug("Rejected repaired SQL for %r: %s", plan.intent, draft.sql)
+                failed, reason = draft, exc.message
+                continue
             return plan
         return None
 

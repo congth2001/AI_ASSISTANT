@@ -108,10 +108,11 @@ async def test_repaired_sql_is_reported_as_executed_source():
     service = AsyncMock()
     service.generate.return_value = [SQLQueryPlan("kpi", "SELECT bad_column")]
     service.validate_all = SQLService(None).validate_all
-    service.repair.return_value = SQLQueryPlan("kpi", "SELECT 12.34 AS doanh_thu")
+    service.validate = SQLService(None).validate
+    service.draft_repair.return_value = SQLQueryPlan("kpi", "SELECT 12.34 AS doanh_thu")
     use_case = TextToSQLUseCase(executor, SchemaLinker(), service)
     queries, content, success, has_data, error = await use_case.execute(QueryAnalyzer().analyze(REPORT_QUERY))
-    assert queries == ["SELECT 12.34 AS doanh_thu"]
+    assert queries == [SQLService(None).validate("SELECT 12.34 AS doanh_thu")]
     assert "12.34" in content
     assert success and has_data and error is None
 

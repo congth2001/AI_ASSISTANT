@@ -107,7 +107,12 @@ class SQLPrompt:
             sql phải bắt đầu bằng SELECT hoặc WITH và chỉ chứa đúng một statement.
             Viết gọn: SQL trên một dòng, không thụt lề; tên CTE ngắn (b1, r1, k, tong...)
             vì chỉ dùng nội bộ; intent tối đa 6 từ. Chỉ bí danh cột ĐẦU RA cần tiếng Việt
-            không dấu mô tả đầy đủ như doanh_thu_thuan_ky_truoc.
+            không dấu mô tả đầy đủ như doanh_thu_thuan_ky_truoc. Mọi CTE được tham chiếu phải
+            được định nghĩa trong WITH của chính câu SQL đó.
+            Kết quả phải là bảng phẳng: không dùng hàm JSON/XML (json_agg, json_build_object,
+            row_to_json...). Câu hỏi cần cả tổng và chi tiết thì trả hai query (một query tổng,
+            một query chi tiết mỗi giao dịch một dòng) hoặc lặp giá trị tổng trên mỗi dòng
+            bằng SUM(...) OVER (); gộp danh sách ngắn thành chuỗi bằng STRING_AGG.
         22. Yêu cầu tổng quát như "phân tích kết quả kinh doanh và các biến động đáng chú ý"
             cần nhiều góc nhìn, không chỉ một tổng doanh thu. Trả tối đa 5 query độc lập:
             (a) KPI bán, nhập trả, doanh thu thuần, số hóa đơn, giá trị hóa đơn bình quân và
@@ -206,7 +211,7 @@ class SQLPrompt:
             SQL BỊ LỖI:
             {failed_sql}
 
-            LỖI TỪ CƠ SỞ DỮ LIỆU:
+            LỖI (TỪ CƠ SỞ DỮ LIỆU HOẶC BỘ KIỂM TRA SQL):
             {error}
 
             Sửa đúng nguyên nhân lỗi nhưng giữ nguyên ý định, bộ lọc và giá trị tiếng Việt của
@@ -217,6 +222,9 @@ class SQLPrompt:
             truy vấn ban đầu. Phải tiếp tục tuân thủ Mandatory metric rules trong lược đồ; khi sửa
             truy vấn doanh thu thuần không được làm mất vế nhập trả source_type = 'sales_return',
             và phải giữ cùng khoảng ngày trên issued_at của bán và occurred_at của nhập trả.
+            Trả lại TOÀN BỘ câu SQL đã sửa: giữ định nghĩa của mọi CTE trong WITH mà câu SQL
+            còn tham chiếu. Kết quả là bảng phẳng, không dùng hàm JSON/XML; cần cả tổng và chi
+            tiết thì lặp tổng trên mỗi dòng bằng SUM(...) OVER () hoặc chỉ giữ phần chi tiết.
 
             Chỉ trả về JSON hợp lệ, không Markdown, comment hoặc dấu chấm phẩy; SQL viết trên
             một dòng, không thụt lề:

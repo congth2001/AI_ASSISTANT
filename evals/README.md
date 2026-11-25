@@ -49,7 +49,7 @@ Runner không ghi vào bảng nghiệp vụ thật. Nó tạo `TEMP TABLE` trong
 
 ## Chuẩn bị prediction
 
-Cách nhanh nhất là sinh bằng pipeline thật. Mỗi case đi qua QueryAnalyzer (danh mục khách/danh mục hàng lấy từ fixture, không dùng tên khách thật) → SchemaLinker → SQLService → validator (sửa một lần nếu bị từ chối) → chạy trên fixture, sửa tối đa 2 lần khi DB báo lỗi như `TextToSQLUseCase`. Plan đầu tiên chạy được là prediction. Lệnh này gọi LLM đã cấu hình (khoảng một lượt sinh SQL cho mỗi case mỗi lần chạy); LLM không tất định nên nên chạy nhiều lần:
+Cách nhanh nhất là sinh bằng pipeline thật. Mỗi case đi qua QueryAnalyzer (danh mục khách/danh mục hàng lấy từ fixture, không dùng tên khách thật) → SchemaLinker → SQLService → validator (sửa tối đa 2 vòng nếu bị từ chối, mỗi vòng nhận SQL của vòng trước) → chạy trên fixture, sửa tối đa 2 lần khi DB báo lỗi như `TextToSQLUseCase`. Plan đầu tiên chạy được là prediction. Lệnh này gọi LLM đã cấu hình (khoảng một lượt sinh SQL cho mỗi case mỗi lần chạy); LLM không tất định nên nên chạy nhiều lần:
 
 ```powershell
 $env:AI_QC_BENCHMARK_DSN = "postgresql://postgres:postgres@localhost:5432/ai_assistant"
