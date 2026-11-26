@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import platform
 import re
 import shutil
 import tempfile
@@ -44,11 +44,20 @@ def connect_mdb(path: str, password: str = ""):
     if not p.exists():
         raise FileNotFoundError(f"MDB file not found: {p}")
 
-    parts = [
-        r"DRIVER={Microsoft Access Driver (*.mdb, *.accdb)}",
-        f"DBQ={p}",
-        "READONLY=1",
-    ]
+    if platform.system() == "Windows":
+        driver = "Microsoft Access Driver (*.mdb, *.accdb)"
+        parts = [
+            f"DRIVER={{{driver}}}",
+            f"DBQ={p}",
+            "READONLY=1",
+        ]
+    else:
+        driver = "MDBTools"
+        parts = [
+            f"DRIVER={{{driver}}}",
+            f"DBQ={p}",
+        ]
+
     if password:
         parts.append(f"PWD={password}")
     conn_str = ";".join(parts) + ";"
