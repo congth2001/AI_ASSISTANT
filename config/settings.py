@@ -240,6 +240,8 @@ class ETLSettings(ConfigModel):
     customer_ward_aliases_path: NonEmpty = "etl_business/stats/customer_ward_aliases.json"
     lock_path: NonEmpty = "data/etl/business-etl.lock"
     opening_balance_date: str = "2019-01-01"
+    # A sync started from the admin screen is stopped (and rolled back) after this long.
+    job_timeout_seconds: int = Field(default=3600, ge=60, le=6 * 3600)
 
     @field_validator("opening_balance_date")
     @classmethod

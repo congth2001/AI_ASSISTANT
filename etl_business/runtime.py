@@ -16,10 +16,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ALREADY_RUNNING_MESSAGE = "Another business ETL job is already running"
 
 
+def resolve_backend_path(value: str | Path) -> Path:
+    """Resolve a configured path the same way the ETL runtime does (relative to backend/)."""
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+
+
 def resolve_lock_path(lock_path: str | Path) -> Path:
     """Resolve the configured lock path the same way the ETL runtime does."""
-    path = Path(lock_path).expanduser()
-    return path if path.is_absolute() else (PROJECT_ROOT / path).resolve()
+    return resolve_backend_path(lock_path)
 
 
 @contextmanager

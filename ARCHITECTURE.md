@@ -17,7 +17,8 @@ backend/
 │   │   ├── conversations/          # Lịch sử, ownership, đọc/đổi tên/xóa
 │   │   ├── assistant/              # Chat/SSE, LangGraph, Text-to-SQL, RAG
 │   │   ├── analytics/              # Dashboard, đơn hàng, công nợ, xuất Excel
-│   │   └── sales/                  # Đồng bộ khách hàng, bán/trả hàng, sổ công nợ
+│   │   ├── sales/                  # Đồng bộ khách hàng, bán/trả hàng, sổ công nợ
+│   │   └── data_sync/              # Admin chạy đồng bộ từ giao diện, lịch sử lượt chạy
 │   ├── common/
 │   │   ├── container.py            # PostgreSQL và session factory chung
 │   │   ├── errors/                 # Nhóm lỗi phổ biến và template, thuần Python
@@ -49,6 +50,8 @@ module/
 ```
 
 Chỉ tạo layer khi module thực sự có code cho layer đó. Module sales hiện được gọi qua CLI/ETL và không có HTTP router riêng.
+
+Module data_sync không import sales: `SubprocessSyncRunner` chạy `python -m etl_business.sync_worker` trong process con (cùng file lock với cron/CLI) và đọc dòng `DATA_SYNC_RESULT <json>` cuối stdout. Lý do: các entry point ETL cấu hình container toàn cục và đóng PostgreSQL client khi xong, còn trích xuất MDB là ODBC chặn luồng. Đọc tên người chạy từ `users` (data_sync → auth ORM) và lần ETL gần nhất từ `etl_sync_runs` (data_sync → sales ORM, `EtlRunHistoryRepository`) là các read adapter đã khai báo trong `test_module_architecture.py`.
 
 ## Quy ước đặt tên và nhóm file
 

@@ -5,16 +5,20 @@ from src.modules.assistant.presentation import router as chat_routes
 from src.modules.auth.presentation import router as auth_routes
 from src.modules.conversations.presentation import router as conversation_routes
 from src.modules.analytics.presentation import router as analytics_routes
+from src.modules.data_sync.presentation import router as data_sync_routes
 
 
 # Keep DI wiring beside the route registrations so new modules have one entry point.
-ROUTER_MODULES = (chat_routes, auth_routes, conversation_routes, analytics_routes)
+ROUTER_MODULES = (
+    chat_routes, auth_routes, conversation_routes, analytics_routes, data_sync_routes,
+)
 
 router = APIRouter()
 router.include_router(chat_routes.router, prefix="/api/v1", tags=["chat"])
 router.include_router(auth_routes.router, prefix="/api/v1", tags=["auth"])
 router.include_router(conversation_routes.router, prefix="/api/v1", tags=["conversations"])
 router.include_router(analytics_routes.router, prefix="/api/v1", tags=["analytics"])
+router.include_router(data_sync_routes.router, prefix="/api/v1", tags=["data-sync"])
 
 
 @router.get("/health")

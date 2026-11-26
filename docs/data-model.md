@@ -317,7 +317,7 @@ Ngoài bảng được phép, validator chỉ chấp nhận CTE do chính câu q
 
 ## 7. Chuỗi migration
 
-Chuỗi tuyến tính (cũ đến mới), head hiện tại là `a91c3e7d5b20`:
+Chuỗi tuyến tính (cũ đến mới), head hiện tại là `c4d81f2a6e93`:
 
 | # | Revision | Nội dung |
 | --- | --- | --- |
@@ -337,7 +337,8 @@ Chuỗi tuyến tính (cũ đến mới), head hiện tại là `a91c3e7d5b20`:
 | 14 | `d1e5b7a93c28` | `created_at`/`deleted_at` của `sales_invoices` và `sales_invoice_lines` chuyển sang `timestamptz` |
 | 15 | `e7b3c5a19f42` | Thêm `ix_messages_conversation_id_created_at`, `ix_debt_transactions_customer_occurred`; bỏ các index thừa `ix_sales_invoices_issued_at`, `ix_sales_invoice_lines_invoice_id`, `ix_sales_return_lines_return_id`, `ix_debt_transactions_customer_id` |
 | 16 | `8008434c9371` | Thêm `etl_sync_runs`, `customer_debt_transaction_changes`, `customer_debt_revisions` (lưu vết điều chỉnh công nợ; chỉ tạo bảng mới) |
-| 17 | `a91c3e7d5b20` | Tạo role NOLOGIN `sales_sql_reader` chỉ có SELECT trên 6 bảng bán hàng, cấp cho user chạy migration; downgrade chỉ DROP ROLE khi không database nào khác còn dùng (head) |
+| 17 | `a91c3e7d5b20` | Tạo role NOLOGIN `sales_sql_reader` chỉ có SELECT trên 6 bảng bán hàng, cấp cho user chạy migration; downgrade chỉ DROP ROLE khi không database nào khác còn dùng |
+| 18 | `c4d81f2a6e93` | Thêm `data_sync_jobs` (lượt đồng bộ do admin chạy từ giao diện; partial unique index chỉ cho một dòng `running`) (head) |
 
 Kiểm tra: `.\env\Scripts\python.exe -m alembic heads` (chạy từ `backend/`).
 

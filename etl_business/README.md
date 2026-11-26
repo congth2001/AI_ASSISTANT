@@ -260,6 +260,19 @@ tiếng Việt đúng hơn.
 
 Connection MDB sử dụng `READONLY=1`; extractor không ghi ngược vào database Access.
 
+## Chạy từ giao diện quản trị
+
+Admin có thể bấm "Đồng bộ ngay" ở màn hình **Quản trị > Đồng bộ dữ liệu** (`/data-sync`).
+Backend chạy `python -m etl_business.sync_worker --source mdb|snapshot [--allow-shrink]`
+trong process con từ `backend/`: `mdb` tương đương `run_business_etl.py`, `snapshot`
+tương đương `sync_business_data.py` (cả hai đọc/ghi snapshot ở `etl.snapshot_dir`). Khi promote,
+snapshot được đặt mtime bằng thời điểm promote; màn hình quản trị so sánh mtime này với
+`etl_sync_runs` để cảnh báo file Excel cũ hơn lần ETL gần nhất. Worker dùng cùng file lock (`etl.lock_path`) nên
+không chạy chồng lên Task Scheduler; nếu lịch tự động đang chạy, lượt từ giao diện báo
+`already_running`. Lượt chạy quá `etl.job_timeout_seconds` (mặc định 3600) bị dừng và
+PostgreSQL rollback. `etl_sync_runs.entrypoint` ghi `admin_etl_job` hoặc
+`admin_sync_business_data`.
+
 ## Task Scheduler
 
 Sau khi mapping đã ổn định, Windows Task Scheduler có thể chạy:

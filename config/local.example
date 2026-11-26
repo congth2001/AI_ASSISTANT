@@ -97,3 +97,5 @@ etl:
     customer_ward_aliases_path: etl_business/stats/customer_ward_aliases.json
     lock_path: data/etl/business-etl.lock
     opening_balance_date: "2019-01-01"
+    # Lượt đồng bộ chạy từ màn hình "Đồng bộ dữ liệu" bị dừng sau số giây này (60–21600)
+    job_timeout_seconds: 3600

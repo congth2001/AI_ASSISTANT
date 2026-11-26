@@ -38,11 +38,18 @@ def staged_snapshot_dir(snapshot_dir: str | Path) -> Iterator[Path]:
 
 
 def promote_snapshots(staged: tuple[Path, ...], snapshot_dir: str | Path) -> tuple[Path, ...]:
+    """Move staged snapshots into place and stamp them with the promotion time.
+
+    The files were written before the sync, so without the stamp they would look older
+    than the ``etl_sync_runs`` row that accepted them; the admin data-sync screen
+    compares the two to warn about stale snapshots.
+    """
     destination = Path(snapshot_dir)
     promoted = []
     for path in staged:
         target = destination / path.name
         os.replace(path, target)
+        os.utime(target)
         promoted.append(target)
     return tuple(promoted)
 
@@ -70,12 +77,15 @@ def describe_extraction_failures(
     return message
 
 
-async def run_business_etl(config: dict, *, allow_shrink: bool = False) -> dict[str, Any]:
+async def run_business_etl(
+    config: dict, *, allow_shrink: bool = False, entrypoint: str = "etl_job"
+) -> dict[str, Any]:
     """Run the cron-safe, idempotent MDB-to-PostgreSQL pipeline once.
 
     ``allow_shrink`` lets the sync soft-delete records when the new snapshot is
     empty or much smaller than the active data; by default such a snapshot is
-    refused (see ``SyncBusinessDataUseCase``).
+    refused (see ``SyncBusinessDataUseCase``). ``entrypoint`` is recorded in
+    ``etl_sync_runs``.
     """
     runtime = config["_runtime"]
     with exclusive_etl_lock(runtime["lock_path"]):
@@ -116,7 +126,7 @@ async def run_business_etl(config: dict, *, allow_shrink: bool = False) -> dict[
             staged = snapshots.write_excel(staging)
             try:
                 sync_result = await container.sync_business_data_use_case().sync_all(
-                    **snapshots.sync_arguments(), allow_shrink=allow_shrink, entrypoint="etl_job"
+                    **snapshots.sync_arguments(), allow_shrink=allow_shrink, entrypoint=entrypoint
                 )
                 await invalidate_chat_response_cache(container.cache_service)
             finally:
