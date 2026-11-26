@@ -1,4 +1,6 @@
 """Composition root: connect modules and expose stable provider names for entry points."""
+from pathlib import Path
+
 from dependency_injector import containers, providers
 
 from src.common.container import CommonContainer
@@ -7,6 +9,9 @@ from src.modules.conversations.container import ConversationsContainer
 from src.modules.sales.container import SalesContainer
 from src.modules.analytics.container import AnalyticsContainer
 from src.modules.assistant.container import AssistantContainer
+from src.modules.data_sync.container import DataSyncContainer
+
+BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
 class Container(containers.DeclarativeContainer):
@@ -16,6 +21,12 @@ class Container(containers.DeclarativeContainer):
     conversations = providers.Container(ConversationsContainer, session_factory=common.session_factory)
     sales = providers.Container(SalesContainer, session_factory=common.session_factory)
     analytics = providers.Container(AnalyticsContainer, session_factory=common.session_factory)
+    data_sync = providers.Container(
+        DataSyncContainer,
+        config=config,
+        session_factory=common.session_factory,
+        backend_dir=providers.Object(BACKEND_DIR),
+    )
     assistant = providers.Container(
         AssistantContainer,
         config=config,
@@ -47,6 +58,9 @@ class Container(containers.DeclarativeContainer):
     order_ledger_workbook_exporter = analytics.order_ledger_workbook_exporter
     export_order_ledger_use_case = analytics.export_order_ledger_use_case
     customer_debt_history_use_case = analytics.customer_debt_history_use_case
+    sync_job_repository = data_sync.sync_job_repository
+    sync_runner = data_sync.sync_runner
+    data_sync_use_case = data_sync.data_sync_use_case
     milvus_client = assistant.milvus_client
     llm_service = assistant.llm_service
     embedding_service = assistant.embedding_service

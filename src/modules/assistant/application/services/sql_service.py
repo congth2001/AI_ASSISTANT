@@ -89,6 +89,8 @@ RESTRICTED_SQL_TABLES = frozenset({
     "etl_sync_runs",
     "customer_debt_transaction_changes",
     "customer_debt_revisions",
+    # Admin data-sync job history.
+    "data_sync_jobs",
 })
 _ALLOWED_SCHEMA = "public"
 _ALLOWED_TABLE_FUNCTIONS = frozenset({"generate_series", "unnest"})
