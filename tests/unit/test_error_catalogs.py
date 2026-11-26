@@ -44,7 +44,9 @@ def test_module_errors_are_declared_and_rendered_in_catalogs():
     assert not violations, "\n".join(violations)
 
 
-@pytest.mark.parametrize("module", ["auth", "assistant", "conversations", "analytics", "sales"])
+@pytest.mark.parametrize(
+    "module", ["auth", "assistant", "conversations", "analytics", "sales", "data_sync"]
+)
 def test_catalog_codes_are_unique_and_templates_have_named_parameters(module):
     catalog = importlib.import_module(f"src.modules.{module}.domain.errors")
     codes = set()

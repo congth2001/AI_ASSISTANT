@@ -67,6 +67,8 @@ async def _close_milvus() -> None:
 async def lifespan(app: FastAPI):
     # DB schema is managed by Alembic migrations — run `alembic upgrade head` before starting
     yield
+    # Before PostgreSQL closes: stop running admin syncs and record them as interrupted.
+    await _close_resource("data sync jobs", container.data_sync_use_case().shutdown)
     await _close_resource("Redis", _close_redis)
     await _close_resource("Milvus", _close_milvus)
     await _close_resource("PostgreSQL", container.postgres_client().close)

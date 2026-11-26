@@ -16,6 +16,8 @@ ADAPTER_LIBRARIES = {
 READ_MODEL_IMPORTS = {
     ("analytics", "src.modules.sales.infrastructure.models"),
     ("conversations", "src.modules.auth.infrastructure.models"),
+    ("data_sync", "src.modules.auth.infrastructure.models"),
+    ("data_sync", "src.modules.sales.infrastructure.models"),
 }
 
 

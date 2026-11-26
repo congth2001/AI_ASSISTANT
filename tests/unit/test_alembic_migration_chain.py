@@ -49,12 +49,22 @@ def test_debt_audit_migration_drops_its_tables_on_downgrade():
         assert f'op.drop_table("{table}")' in downgrade
 
 
-def test_sql_reader_role_migration_is_the_head_and_drops_the_role_on_downgrade():
+def test_sql_reader_role_migration_drops_the_role_on_downgrade():
     script = _script()
     revision = script.get_revision("a91c3e7d5b20")
     source = Path(revision.path).read_text(encoding="utf-8")
     downgrade = source[source.index("def downgrade"):]
 
-    assert script.get_current_head() == "a91c3e7d5b20"
     assert revision.down_revision == "8008434c9371"
     assert "DROP OWNED BY" in downgrade and "DROP ROLE" in downgrade
+
+
+def test_data_sync_jobs_migration_is_the_head_and_drops_its_table():
+    script = _script()
+    revision = script.get_revision("c4d81f2a6e93")
+    source = Path(revision.path).read_text(encoding="utf-8")
+    downgrade = source[source.index("def downgrade"):]
+
+    assert script.get_current_head() == "c4d81f2a6e93"
+    assert revision.down_revision == "a91c3e7d5b20"
+    assert 'op.drop_table("data_sync_jobs")' in downgrade
