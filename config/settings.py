@@ -231,6 +231,8 @@ class ETLSettings(ConfigModel):
     source_path: str = ""
     mdb_member: str | None = None
     mdb_password: SecretStr = SecretStr("")
+    # ODBC driver name; empty = auto (Access driver on Windows, "MDBTools" on Linux).
+    odbc_driver: str | None = None
     output_dir: NonEmpty = "data/etl"
     snapshot_dir: NonEmpty = "data/documents"
     extract_config_path: NonEmpty = "etl_business/stats/extract.yml"

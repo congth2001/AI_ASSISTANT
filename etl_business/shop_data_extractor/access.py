@@ -27,7 +27,26 @@ def resolve_mdb_source(source_path: str | Path) -> Path:
 def quote_ident(name: str) -> str:
     return "[" + name.replace("]", "]]") + "]"
 
-def connect_mdb(path: str, password: str = ""):
+ACCESS_ODBC_DRIVER = "Microsoft Access Driver (*.mdb, *.accdb)"
+MDBTOOLS_ODBC_DRIVER = "MDBTools"
+
+
+def resolve_odbc_driver(configured: str | None, installed: Iterable[str]) -> str:
+    """Pick the ODBC driver: the configured one, else Access (Windows) or MDBTools (Linux)."""
+    available = list(installed)
+    if configured:
+        return configured
+    for candidate in (ACCESS_ODBC_DRIVER, MDBTOOLS_ODBC_DRIVER):
+        if candidate in available:
+            return candidate
+    raise RuntimeError(
+        "No MDB ODBC driver found. Install the Microsoft Access Database Engine on "
+        "Windows or 'odbc-mdbtools' on Ubuntu, or set etl.odbc_driver. "
+        f"Installed ODBC drivers: {available or 'none'}"
+    )
+
+
+def connect_mdb(path: str, password: str = "", driver: str | None = None):
     try:
         import pyodbc
     except ImportError as exc:
@@ -44,20 +63,12 @@ def connect_mdb(path: str, password: str = ""):
     if not p.exists():
         raise FileNotFoundError(f"MDB file not found: {p}")
 
-    if platform.system() == "Windows":
-        driver = "Microsoft Access Driver (*.mdb, *.accdb)"
-        parts = [
-            f"DRIVER={{{driver}}}",
-            f"DBQ={p}",
-            "READONLY=1",
-        ]
-    else:
-        driver = "MDBTools"
-        parts = [
-            f"DRIVER={{{driver}}}",
-            f"DBQ={p}",
-        ]
-
+    driver_name = resolve_odbc_driver(driver, pyodbc.drivers())
+    parts = [
+        f"DRIVER={{{driver_name}}}",
+        f"DBQ={p}",
+        "READONLY=1",
+    ]
     if password:
         parts.append(f"PWD={password}")
     conn_str = ";".join(parts) + ";"
@@ -94,13 +105,16 @@ def _select_mdb_member(
 
 @contextmanager
 def open_mdb_source(
-    source_path: str, password: str = "", mdb_member: str | None = None
+    source_path: str,
+    password: str = "",
+    mdb_member: str | None = None,
+    odbc_driver: str | None = None,
 ):
     """Open an MDB directly or materialize one safely from a ZIP archive."""
     source = resolve_mdb_source(source_path)
 
     if source.suffix.lower() != ".zip":
-        connection = connect_mdb(str(source), password)
+        connection = connect_mdb(str(source), password, driver=odbc_driver)
         try:
             yield connection
         finally:
@@ -113,7 +127,7 @@ def open_mdb_source(
             extracted_path = Path(temp_dir) / Path(member.filename).name
             with archive.open(member) as source_file, extracted_path.open("wb") as target:
                 shutil.copyfileobj(source_file, target)
-            connection = connect_mdb(str(extracted_path), password)
+            connection = connect_mdb(str(extracted_path), password, driver=odbc_driver)
             try:
                 yield connection
             finally:
