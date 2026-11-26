@@ -11,7 +11,7 @@ from .profiler import build_profile
 from .extractor import extract_all
 from .reports import export_excel, export_manifest_csv
 from etl_business.pipeline import build_business_snapshots
-from etl_business.job import run_business_etl
+from etl_business.job import describe_extraction_failures, run_business_etl
 from etl_business.normalization import load_customer_ward_aliases
 
 def require_mdb(runtime: dict):
@@ -22,7 +22,8 @@ def cmd_inspect(cfg: dict):
     runtime = cfg["_runtime"]
     require_mdb(runtime)
     with open_mdb_source(
-        runtime["source_path"], runtime["mdb_password"], runtime["mdb_member"]
+        runtime["source_path"], runtime["mdb_password"], runtime["mdb_member"],
+        runtime.get("odbc_driver"),
     ) as conn:
         profile = build_profile(conn, runtime["output_dir"])
     print(f"Schema profile created: {runtime['output_dir']}")
@@ -32,7 +33,8 @@ def cmd_extract(cfg: dict):
     runtime = cfg["_runtime"]
     require_mdb(runtime)
     with open_mdb_source(
-        runtime["source_path"], runtime["mdb_password"], runtime["mdb_member"]
+        runtime["source_path"], runtime["mdb_password"], runtime["mdb_member"],
+        runtime.get("odbc_driver"),
     ) as conn:
         datasets, manifest = extract_all(conn, cfg, runtime["output_dir"])
 
@@ -48,6 +50,7 @@ def cmd_extract(cfg: dict):
     print(f"Datasets: success={success}, failed={failed}, skipped={skipped}")
 
     if failed:
+        print(describe_extraction_failures(manifest), file=sys.stderr)
         sys.exit(2)
 
     if all(name in datasets for name in ("customers", "sales", "sale_items", "products")):

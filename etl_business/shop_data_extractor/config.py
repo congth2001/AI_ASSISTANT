@@ -37,6 +37,7 @@ def load_settings(config_path: str | Path | None = None) -> dict:
         ),
         "mdb_member": etl_settings.mdb_member,
         "mdb_password": etl_settings.mdb_password.get_secret_value(),
+        "odbc_driver": etl_settings.odbc_driver or None,
         "output_dir": str(_resolve_path(etl_settings.output_dir, PROJECT_ROOT)),
         "snapshot_dir": str(
             _resolve_path(etl_settings.snapshot_dir, PROJECT_ROOT)

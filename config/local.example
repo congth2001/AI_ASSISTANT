@@ -88,6 +88,8 @@ etl:
     source_path: D:\Backup
     mdb_member: iShopman.mdb
     mdb_password: ""
+    # ODBC driver; bỏ trống = tự chọn (Windows: Microsoft Access Driver, Ubuntu: MDBTools)
+    # odbc_driver: MDBTools
     output_dir: data/etl
     snapshot_dir: data/documents
     extract_config_path: etl_business/stats/extract.yml

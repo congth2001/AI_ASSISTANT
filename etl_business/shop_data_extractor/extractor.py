@@ -11,8 +11,14 @@ def read_table(
     table: str,
     columns: dict | None = None,
     where: str | None = None,
-    order_by: str | None = None,
+    sort_by: list[str] | None = None,
 ) -> pd.DataFrame:
+    """Read one MDB table and map it to canonical column names.
+
+    Sorting happens in pandas, never in SQL: the MDBTools ODBC driver used on
+    Linux cannot parse ``ORDER BY`` ("Couldn't parse SQL") and returns rows in
+    storage order. ``sort_by`` lists *source* column names that must be selected.
+    """
     source_columns = list(columns.values()) if columns else []
     select_sql = (
         ", ".join(quote_ident(c) for c in source_columns)
@@ -22,13 +28,31 @@ def read_table(
     sql = f"SELECT {select_sql} FROM {quote_ident(table)}"
     if where:
         sql += f" WHERE {where}"
-    if order_by:
-        sql += f" ORDER BY {order_by}"
 
     df = pd.read_sql(sql, conn)
     df = normalize_dataframe(df)
+    if sort_by:
+        missing = [column for column in sort_by if column not in df.columns]
+        if missing:
+            raise KeyError(f"sort_by columns are not selected: {missing}")
+        # Stable sort so ties keep a deterministic order across drivers.
+        df = df.sort_values(list(sort_by), kind="mergesort", ignore_index=True)
     df = apply_column_mapping(df, columns or {})
     return df
+
+
+def _sort_columns(spec: dict) -> list[str] | None:
+    if spec.get("order_by"):
+        raise ValueError(
+            "'order_by' is no longer supported (MDBTools on Linux cannot parse ORDER BY); "
+            "use 'sort_by' with a list of source column names instead"
+        )
+    sort_by = spec.get("sort_by")
+    if sort_by is None:
+        return None
+    if isinstance(sort_by, str):
+        return [sort_by]
+    return [str(column) for column in sort_by]
 
 def resolve_datasets(conn, config: dict) -> list[dict]:
     tables = list_tables(conn)
@@ -102,7 +126,7 @@ def extract_all(conn, config: dict, output_dir: str) -> tuple[dict[str, pd.DataF
                 table=table,
                 columns=spec.get("columns") or {},
                 where=spec.get("where"),
-                order_by=spec.get("order_by"),
+                sort_by=_sort_columns(spec),
             )
             df.to_csv(
                 csv_dir / f"{filename}.csv",

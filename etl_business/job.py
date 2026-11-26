@@ -47,6 +47,29 @@ def promote_snapshots(staged: tuple[Path, ...], snapshot_dir: str | Path) -> tup
     return tuple(promoted)
 
 
+def describe_extraction_failures(
+    manifest: list[dict], manifest_path: str | Path | None = None
+) -> str | None:
+    """Summarise FAILED manifest rows with their source table and driver error.
+
+    The bare dataset list hides the cause (missing column, ODBC/driver error...), which
+    otherwise only lives in the manifest CSV of whichever machine ran the job.
+    """
+    failures = [row for row in manifest if row.get("status") == "FAILED"]
+    if not failures:
+        return None
+    names = ", ".join(str(row.get("dataset")) for row in failures)
+    details = "\n".join(
+        f"  - {row.get('dataset')} (table {row.get('source_table')}): "
+        f"{row.get('error') or 'unknown error'}"
+        for row in failures
+    )
+    message = f"Extraction failed for datasets: {names}\n{details}"
+    if manifest_path:
+        message += f"\nManifest: {manifest_path}"
+    return message
+
+
 async def run_business_etl(config: dict, *, allow_shrink: bool = False) -> dict[str, Any]:
     """Run the cron-safe, idempotent MDB-to-PostgreSQL pipeline once.
 
@@ -61,17 +84,17 @@ async def run_business_etl(config: dict, *, allow_shrink: bool = False) -> dict[
             str(selected_source),
             runtime["mdb_password"],
             runtime["mdb_member"],
+            runtime.get("odbc_driver"),
         ) as connection:
             datasets, manifest = extract_all(
                 connection, config, runtime["output_dir"]
             )
 
         export_excel(datasets, manifest, runtime["output_dir"])
-        export_manifest_csv(manifest, runtime["output_dir"])
-        failures = [row for row in manifest if row.get("status") == "FAILED"]
-        if failures:
-            names = ", ".join(str(row.get("dataset")) for row in failures)
-            raise RuntimeError(f"Extraction failed for datasets: {names}")
+        manifest_path = export_manifest_csv(manifest, runtime["output_dir"])
+        failure_message = describe_extraction_failures(manifest, manifest_path)
+        if failure_message:
+            raise RuntimeError(failure_message)
 
         aliases = load_product_aliases(runtime["product_aliases_path"])
         ward_aliases = load_customer_ward_aliases(
