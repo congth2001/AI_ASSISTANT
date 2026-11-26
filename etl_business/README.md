@@ -128,7 +128,7 @@ table/column cần lấy.
 
 ## Yêu cầu
 
-- Windows 10/11 hoặc Windows Server.
+- Windows 10/11, Windows Server, hoặc Ubuntu (dùng MDBTools, xem mục bên dưới).
 - Python 3.11.
 - Microsoft Access Database Engine / Access ODBC Driver có driver:
   `Microsoft Access Driver (*.mdb, *.accdb)`.
@@ -147,6 +147,28 @@ Phải thấy:
 Microsoft Access Driver (*.mdb, *.accdb)
 ```
 
+### Chạy trên Ubuntu (MDBTools)
+
+```bash
+sudo apt install unixodbc odbc-mdbtools   # đăng ký driver tên "MDBTools"
+python -c "import pyodbc; print(pyodbc.drivers())"   # phải có 'MDBTools'
+```
+
+`etl.odbc_driver` bỏ trống thì tự chọn driver Access nếu có, ngược lại `MDBTools`;
+chỉ đặt khi driver được đăng ký dưới tên khác. MDBTools chỉ hỗ trợ một phần SQL, nên
+`extract.yml` tuân theo hai quy tắc (đã kiểm chứng trên MDBTools 1.0 / Ubuntu 24.04,
+kết quả trùng khớp với Access driver trên Windows):
+
+- Không dùng `ORDER BY`: MDBTools báo `Couldn't parse SQL`. Sắp xếp bằng `sort_by`
+  (danh sách cột nguồn, sort ổn định bằng pandas). Khóa `order_by` cũ bị từ chối.
+  `where` dạng so sánh đơn giản (`[reason] = 'NT'`) vẫn chạy được.
+- Không map cột kiểu `Single` (float4), ví dụ `exim_*_details.discount`: driver ODBC
+  MDBTools 1.0 trả về giá trị của cột liền trước (`unit_price`) thay vì giá trị thật.
+  Kiểm tra kiểu cột bằng `mdb-schema <file.mdb>` trước khi thêm mapping.
+
+MDBTools trả tiền dạng `float`, không phải `Decimal`. Tiền iShopman là số nguyên đồng
+nên không mất chính xác, và snapshot `.xlsx` vốn đã lưu số dạng double.
+
 ## Setup
 
 ```bat
@@ -160,6 +182,7 @@ etl:
   source_path: D:\Backup
   mdb_member: iShopman.mdb
   mdb_password: "<password>"
+  # odbc_driver: MDBTools   # tùy chọn; bỏ trống = tự chọn theo driver đã cài
   output_dir: data/etl
   snapshot_dir: data/documents
   extract_config_path: etl_business/stats/extract.yml

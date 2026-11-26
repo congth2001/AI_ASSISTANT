@@ -138,6 +138,29 @@ async def test_run_sync_passes_allow_shrink_and_tolerates_cache_failure(monkeypa
     assert FakeClient.closed
 
 
+def test_extraction_failure_message_carries_table_and_driver_error():
+    from etl_business.job import describe_extraction_failures
+
+    manifest = [
+        {"dataset": "customers", "status": "SUCCESS"},
+        {"dataset": "products", "status": "SKIPPED"},
+        {"dataset": "sales", "source_table": "exim_export_invoice", "status": "FAILED",
+         "error": "('07002', 'Too few parameters. Expected 1.')"},
+        {"dataset": "sale_items", "source_table": "exim_export_invoice_details",
+         "status": "FAILED", "error": None},
+    ]
+
+    message = describe_extraction_failures(manifest, "data/etl/extract_manifest.csv")
+
+    assert message.splitlines() == [
+        "Extraction failed for datasets: sales, sale_items",
+        "  - sales (table exim_export_invoice): ('07002', 'Too few parameters. Expected 1.')",
+        "  - sale_items (table exim_export_invoice_details): unknown error",
+        "Manifest: data/etl/extract_manifest.csv",
+    ]
+    assert describe_extraction_failures(manifest[:2]) is None
+
+
 def test_refused_snapshot_never_overwrites_the_last_good_files(tmp_path):
     from etl_business.job import promote_snapshots, staged_snapshot_dir
 

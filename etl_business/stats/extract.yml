@@ -1,4 +1,7 @@
 # Deterministic mapping from the real iShopman schema to the ETL canonical contract.
+# Sorting uses `sort_by` (source columns, applied in pandas): the MDBTools ODBC driver on
+# Linux cannot parse ORDER BY. Do not map `Single` (float4) columns such as
+# exim_*_details.discount: MDBTools 1.0 ODBC returns a neighbouring column value for them.
 datasets:
   products:
     enabled: true
@@ -8,6 +11,7 @@ datasets:
       category_id: category_id
       product_name: goods_name
       unit_name: unit
+    sort_by: [goods_id]
     filename: products
 
   product_categories:
@@ -16,6 +20,7 @@ datasets:
     columns:
       category_id: category_id
       product_category_name: category_name
+    sort_by: [category_id]
     filename: product_categories
 
   customers:
@@ -26,6 +31,7 @@ datasets:
       customer_name: contact_name
       address_detail: address_local
       opening_receivable: phaithu_dauky
+    sort_by: [contact_id]
     filename: customers
 
   sales:
@@ -38,7 +44,7 @@ datasets:
       issued_at: invoice_date
       invoice_total_amount: total_cost
       debt_delta_amount: money_debit
-    order_by: "[invoice_id]"
+    sort_by: [invoice_id]
     filename: sales
 
   sale_items:
@@ -50,8 +56,7 @@ datasets:
       product_id: goods_id
       quantity: quantity
       unit_price: unit_price
-      discount: discount
-    order_by: "[invoice_id], [id]"
+    sort_by: [invoice_id, id]
     filename: sale_items
 
   debt_receipts:
@@ -62,7 +67,7 @@ datasets:
       customer_id: contact_id
       occurred_at: invoice_date
       amount: invoice_val
-    order_by: "[invoice_id]"
+    sort_by: [invoice_id]
     filename: debt_receipts
 
   sales_returns:
@@ -76,7 +81,7 @@ datasets:
       return_total_amount: total_cost
       amount: money_debit
     where: "[reason] = 'NT'"
-    order_by: "[invoice_id]"
+    sort_by: [invoice_id]
     filename: sales_returns
 
   sales_return_items:
@@ -88,8 +93,7 @@ datasets:
       product_id: goods_id
       quantity: quantity
       unit_price: unit_price
-      discount: discount
-    order_by: "[invoice_id], [id]"
+    sort_by: [invoice_id, id]
     filename: sales_return_items
 
 extra_tables: []
